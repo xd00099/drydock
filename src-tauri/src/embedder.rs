@@ -24,6 +24,10 @@ pub mod imp {
     // background batch loop (which used to hold a lock for seconds per batch).
     static MODEL: OnceLock<TextEmbedding> = OnceLock::new();
 
+    // Bump this string whenever the embedding recipe changes (model, prefix,
+    // pooling) to force a one-time re-embed of every chunk on next launch.
+    const EMBEDDING_VERSION: &str = "e5-small-passage-v1";
+
     /// Background loop: load the model once (downloads ~110MB on first run),
     /// then drain unembedded chunks forever at low priority.
     pub fn run(db_path: PathBuf, cache_dir: PathBuf) {
@@ -41,11 +45,28 @@ pub mod imp {
         let Some(model) = MODEL.get() else { return };
         SEMANTIC_STATE.store(1, Ordering::Relaxed);
 
+        let mut migrated = false;
         loop {
             let Ok(mut store) = Store::open(&db_path) else {
                 std::thread::sleep(std::time::Duration::from_secs(5));
                 continue;
             };
+            // One-time re-embed, on the first store we can actually open (the
+            // watcher's initial sync may hold the lock for a moment at startup):
+            // older embeddings lack the e5 `passage:` prefix and so sit in a
+            // different space than `query:`-prefixed searches. On a recipe
+            // version change, drop every vector so the loop re-embeds them all.
+            if !migrated {
+                if store.meta_get("embedding_version").ok().flatten().as_deref() != Some(EMBEDDING_VERSION) {
+                    if let Ok(n) = store.clear_embeddings() {
+                        if n > 0 {
+                            eprintln!("re-embedding {n} chunks with the e5 passage: prefix");
+                        }
+                    }
+                    let _ = store.meta_set("embedding_version", EMBEDDING_VERSION);
+                }
+                migrated = true;
+            }
             let pending = store.chunks_without_embeddings(32).unwrap_or_default();
             if pending.is_empty() {
                 SEMANTIC_STATE.store(2, Ordering::Relaxed);
@@ -53,7 +74,9 @@ pub mod imp {
                 continue;
             }
             SEMANTIC_STATE.store(1, Ordering::Relaxed);
-            let texts: Vec<String> = pending.iter().map(|(_, t)| t.clone()).collect();
+            // e5 documents must carry the `passage:` prefix (paired with the
+            // `query:` prefix on searches); fastembed does not add it for us.
+            let texts: Vec<String> = pending.iter().map(|(_, t)| format!("passage: {t}")).collect();
             match model.embed(texts, None) {
                 Ok(vecs) => {
                     for ((chunk_id, _), v) in pending.iter().zip(vecs) {
@@ -68,8 +91,9 @@ pub mod imp {
         }
     }
 
-    /// Embed a search query (e5 models need the query-side prefix; fastembed
-    /// applies it via the dedicated query path).
+    /// Embed a search query. e5 models pair a `query:` prefix on searches with
+    /// a `passage:` prefix on documents; fastembed adds neither, so we prepend
+    /// it here (and `passage:` in the background loop).
     pub fn embed_query(q: &str) -> Option<Vec<f32>> {
         let model = MODEL.get()?;
         model

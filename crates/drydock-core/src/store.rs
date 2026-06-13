@@ -461,6 +461,13 @@ impl Store {
         Ok(())
     }
 
+    /// Drop every stored embedding. Used for a one-time re-embed when the
+    /// embedding recipe changes (e.g. adding the e5 `passage:` prefix): the
+    /// background loop then re-embeds all chunks consistently.
+    pub fn clear_embeddings(&self) -> Result<usize> {
+        Ok(self.conn.execute("DELETE FROM chunk_embeddings", [])?)
+    }
+
     /// Brute-force cosine over all stored vectors; rank = 1 - cosine (lower = better).
     pub fn search_semantic(&self, query: &[f32], limit: usize) -> Result<Vec<SearchHit>> {
         let mut stmt = self.conn.prepare(
@@ -751,6 +758,24 @@ mod tests {
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].chunk_id, pending[0].0);
         assert!(hits[0].rank < hits[1].rank); // rank = 1 - cosine; lower is better
+    }
+
+    #[test]
+    fn clear_embeddings_makes_chunks_pending_again() {
+        let mut s = mem();
+        s.apply_delta("11111111-1111-1111-1111-111111111111", &delta("a"), &[
+            Chunk { role: "user".into(), text: "alpha".into(), ts: None },
+            Chunk { role: "user".into(), text: "beta".into(), ts: None },
+        ]).unwrap();
+        let pending = s.chunks_without_embeddings(10).unwrap();
+        for (id, _) in &pending {
+            s.put_embedding(*id, &[1.0, 0.0]).unwrap();
+        }
+        assert_eq!(s.chunks_without_embeddings(10).unwrap().len(), 0);
+
+        assert_eq!(s.clear_embeddings().unwrap(), 2); // both rows removed
+        // every chunk is unembedded again, so the loop will re-embed them
+        assert_eq!(s.chunks_without_embeddings(10).unwrap().len(), 2);
     }
 
     #[test]
