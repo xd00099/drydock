@@ -1,0 +1,11 @@
+/target
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+node_modules
+dist
+.DS_Store
+
+# Internal design notes / planning docs — kept locally, not published
+/docs/

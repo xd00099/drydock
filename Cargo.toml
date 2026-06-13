@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/drydock-core", "crates/drydock-cli", "src-tauri"]
+resolver = "2"

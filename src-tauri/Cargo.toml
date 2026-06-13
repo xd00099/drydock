@@ -1,0 +1,21 @@
+[package]
+name = "drydock-app"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+drydock-core = { path = "../crates/drydock-core" }
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+portable-pty = "0.8"
+base64 = "0.22"
+anyhow = "1"
+fastembed = { version = "4", optional = true }
+
+[features]
+default = ["semantic"]
+semantic = ["dep:fastembed"]

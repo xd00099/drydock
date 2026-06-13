@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","uuid":"s1","parentUuid":null,"sessionId":"33333333-3333-3333-3333-333333333333","timestamp":"2026-06-03T08:00:00.000Z","cwd":"/Users/dev/work","version":"2.1.170"}
+{"type":"assistant","uuid":"a1","parentUuid":"s1","sessionId":"33333333-3333-3333-3333-333333333333","timestamp":"2026-06-03T08:00:10.000Z","cwd":"/Users/dev/work","version":"2.1.170","message":{"role":"assistant","content":[{"type":"text","text":"headless output"}]}}
+{"type":"mode","mode":"default","sessionId":"33333333-3333-3333-3333-333333333333"}
