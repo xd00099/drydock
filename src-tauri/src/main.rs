@@ -175,6 +175,8 @@ fn main() {
             index::sessions_snapshot,
             index::set_starred,
             index::toggle_pin,
+            index::set_hidden,
+            index::delete_session_permanently,
             index::session_chunks,
             search::search,
             enricher::get_card,

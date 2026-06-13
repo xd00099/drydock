@@ -20,6 +20,17 @@ fn setup() -> (tempfile::TempDir, PathBuf) {
 }
 
 #[test]
+fn transcript_path_resolves_the_synced_file() {
+    let (tmp, file) = setup();
+    let mut store = Store::open_in_memory().unwrap();
+    fs::write(&file, format!("{}\n", fixture("session_basic.jsonl").lines().next().unwrap())).unwrap();
+    sync_all(&mut store, tmp.path()).unwrap();
+    // this is exactly the path delete_session_permanently removes
+    assert_eq!(store.transcript_path(SID).unwrap().as_deref(), file.to_str());
+    assert!(store.transcript_path("no-such-session").unwrap().is_none());
+}
+
+#[test]
 fn full_lifecycle_create_append_replace_delete() {
     let (tmp, file) = setup();
     let mut store = Store::open_in_memory().unwrap();

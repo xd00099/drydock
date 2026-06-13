@@ -101,6 +101,12 @@ CREATE TABLE IF NOT EXISTS pins(
   project_path TEXT PRIMARY KEY,
   pinned_at INTEGER NOT NULL
 );
+-- Sessions the user hid from Drydock (kept in its own table so re-syncs, which
+-- recompute the ghost `hidden` column, can't clobber the user's choice).
+CREATE TABLE IF NOT EXISTS hidden_sessions(
+  session_id TEXT PRIMARY KEY,
+  hidden_at INTEGER NOT NULL
+);
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
   text,
   chunk_id UNINDEXED,
@@ -311,6 +317,7 @@ impl Store {
         tx.execute("DELETE FROM chunks WHERE session_id = ?1", params![session_id])?;
         tx.execute("DELETE FROM cards WHERE session_id = ?1", params![session_id])?;
         tx.execute("DELETE FROM sync_state WHERE session_id = ?1", params![session_id])?;
+        tx.execute("DELETE FROM hidden_sessions WHERE session_id = ?1", params![session_id])?;
         tx.execute("DELETE FROM sessions WHERE session_id = ?1", params![session_id])?;
         tx.commit()?;
         Ok(())
@@ -519,6 +526,39 @@ impl Store {
         let mut stmt = self.conn.prepare("SELECT project_path FROM pins ORDER BY pinned_at")?;
         let rows: Vec<String> = stmt.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
         Ok(rows)
+    }
+
+    /// Hide/unhide a session from Drydock (kept across re-syncs).
+    pub fn set_session_hidden(&self, session_id: &str, hidden: bool) -> Result<()> {
+        if hidden {
+            let now = chrono::Utc::now().timestamp_millis();
+            self.conn.execute(
+                "INSERT OR IGNORE INTO hidden_sessions(session_id, hidden_at) VALUES (?1, ?2)",
+                params![session_id, now],
+            )?;
+        } else {
+            self.conn.execute("DELETE FROM hidden_sessions WHERE session_id = ?1", params![session_id])?;
+        }
+        Ok(())
+    }
+
+    pub fn hidden_session_ids(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT session_id FROM hidden_sessions ORDER BY hidden_at")?;
+        let rows: Vec<String> = stmt.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// The transcript file Drydock synced this session from, if any (radar-only
+    /// stub sessions have none).
+    pub fn transcript_path(&self, session_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT file_path FROM sync_state WHERE session_id = ?1",
+                params![session_id],
+                |r| r.get(0),
+            )
+            .optional()?)
     }
 
     pub fn all_synced_paths(&self) -> Result<Vec<String>> {
@@ -882,5 +922,27 @@ mod tests {
         assert!(s.toggle_pin("/b").unwrap());
         assert!(!s.toggle_pin("/a").unwrap()); // second toggle unpins
         assert_eq!(s.pinned_projects().unwrap(), vec!["/b".to_string()]);
+    }
+
+    #[test]
+    fn hide_persists_and_delete_cleans_it_up() {
+        let mut s = mem();
+        let sid = "11111111-1111-1111-1111-111111111111";
+        s.apply_delta(sid, &delta("hi"), &[]).unwrap();
+        assert!(s.hidden_session_ids().unwrap().is_empty());
+
+        s.set_session_hidden(sid, true).unwrap();
+        assert_eq!(s.hidden_session_ids().unwrap(), vec![sid.to_string()]);
+        // a re-sync (recomputes the ghost `hidden` column) must not unhide it
+        s.apply_delta(sid, &delta("more"), &[]).unwrap();
+        assert_eq!(s.hidden_session_ids().unwrap(), vec![sid.to_string()]);
+
+        s.set_session_hidden(sid, false).unwrap();
+        assert!(s.hidden_session_ids().unwrap().is_empty());
+
+        // deleting the session drops any hidden entry too
+        s.set_session_hidden(sid, true).unwrap();
+        s.delete_session(sid).unwrap();
+        assert!(s.hidden_session_ids().unwrap().is_empty());
     }
 }

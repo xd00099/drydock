@@ -19,3 +19,6 @@ fastembed = { version = "4", optional = true }
 [features]
 default = ["semantic"]
 semantic = ["dep:fastembed"]
+
+[dev-dependencies]
+tempfile = "3"
