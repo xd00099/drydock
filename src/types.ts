@@ -9,7 +9,7 @@ export type SessionView = {
   live_status: 'busy' | 'idle' | 'ended'
 }
 
-export type Snapshot = { sessions: SessionView[]; pinned: string[] }
+export type Snapshot = { sessions: SessionView[]; pinned: string[]; hidden: string[] }
 
 export type Tab = {
   id: number

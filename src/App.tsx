@@ -15,7 +15,7 @@ import { clip } from './types'
 let nextTabId = 1
 
 export default function App() {
-  const { sessions, pinned, refresh } = useSessions()
+  const { sessions, pinned, hidden, refresh } = useSessions()
   const [tabs, setTabs] = useState<Tab[]>([])
   const [activeId, setActiveId] = useState<number | null>(null)
   const [quitGuard, setQuitGuard] = useState(false)
@@ -144,10 +144,13 @@ export default function App() {
       <Sidebar
         sessions={sessions}
         pinned={pinned}
+        hidden={hidden}
         onResume={resume}
         onNewSession={newSession}
         onToggleStar={(s) => invoke('set_starred', { sessionId: s.session_id, starred: !s.starred }).then(refresh)}
         onTogglePin={(p) => invoke('toggle_pin', { projectPath: p }).then(refresh)}
+        onHide={(sessionId, hide) => invoke('set_hidden', { sessionId, hidden: hide }).then(refresh)}
+        onDelete={(sessionId) => invoke('delete_session_permanently', { sessionId }).then(refresh)}
       />
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
         <TabBar tabs={tabs} activeId={activeId} onSelect={setActiveId} onClose={closeTab} onNewShell={newShell} />

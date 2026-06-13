@@ -21,6 +21,7 @@ pub struct SessionView {
 pub struct Snapshot {
     pub sessions: Vec<SessionView>,
     pub pinned: Vec<String>,
+    pub hidden: Vec<String>, // session ids the user hid from Drydock
 }
 
 pub fn claude_dir() -> PathBuf {
@@ -78,6 +79,8 @@ fn repair_project_paths(db: &std::path::Path) {
 struct FlagsBackup {
     stars: Vec<String>,
     pins: Vec<String>,
+    #[serde(default)] // older backups predate this field
+    hidden: Vec<String>,
 }
 
 fn backup_path(app: &AppHandle) -> PathBuf {
@@ -90,12 +93,13 @@ fn write_backup(app: &AppHandle, store: &Store) {
         .map(|v| v.into_iter().filter(|s| s.starred).map(|s| s.session_id).collect())
         .unwrap_or_default();
     let pins = store.pinned_projects().unwrap_or_default();
-    if let Ok(json) = serde_json::to_string(&FlagsBackup { stars, pins }) {
+    let hidden = store.hidden_session_ids().unwrap_or_default();
+    if let Ok(json) = serde_json::to_string(&FlagsBackup { stars, pins, hidden }) {
         let _ = std::fs::write(backup_path(app), json);
     }
 }
 
-/// Re-apply starred/pinned flags from the backup (used after index rebuilds).
+/// Re-apply starred/pinned/hidden flags from the backup (used after index rebuilds).
 fn restore_backup(app: &AppHandle, store: &mut Store) {
     let Ok(text) = std::fs::read_to_string(backup_path(app)) else { return };
     let Ok(b) = serde_json::from_str::<FlagsBackup>(&text) else { return };
@@ -110,6 +114,12 @@ fn restore_backup(app: &AppHandle, store: &mut Store) {
     for p in &b.pins {
         if !pinned_now.contains(p) {
             let _ = store.toggle_pin(p);
+        }
+    }
+    let hidden_now = store.hidden_session_ids().unwrap_or_default();
+    for sid in &b.hidden {
+        if !hidden_now.contains(sid) {
+            let _ = store.set_session_hidden(sid, true);
         }
     }
 }
@@ -215,7 +225,8 @@ pub fn sessions_snapshot(db: State<'_, AppDb>) -> Result<Snapshot, String> {
         })
         .collect();
     let pinned = store.pinned_projects().map_err(|e| e.to_string())?;
-    Ok(Snapshot { sessions, pinned })
+    let hidden = store.hidden_session_ids().map_err(|e| e.to_string())?;
+    Ok(Snapshot { sessions, pinned, hidden })
 }
 
 #[tauri::command]
@@ -232,4 +243,99 @@ pub fn toggle_pin(app: AppHandle, db: State<'_, AppDb>, project_path: String) ->
     let pinned = store.toggle_pin(&project_path).map_err(|e| e.to_string())?;
     write_backup(&app, &store);
     Ok(pinned)
+}
+
+/// Hide or unhide a session from Drydock (non-destructive; the transcript stays).
+#[tauri::command]
+pub fn set_hidden(app: AppHandle, db: State<'_, AppDb>, session_id: String, hidden: bool) -> Result<(), String> {
+    let store = db.0.lock().unwrap();
+    store.set_session_hidden(&session_id, hidden).map_err(|e| e.to_string())?;
+    write_backup(&app, &store);
+    Ok(())
+}
+
+/// Remove a session's transcript file (if any) then drop it from the index.
+/// This is the one place Drydock writes under ~/.claude, and only ever to
+/// `remove_file` a single `<id>.jsonl` under `<claude>/projects` whose stem is
+/// exactly this session id — anything else is refused.
+/// A path is safe to delete only if it's a `<id>.jsonl` directly identified by
+/// this session, living under `<claude>/projects`. Guards the one ~/.claude write.
+fn is_safe_transcript(p: &std::path::Path, claude: &std::path::Path, session_id: &str) -> bool {
+    p.starts_with(claude.join("projects"))
+        && p.extension().and_then(|e| e.to_str()) == Some("jsonl")
+        && p.file_stem().and_then(|s| s.to_str()) == Some(session_id)
+}
+
+fn remove_session(store: &mut Store, claude: &std::path::Path, session_id: &str) -> Result<(), String> {
+    if let Some(path) = store.transcript_path(session_id).map_err(|e| e.to_string())? {
+        let p = PathBuf::from(&path);
+        if !is_safe_transcript(&p, claude, session_id) {
+            return Err(format!("refusing to delete unexpected path: {path}"));
+        }
+        match std::fs::remove_file(&p) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // already gone
+            Err(e) => return Err(format!("could not delete transcript: {e}")),
+        }
+    }
+    store.delete_session(session_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_session_permanently(db: State<'_, AppDb>, session_id: String) -> Result<(), String> {
+    let mut store = db.0.lock().unwrap();
+    remove_session(&mut store, &claude_dir(), &session_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use drydock_core::sync::sync_all;
+
+    const SID: &str = "11111111-1111-1111-1111-111111111111";
+
+    // a minimal real transcript line so sync indexes the session
+    fn line() -> String {
+        format!("{{\"type\":\"user\",\"uuid\":\"u1\",\"sessionId\":\"{SID}\",\"timestamp\":\"2026-06-01T10:00:00.000Z\",\"cwd\":\"/Users/dev/work\",\"message\":{{\"role\":\"user\",\"content\":\"hi\"}}}}")
+    }
+
+    fn synced() -> (tempfile::TempDir, Store, std::path::PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let proj = tmp.path().join("projects").join("-Users-dev-work");
+        std::fs::create_dir_all(&proj).unwrap();
+        let file = proj.join(format!("{SID}.jsonl"));
+        std::fs::write(&file, format!("{}\n", line())).unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        sync_all(&mut store, tmp.path()).unwrap();
+        (tmp, store, file)
+    }
+
+    #[test]
+    fn remove_session_deletes_file_and_index_row() {
+        let (tmp, mut store, file) = synced();
+        assert!(store.get_session(SID).unwrap().is_some());
+        remove_session(&mut store, tmp.path(), SID).unwrap();
+        assert!(!file.exists(), "transcript file should be gone");
+        assert!(store.get_session(SID).unwrap().is_none(), "index row should be gone");
+    }
+
+    #[test]
+    fn safe_transcript_guard() {
+        let claude = std::path::Path::new("/home/u/.claude");
+        let ok = claude.join("projects/-x").join(format!("{SID}.jsonl"));
+        assert!(is_safe_transcript(&ok, claude, SID));
+        // outside projects, wrong extension, and wrong stem are all refused
+        assert!(!is_safe_transcript(std::path::Path::new("/home/u/.claude/other.jsonl"), claude, SID));
+        assert!(!is_safe_transcript(&claude.join("projects/-x/evil.sh"), claude, SID));
+        assert!(!is_safe_transcript(&claude.join("projects/-x/00000000.jsonl"), claude, SID));
+        assert!(!is_safe_transcript(std::path::Path::new("/etc/passwd"), claude, SID));
+    }
+
+    #[test]
+    fn remove_session_tolerates_already_missing_file() {
+        let (tmp, mut store, file) = synced();
+        std::fs::remove_file(&file).unwrap(); // file vanished out from under us
+        remove_session(&mut store, tmp.path(), SID).unwrap(); // still drops the index row
+        assert!(store.get_session(SID).unwrap().is_none());
+    }
 }
