@@ -40,9 +40,10 @@ pub struct SyncState {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Card {
     pub session_id: String,
-    pub goal: String,
-    pub state: String,
-    pub next_step: String,
+    /// ~5-word description of the session, used as its display title.
+    pub summary: String,
+    /// JSON array of timeline items (shape owned by the app layer).
+    pub timeline: String,
     pub generated_at: i64,
     pub at_message_count: i64,
 }
@@ -97,10 +98,6 @@ CREATE TABLE IF NOT EXISTS sync_state(
   mtime INTEGER NOT NULL,
   tail_hex TEXT
 );
-CREATE TABLE IF NOT EXISTS pins(
-  project_path TEXT PRIMARY KEY,
-  pinned_at INTEGER NOT NULL
-);
 -- Sessions the user hid from Drydock (kept in its own table so re-syncs, which
 -- recompute the ghost `hidden` column, can't clobber the user's choice).
 CREATE TABLE IF NOT EXISTS hidden_sessions(
@@ -117,11 +114,11 @@ CREATE TABLE IF NOT EXISTS chunk_embeddings(
   chunk_id INTEGER PRIMARY KEY,
   embedding BLOB NOT NULL
 );
+-- Briefing card: a one-line summary plus a JSON timeline of milestones.
 CREATE TABLE IF NOT EXISTS cards(
   session_id TEXT PRIMARY KEY,
-  goal TEXT NOT NULL,
-  state TEXT NOT NULL,
-  next_step TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  timeline TEXT NOT NULL DEFAULT '[]',
   generated_at INTEGER NOT NULL,
   at_message_count INTEGER NOT NULL
 );
@@ -133,6 +130,32 @@ fn migrate(conn: &Connection) {
     let _ = conn.execute("ALTER TABLE sessions ADD COLUMN live_status TEXT NOT NULL DEFAULT 'ended'", []);
     let _ = conn.execute("ALTER TABLE sessions ADD COLUMN live_pid INTEGER", []);
     let _ = conn.execute("ALTER TABLE sync_state ADD COLUMN tail_hex TEXT", []);
+    // Project-level pins were removed; drop the table on existing DBs.
+    let _ = conn.execute("DROP TABLE IF EXISTS pins", []);
+    // Cards moved from {goal,state,next_step} to {summary,timeline}. The old
+    // columns can't be migrated in place, but cards are cheap to regenerate, so
+    // recreate the table once (gated on a meta flag) and let the enricher refill.
+    let card_schema: Option<String> = conn
+        .query_row("SELECT value FROM meta WHERE key = 'card_schema'", [], |r| r.get(0))
+        .optional()
+        .unwrap_or(None);
+    if card_schema.as_deref() != Some("v2") {
+        let _ = conn.execute("DROP TABLE IF EXISTS cards", []);
+        let _ = conn.execute(
+            "CREATE TABLE cards(
+               session_id TEXT PRIMARY KEY,
+               summary TEXT NOT NULL DEFAULT '',
+               timeline TEXT NOT NULL DEFAULT '[]',
+               generated_at INTEGER NOT NULL,
+               at_message_count INTEGER NOT NULL
+             )",
+            [],
+        );
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES ('card_schema', 'v2')",
+            [],
+        );
+    }
     // backfill FTS for DBs whose chunks predate the chunks_fts table
     let need_backfill: i64 = conn
         .query_row(
@@ -149,6 +172,43 @@ fn migrate(conn: &Connection) {
             [],
         );
     }
+}
+
+/// Replace a session's synthetic `card`-role search chunk with fresh text: drop
+/// the old chunk (plus its FTS row and embedding) and insert the new one so a
+/// regenerated card gets re-embedded. Blank text just clears the old chunk.
+/// Takes a plain `Connection` so it composes inside an existing transaction
+/// (`&Transaction` derefs to `&Connection`).
+fn replace_card_chunk(conn: &Connection, session_id: &str, card_text: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM chunk_embeddings WHERE chunk_id IN
+           (SELECT chunk_id FROM chunks WHERE session_id = ?1 AND role = 'card')",
+        params![session_id],
+    )?;
+    conn.execute(
+        "DELETE FROM chunks_fts WHERE chunk_id IN
+           (SELECT chunk_id FROM chunks WHERE session_id = ?1 AND role = 'card')",
+        params![session_id],
+    )?;
+    conn.execute("DELETE FROM chunks WHERE session_id = ?1 AND role = 'card'", params![session_id])?;
+    if card_text.trim().is_empty() {
+        return Ok(()); // nothing worth indexing
+    }
+    let next_seq: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(seq), -1) + 1 FROM chunks WHERE session_id = ?1",
+        params![session_id],
+        |r| r.get(0),
+    )?;
+    conn.execute(
+        "INSERT INTO chunks(session_id, seq, role, text, ts) VALUES (?1, ?2, 'card', ?3, NULL)",
+        params![session_id, next_seq, card_text],
+    )?;
+    let chunk_rowid = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO chunks_fts(text, chunk_id, session_id) VALUES (?1, ?2, ?3)",
+        params![card_text, chunk_rowid, session_id],
+    )?;
+    Ok(())
 }
 
 impl Store {
@@ -373,9 +433,12 @@ impl Store {
         Ok(())
     }
 
+    /// Transcript chunks for display and for the enricher's prompt. Excludes the
+    /// synthetic `card` chunk (the briefing's own searchable text) so it neither
+    /// shows in the transcript nor feeds back into the next card generation.
     pub fn get_chunks(&self, session_id: &str) -> Result<Vec<Chunk>> {
         let mut stmt = self.conn.prepare(
-            "SELECT role, text, ts FROM chunks WHERE session_id = ?1 ORDER BY seq",
+            "SELECT role, text, ts FROM chunks WHERE session_id = ?1 AND role != 'card' ORDER BY seq",
         )?;
         let rows: Vec<Chunk> = stmt
             .query_map(params![session_id], |r| {
@@ -404,24 +467,63 @@ impl Store {
 
     pub fn get_card(&self, session_id: &str) -> Result<Option<Card>> {
         Ok(self.conn.query_row(
-            "SELECT session_id, goal, state, next_step, generated_at, at_message_count
+            "SELECT session_id, summary, timeline, generated_at, at_message_count
              FROM cards WHERE session_id = ?1",
             params![session_id],
             |r| Ok(Card {
-                session_id: r.get(0)?, goal: r.get(1)?, state: r.get(2)?,
-                next_step: r.get(3)?, generated_at: r.get(4)?, at_message_count: r.get(5)?,
+                session_id: r.get(0)?, summary: r.get(1)?, timeline: r.get(2)?,
+                generated_at: r.get(3)?, at_message_count: r.get(4)?,
             }),
         ).optional()?)
     }
 
-    pub fn put_card(&mut self, session_id: &str, goal: &str, state: &str, next_step: &str, at_message_count: i64) -> Result<()> {
+    /// Store a card and (re)index its searchable text as a `card`-role chunk, so
+    /// the briefing's distilled summary participates in keyword + semantic search.
+    /// `card_text` is the caller-composed search payload (summary + timeline text).
+    pub fn put_card(&mut self, session_id: &str, summary: &str, timeline: &str, card_text: &str, at_message_count: i64) -> Result<()> {
         let now = chrono::Utc::now().timestamp_millis();
-        self.conn.execute(
-            "INSERT OR REPLACE INTO cards(session_id, goal, state, next_step, generated_at, at_message_count)
-             VALUES (?1,?2,?3,?4,?5,?6)",
-            params![session_id, goal, state, next_step, now, at_message_count],
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT OR REPLACE INTO cards(session_id, summary, timeline, generated_at, at_message_count)
+             VALUES (?1,?2,?3,?4,?5)",
+            params![session_id, summary, timeline, now, at_message_count],
         )?;
+        replace_card_chunk(&tx, session_id, card_text)?;
+        tx.commit()?;
         Ok(())
+    }
+
+    /// (Re)index a card's searchable text without rewriting the card row — used to
+    /// backfill the search chunk for cards generated before this existed.
+    pub fn put_card_search_chunk(&mut self, session_id: &str, card_text: &str) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        replace_card_chunk(&tx, session_id, card_text)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Session ids that have a card but no `card`-role search chunk yet.
+    pub fn cards_without_search_chunk(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT c.session_id FROM cards c
+             WHERE NOT EXISTS (
+               SELECT 1 FROM chunks ch WHERE ch.session_id = c.session_id AND ch.role = 'card'
+             )",
+        )?;
+        let rows = stmt.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// (session_id, summary) for every card with a non-empty summary — used to
+    /// override session titles in the snapshot.
+    pub fn card_summaries(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT session_id, summary FROM cards WHERE summary != ''")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
     }
 
     /// Sessions whose card is missing or stale; idle/ended, >=3 user turns, not stubs/hidden.
@@ -509,23 +611,6 @@ impl Store {
         scored.sort_by(|a, b| a.rank.partial_cmp(&b.rank).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(limit);
         Ok(scored)
-    }
-
-    /// Toggle a project pin; returns the new pinned state.
-    pub fn toggle_pin(&mut self, project_path: &str) -> Result<bool> {
-        let removed = self.conn.execute("DELETE FROM pins WHERE project_path = ?1", params![project_path])?;
-        if removed > 0 {
-            return Ok(false);
-        }
-        let now = chrono::Utc::now().timestamp_millis();
-        self.conn.execute("INSERT INTO pins(project_path, pinned_at) VALUES (?1, ?2)", params![project_path, now])?;
-        Ok(true)
-    }
-
-    pub fn pinned_projects(&self) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare("SELECT project_path FROM pins ORDER BY pinned_at")?;
-        let rows: Vec<String> = stmt.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
-        Ok(rows)
     }
 
     /// Hide/unhide a session from Drydock (kept across re-syncs).
@@ -851,10 +936,15 @@ mod tests {
         assert_eq!(need.len(), 1);
         assert_eq!(need[0], "11111111-1111-1111-1111-111111111111");
 
-        s.put_card("11111111-1111-1111-1111-111111111111", "goal", "state", "next", 8).unwrap();
+        s.put_card("11111111-1111-1111-1111-111111111111", "fix telemetry", "[]", "fix telemetry", 8).unwrap();
         let card = s.get_card("11111111-1111-1111-1111-111111111111").unwrap().unwrap();
-        assert_eq!(card.goal, "goal");
+        assert_eq!(card.summary, "fix telemetry");
         assert_eq!(card.at_message_count, 8);
+        // summary surfaces in the title-override map
+        assert_eq!(
+            s.card_summaries().unwrap(),
+            vec![("11111111-1111-1111-1111-111111111111".to_string(), "fix telemetry".to_string())]
+        );
         // fresh card → no longer needing
         assert!(s.sessions_needing_cards(10, QUIET_NOW).unwrap().is_empty());
 
@@ -872,7 +962,7 @@ mod tests {
         d.user_message_count = 4;
         d.message_count = 8;
         s.apply_delta("11111111-1111-1111-1111-111111111111", &d, &[]).unwrap();
-        s.put_card("11111111-1111-1111-1111-111111111111", "goal", "state", "next", 8).unwrap();
+        s.put_card("11111111-1111-1111-1111-111111111111", "fix telemetry", "[]", "fix telemetry", 8).unwrap();
 
         // growth below threshold (4 < 5): not stale even after 10 min of quiet
         let mut grow4 = delta("b");
@@ -895,6 +985,56 @@ mod tests {
     }
 
     #[test]
+    fn card_text_is_searchable_but_hidden_from_transcript() {
+        let mut s = mem();
+        let sid = "11111111-1111-1111-1111-111111111111";
+        s.apply_delta(sid, &delta("hi"), &[
+            Chunk { role: "user".into(), text: "deploy the widget".into(), ts: None },
+        ]).unwrap();
+        s.put_card(sid, "telemetry pipeline", "[]", "telemetry pipeline via utils", 4).unwrap();
+
+        // keyword search surfaces the session via the card text...
+        assert!(s.search_keyword("telemetry", 10).unwrap().iter().any(|h| h.session_id == sid));
+        // ...the card chunk is queued for embedding (so semantic search gets it too)...
+        assert!(s.chunks_without_embeddings(10).unwrap().iter().any(|(_, t)| t.contains("telemetry")));
+        // ...but it never shows in the transcript view.
+        let chunks = s.get_chunks(sid).unwrap();
+        assert!(chunks.iter().all(|c| c.role != "card"));
+        assert_eq!(chunks.len(), 1);
+    }
+
+    #[test]
+    fn regenerating_a_card_replaces_its_search_chunk() {
+        let mut s = mem();
+        let sid = "11111111-1111-1111-1111-111111111111";
+        s.apply_delta(sid, &delta("hi"), &[]).unwrap();
+        s.put_card(sid, "old", "[]", "telemetry pipeline", 4).unwrap();
+        s.put_card(sid, "new", "[]", "billing dashboard", 5).unwrap();
+        assert!(s.search_keyword("telemetry", 10).unwrap().is_empty());
+        assert!(s.search_keyword("billing", 10).unwrap().iter().any(|h| h.session_id == sid));
+        let n: i64 = s.conn
+            .query_row("SELECT COUNT(*) FROM chunks WHERE session_id=?1 AND role='card'", params![sid], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn backfills_card_search_chunk_for_existing_cards() {
+        let mut s = mem();
+        let sid = "11111111-1111-1111-1111-111111111111";
+        s.apply_delta(sid, &delta("hi"), &[]).unwrap();
+        // a card row from before card-search existed: no `card` chunk
+        s.conn.execute(
+            "INSERT INTO cards(session_id, summary, timeline, generated_at, at_message_count) VALUES (?1,'s','[]',0,1)",
+            params![sid],
+        ).unwrap();
+        assert_eq!(s.cards_without_search_chunk().unwrap(), vec![sid.to_string()]);
+        s.put_card_search_chunk(sid, "indexed now").unwrap();
+        assert!(s.cards_without_search_chunk().unwrap().is_empty());
+        assert!(s.search_keyword("indexed", 10).unwrap().iter().any(|h| h.session_id == sid));
+    }
+
+    #[test]
     fn busy_sessions_are_not_carded() {
         let mut s = mem();
         let mut d = delta("a");
@@ -912,16 +1052,6 @@ mod tests {
         let s = Store::open(&tmp.path().join("wal.db")).unwrap();
         let mode: String = s.conn.query_row("PRAGMA journal_mode", [], |r| r.get(0)).unwrap();
         assert_eq!(mode.to_lowercase(), "wal");
-    }
-
-    #[test]
-    fn pin_toggle_roundtrip() {
-        let mut s = mem();
-        assert!(s.pinned_projects().unwrap().is_empty());
-        assert!(s.toggle_pin("/a").unwrap());
-        assert!(s.toggle_pin("/b").unwrap());
-        assert!(!s.toggle_pin("/a").unwrap()); // second toggle unpins
-        assert_eq!(s.pinned_projects().unwrap(), vec!["/b".to_string()]);
     }
 
     #[test]

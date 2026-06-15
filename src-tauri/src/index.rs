@@ -10,6 +10,8 @@ pub struct SessionView {
     pub session_id: String,
     pub project_path: String,
     pub title: String,
+    /// AI summary from the card (~5 words); the sidebar renders it over `title`.
+    pub summary: Option<String>,
     pub latest_recap: Option<String>,
     pub last_message_at: Option<i64>,
     pub starred: bool,
@@ -20,7 +22,6 @@ pub struct SessionView {
 #[derive(serde::Serialize)]
 pub struct Snapshot {
     pub sessions: Vec<SessionView>,
-    pub pinned: Vec<String>,
     pub hidden: Vec<String>, // session ids the user hid from Drydock
 }
 
@@ -78,7 +79,6 @@ fn repair_project_paths(db: &std::path::Path) {
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct FlagsBackup {
     stars: Vec<String>,
-    pins: Vec<String>,
     #[serde(default)] // older backups predate this field
     hidden: Vec<String>,
 }
@@ -92,14 +92,13 @@ fn write_backup(app: &AppHandle, store: &Store) {
         .list_sessions()
         .map(|v| v.into_iter().filter(|s| s.starred).map(|s| s.session_id).collect())
         .unwrap_or_default();
-    let pins = store.pinned_projects().unwrap_or_default();
     let hidden = store.hidden_session_ids().unwrap_or_default();
-    if let Ok(json) = serde_json::to_string(&FlagsBackup { stars, pins, hidden }) {
+    if let Ok(json) = serde_json::to_string(&FlagsBackup { stars, hidden }) {
         let _ = std::fs::write(backup_path(app), json);
     }
 }
 
-/// Re-apply starred/pinned/hidden flags from the backup (used after index rebuilds).
+/// Re-apply starred/hidden flags from the backup (used after index rebuilds).
 fn restore_backup(app: &AppHandle, store: &mut Store) {
     let Ok(text) = std::fs::read_to_string(backup_path(app)) else { return };
     let Ok(b) = serde_json::from_str::<FlagsBackup>(&text) else { return };
@@ -108,12 +107,6 @@ fn restore_backup(app: &AppHandle, store: &mut Store) {
             if !row.starred {
                 let _ = store.set_starred(sid, true);
             }
-        }
-    }
-    let pinned_now = store.pinned_projects().unwrap_or_default();
-    for p in &b.pins {
-        if !pinned_now.contains(p) {
-            let _ = store.toggle_pin(p);
         }
     }
     let hidden_now = store.hidden_session_ids().unwrap_or_default();
@@ -209,11 +202,14 @@ pub fn session_chunks(db: State<'_, AppDb>, session_id: String) -> Result<Vec<Ch
 #[tauri::command]
 pub fn sessions_snapshot(db: State<'_, AppDb>) -> Result<Snapshot, String> {
     let store = db.0.lock().unwrap();
+    let summaries: std::collections::HashMap<String, String> =
+        store.card_summaries().map_err(|e| e.to_string())?.into_iter().collect();
     let sessions = store
         .list_sessions()
         .map_err(|e| e.to_string())?
         .into_iter()
         .map(|r| SessionView {
+            summary: summaries.get(&r.session_id).cloned(),
             session_id: r.session_id,
             project_path: r.project_path,
             title: r.title,
@@ -224,9 +220,8 @@ pub fn sessions_snapshot(db: State<'_, AppDb>) -> Result<Snapshot, String> {
             live_status: r.live_status,
         })
         .collect();
-    let pinned = store.pinned_projects().map_err(|e| e.to_string())?;
     let hidden = store.hidden_session_ids().map_err(|e| e.to_string())?;
-    Ok(Snapshot { sessions, pinned, hidden })
+    Ok(Snapshot { sessions, hidden })
 }
 
 #[tauri::command]
@@ -235,14 +230,6 @@ pub fn set_starred(app: AppHandle, db: State<'_, AppDb>, session_id: String, sta
     store.set_starred(&session_id, starred).map_err(|e| e.to_string())?;
     write_backup(&app, &store);
     Ok(())
-}
-
-#[tauri::command]
-pub fn toggle_pin(app: AppHandle, db: State<'_, AppDb>, project_path: String) -> Result<bool, String> {
-    let mut store = db.0.lock().unwrap();
-    let pinned = store.toggle_pin(&project_path).map_err(|e| e.to_string())?;
-    write_backup(&app, &store);
-    Ok(pinned)
 }
 
 /// Hide or unhide a session from Drydock (non-destructive; the transcript stays).

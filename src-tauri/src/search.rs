@@ -57,8 +57,9 @@ fn session_passes(s: &SessionView, p: &ParsedQuery) -> bool {
     true
 }
 
-fn view(r: drydock_core::store::SessionRow) -> SessionView {
+fn view(r: drydock_core::store::SessionRow, summary: Option<String>) -> SessionView {
     SessionView {
+        summary,
         session_id: r.session_id,
         project_path: r.project_path,
         title: r.title,
@@ -106,13 +107,16 @@ pub fn search(db: State<'_, AppDb>, query: String) -> Result<SearchResponse, Str
     }
 
     let all = store.list_sessions().map_err(|e| e.to_string())?;
+    let summaries: std::collections::HashMap<String, String> =
+        store.card_summaries().map_err(|e| e.to_string())?.into_iter().collect();
     drop(store);
 
     let mut results = Vec::new();
     if p.text.is_empty() {
         // filters only: recency order
         for r in all {
-            let s = view(r);
+            let summary = summaries.get(&r.session_id).cloned();
+            let s = view(r, summary);
             if session_passes(&s, &p) {
                 results.push(SearchResult { snippet: s.latest_recap.clone().unwrap_or_default(), session: s });
             }
@@ -120,7 +124,7 @@ pub fn search(db: State<'_, AppDb>, query: String) -> Result<SearchResponse, Str
     } else {
         for (sid, snippet) in best {
             if let Some(r) = all.iter().find(|r| r.session_id == sid) {
-                let s = view(r.clone());
+                let s = view(r.clone(), summaries.get(&sid).cloned());
                 if session_passes(&s, &p) {
                     results.push(SearchResult { session: s, snippet });
                 }

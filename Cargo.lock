@@ -1047,6 +1047,7 @@ dependencies = [
  "base64 0.22.1",
  "drydock-core",
  "fastembed",
+ "libc",
  "portable-pty",
  "serde",
  "serde_json",

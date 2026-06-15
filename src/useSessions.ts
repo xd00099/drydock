@@ -4,7 +4,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { Snapshot } from './types'
 
 export function useSessions() {
-  const [snap, setSnap] = useState<Snapshot>({ sessions: [], pinned: [], hidden: [] })
+  const [snap, setSnap] = useState<Snapshot>({ sessions: [], hidden: [] })
   const refresh = useCallback(() => {
     invoke<Snapshot>('sessions_snapshot').then(setSnap).catch(console.error)
   }, [])

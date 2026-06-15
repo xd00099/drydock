@@ -10,17 +10,18 @@ import SearchPalette from './SearchPalette'
 import BriefingPanel from './BriefingPanel'
 import { useSessions } from './useSessions'
 import type { SessionView, Tab } from './types'
-import { clip } from './types'
+import { clip, sessionLabel } from './types'
 
 let nextTabId = 1
 
 export default function App() {
-  const { sessions, pinned, hidden, refresh } = useSessions()
+  const { sessions, hidden, refresh } = useSessions()
   const [tabs, setTabs] = useState<Tab[]>([])
   const [activeId, setActiveId] = useState<number | null>(null)
   const [quitGuard, setQuitGuard] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [claudeVersion, setClaudeVersion] = useState<string | null | 'checking'>('checking')
+  const [shellDirs, setShellDirs] = useState<Record<number, string>>({})
 
   useEffect(() => {
     invoke<string | null>('check_claude').then(setClaudeVersion).catch(() => setClaudeVersion(null))
@@ -61,11 +62,11 @@ export default function App() {
       // transcript view (counts as exited for the quit guard)
       const open = tabs.find((t) => t.sessionId === s.session_id && t.kind === 'transcript')
       if (open) { setActiveId(open.id); return }
-      addTab({ title: clip(s.title, 24), kind: 'transcript', program: null, args: [], cwd: null, sessionId: s.session_id, exited: true, preview }, s.session_id)
+      addTab({ title: clip(sessionLabel(s), 24), kind: 'transcript', program: null, args: [], cwd: null, sessionId: s.session_id, exited: true, preview }, s.session_id)
       return
     }
     addTab({
-      title: clip(s.title, 24),
+      title: clip(sessionLabel(s), 24),
       kind: 'pty',
       program: null,
       args: ['-l', '-c', `exec claude --resume '${s.session_id}'`],
@@ -78,12 +79,13 @@ export default function App() {
   const newSession = (projectPath: string) =>
     addTab({ title: 'claude', kind: 'pty', program: null, args: ['-l', '-c', 'exec claude'], cwd: projectPath })
 
-  const newShell = () => addTab({ title: 'shell', kind: 'pty', program: null, args: ['-l'], cwd: null })
+  const newShell = () => addTab({ title: 'shell', kind: 'pty', program: null, args: ['-l'], cwd: null, terminal: true })
 
   const markExited = (id: number) => setTabs((p) => p.map((t) => (t.id === id ? { ...t, exited: true } : t)))
 
   const closeTab = (id: number) => {
     setTabs((p) => p.filter((t) => t.id !== id))
+    setShellDirs((d) => (id in d ? Object.fromEntries(Object.entries(d).filter(([k]) => Number(k) !== id)) : d))
     const next = tabs.filter((t) => t.id !== id)
     setActiveId((a) => (a === id ? (next.length ? next[next.length - 1].id : null) : a))
   }
@@ -95,6 +97,30 @@ export default function App() {
     const s = active?.sessionId ? sessions.find((x) => x.session_id === active.sessionId) : undefined
     if (s) invoke('set_starred', { sessionId: s.session_id, starred: !s.starred }).then(refresh)
   }
+
+  // Shell tabs are named after their live working directory. Poll the PTYs
+  // (the backend reads each shell process's cwd from the OS) every 2s, and
+  // immediately whenever the set of shell tabs changes.
+  const termKey = tabs.filter((t) => t.terminal && !t.exited).map((t) => t.id).join(',')
+  useEffect(() => {
+    if (!termKey) return
+    const poll = () => {
+      const ids = termKey.split(',').map(Number)
+      invoke<[number, string][]>('pty_cwds', { ids })
+        .then((pairs) =>
+          setShellDirs((prev) => {
+            let changed = false
+            const next = { ...prev }
+            for (const [id, dir] of pairs) if (next[id] !== dir) { next[id] = dir; changed = true }
+            return changed ? next : prev
+          })
+        )
+        .catch(() => {})
+    }
+    poll()
+    const h = setInterval(poll, 2000)
+    return () => clearInterval(h)
+  }, [termKey])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -143,17 +169,15 @@ export default function App() {
       )}
       <Sidebar
         sessions={sessions}
-        pinned={pinned}
         hidden={hidden}
         onResume={resume}
         onNewSession={newSession}
         onToggleStar={(s) => invoke('set_starred', { sessionId: s.session_id, starred: !s.starred }).then(refresh)}
-        onTogglePin={(p) => invoke('toggle_pin', { projectPath: p }).then(refresh)}
         onHide={(sessionId, hide) => invoke('set_hidden', { sessionId, hidden: hide }).then(refresh)}
         onDelete={(sessionId) => invoke('delete_session_permanently', { sessionId }).then(refresh)}
       />
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-        <TabBar tabs={tabs} activeId={activeId} onSelect={setActiveId} onClose={closeTab} onNewShell={newShell} />
+        <TabBar tabs={tabs} activeId={activeId} shellDirs={shellDirs} onSelect={setActiveId} onClose={closeTab} onNewShell={newShell} />
         <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
           {tabs.map((t) => (
             <div key={t.id} style={{ position: 'absolute', inset: 8, display: t.id === activeId ? 'block' : 'none' }}>
@@ -182,7 +206,18 @@ export default function App() {
       </div>
       {(() => {
         const active = tabs.find((t) => t.id === activeId)
-        return active?.sessionId ? <BriefingPanel key={active.sessionId} sessionId={active.sessionId} /> : null
+        if (!active?.sessionId) return null
+        const s = sessions.find((x) => x.session_id === active.sessionId)
+        return (
+          <BriefingPanel
+            key={active.sessionId}
+            sessionId={active.sessionId}
+            starred={!!s?.starred}
+            onToggleStar={
+              s ? () => invoke('set_starred', { sessionId: s.session_id, starred: !s.starred }).then(refresh) : undefined
+            }
+          />
+        )
       })()}
       <SearchPalette
         open={paletteOpen}

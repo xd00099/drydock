@@ -29,6 +29,9 @@ fn pty_spawn(
         .or_else(|| std::env::var("SHELL").ok())
         .unwrap_or_else(|| "/bin/zsh".to_string());
     let args = args.unwrap_or_default();
+    // a "+"/⌘T shell passes no cwd; start it in $HOME so it has a real,
+    // nameable directory instead of the app's launch dir ("/").
+    let cwd = cwd.or_else(|| std::env::var("HOME").ok());
     let app_exit = app.clone();
     mgr.spawn(
         id,
@@ -61,6 +64,24 @@ fn pty_resize(mgr: State<'_, PtyManager>, id: u32, cols: u16, rows: u16) -> Resu
 #[tauri::command]
 fn pty_kill(mgr: State<'_, PtyManager>, id: u32) -> Result<(), String> {
     mgr.kill(id).map_err(|e| e.to_string())
+}
+
+/// Live working directories of the given shell PTYs, $HOME collapsed to `~`.
+/// Only ids whose cwd is currently readable are returned (dead/exited dropped).
+#[tauri::command]
+fn pty_cwds(mgr: State<'_, PtyManager>, ids: Vec<u32>) -> Vec<(u32, String)> {
+    let home = std::env::var("HOME").ok();
+    ids.into_iter()
+        .filter_map(|id| {
+            let cwd = pty::process_cwd(mgr.pid(id)?)?;
+            let shown = match &home {
+                Some(h) if cwd == *h => "~".to_string(),
+                Some(h) if cwd.starts_with(&format!("{h}/")) => format!("~{}", &cwd[h.len()..]),
+                _ => cwd,
+            };
+            Some((id, shown))
+        })
+        .collect()
 }
 
 /// Quit confirmed by the frontend: "Quit anyway" from the guard modal, or a
@@ -171,10 +192,10 @@ fn main() {
             pty_write,
             pty_resize,
             pty_kill,
+            pty_cwds,
             force_quit,
             index::sessions_snapshot,
             index::set_starred,
-            index::toggle_pin,
             index::set_hidden,
             index::delete_session_permanently,
             index::session_chunks,

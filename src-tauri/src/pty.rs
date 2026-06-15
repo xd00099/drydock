@@ -105,6 +105,11 @@ impl PtyManager {
         self.sessions.lock().unwrap().is_empty()
     }
 
+    /// OS process id of the child behind `id`, while it's still live.
+    pub fn pid(&self, id: u32) -> Option<u32> {
+        self.sessions.lock().unwrap().get(&id).and_then(|s| s.child.process_id())
+    }
+
     /// Kill the child; the reader thread then sees EOF and fires on_exit + cleanup.
     pub fn kill(&self, id: u32) -> Result<()> {
         let mut map = self.sessions.lock().unwrap();
@@ -115,11 +120,67 @@ impl PtyManager {
     }
 }
 
+/// Current working directory of a process via the macOS `proc_pidinfo` KPI.
+/// Returns None on any error (incl. a dead pid or a process we can't inspect).
+///
+/// `PROC_PIDVNODEPATHINFO` fills a fixed-ABI `struct proc_vnodepathinfo`
+/// (sizeof 2352); its first member `pvi_cdir.vip_path` — the cwd — begins at
+/// offset 152 (= sizeof `struct vnode_info`). These constants are stable kernel
+/// ABI and are checked at runtime by `process_cwd_reads_own_dir`.
+#[cfg(target_os = "macos")]
+pub fn process_cwd(pid: u32) -> Option<String> {
+    const PROC_PIDVNODEPATHINFO: libc::c_int = 9;
+    const SIZE: usize = 2352;
+    const CDIR_PATH_OFFSET: usize = 152;
+    let mut buf = [0u8; SIZE];
+    // SAFETY: buf is exactly SIZE bytes; the kernel writes at most SIZE and
+    // returns the byte count. We read only within buf afterward.
+    let n = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            PROC_PIDVNODEPATHINFO,
+            0,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            SIZE as libc::c_int,
+        )
+    };
+    if n as usize != SIZE {
+        return None; // error, or kernel didn't fill the whole struct
+    }
+    let path = &buf[CDIR_PATH_OFFSET..];
+    let end = path.iter().position(|&b| b == 0)?;
+    if end == 0 {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&path[..end]).into_owned())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn process_cwd(_pid: u32) -> Option<String> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn process_cwd_reads_own_dir() {
+        // Validates the proc_pidinfo struct size/offset against ground truth:
+        // our own cwd. A wrong offset or size would mismatch here.
+        let got = process_cwd(std::process::id()).expect("self cwd readable");
+        let want = std::env::current_dir().unwrap();
+        assert_eq!(std::fs::canonicalize(got).unwrap(), std::fs::canonicalize(want).unwrap());
+    }
+
+    #[test]
+    fn process_cwd_of_dead_pid_is_none() {
+        // pid 0 is the kernel/scheduler — never inspectable as a vnode cwd.
+        assert!(process_cwd(0).is_none());
+    }
 
     #[test]
     fn spawn_collects_output_and_exit() {

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { SessionView } from './types'
-import { clip, relAge, shortPath } from './types'
+import { clip, relAge, sessionLabel, shortPath } from './types'
 
 type SearchResult = { session: SessionView; snippet: string }
 type SearchResponse = { results: SearchResult[]; semantic: string }
@@ -73,7 +73,7 @@ export default function SearchPalette({ open, onClose, onPick }: Props) {
             >
               <div>
                 <span style={{ marginRight: 6 }}>{r.session.live_status === 'busy' ? '🟢' : r.session.live_status === 'idle' ? '🟡' : ''}</span>
-                <span style={{ color: '#e8edf4' }}>{clip(r.session.title, 52)}</span>
+                <span style={{ color: '#e8edf4' }}>{clip(sessionLabel(r.session), 52)}</span>
                 {r.session.starred && <span style={{ color: '#e8c35a' }}> ★</span>}
                 <span style={{ float: 'right', color: '#5b6675' }}>{shortPath(r.session.project_path)} · {relAge(r.session.last_message_at)}</span>
               </div>

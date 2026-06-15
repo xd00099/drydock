@@ -4,15 +4,27 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tauri::{AppHandle, Emitter};
 
-#[derive(Debug, PartialEq, serde::Deserialize)]
-pub struct CardJson {
-    pub goal: String,
-    pub state: String,
-    pub next_step: String,
+/// One milestone in a session timeline. `detail` holds optional sub-bullets;
+/// `in_progress` marks the item the session is currently working on (the last).
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TimelineItem {
+    pub text: String,
+    #[serde(default)]
+    pub detail: Vec<String>,
+    #[serde(default)]
+    pub in_progress: bool,
 }
 
-/// Pull the {goal,state,next_step} object out of model output that may be
-/// fenced, prefixed, or wrapped in prose: take the first '{'..last '}' span.
+#[derive(Debug, PartialEq, serde::Deserialize)]
+pub struct CardJson {
+    /// ~5-word description of the session, used as its display title.
+    pub summary: String,
+    #[serde(default)]
+    pub timeline: Vec<TimelineItem>,
+}
+
+/// Pull the {summary,timeline} object out of model output that may be fenced,
+/// prefixed, or wrapped in prose: take the first '{'..last '}' span.
 pub fn extract_card_json(text: &str) -> Option<CardJson> {
     let start = text.find('{')?;
     let end = text.rfind('}')?;
@@ -29,14 +41,40 @@ fn tail_chars(s: &str, max_chars: usize) -> &str {
 
 fn build_prompt(title: &str, recap: Option<&str>, tail: &str) -> String {
     format!(
-        "You summarize a Claude Code session so its owner can resume instantly.\n\
+        "You summarize a Claude Code session so its owner can tell at a glance what it was and resume instantly.\n\
          Session title: {title}\n\
          Latest recap: {}\n\
          Transcript tail (role-tagged):\n{tail}\n\n\
-         Reply with ONLY strict JSON: {{\"goal\":\"...\",\"state\":\"...\",\"next_step\":\"...\"}} \
-         — each value at most 2 short sentences, in the language the user typed in.",
+         Reply with ONLY strict JSON in this exact shape:\n\
+         {{\"summary\":\"...\",\"timeline\":[{{\"text\":\"...\",\"detail\":[\"...\"],\"in_progress\":false}}]}}\n\
+         Rules:\n\
+         - \"summary\": a 3-6 word noun phrase naming what this session is about (e.g. \"telemetry via utils library\"). No verbs like \"helping with\", no punctuation.\n\
+         - \"timeline\": chronological milestones of what happened, earliest first. Each item's \"text\" is one short clause. Use \"detail\" (omit if empty) for a few sub-points under a milestone. Set \"in_progress\":true on the single last item if work is still ongoing; otherwise omit it.\n\
+         - Keep it tight: at most ~6 timeline items. Write in the language the user typed in.",
         recap.unwrap_or("(none)")
     )
+}
+
+/// The searchable payload indexed for a card: summary + every timeline clause
+/// and its details, newline-joined. Keyword + semantic search index this text.
+fn card_search_text(summary: &str, timeline: &[TimelineItem]) -> String {
+    let mut parts = vec![summary.to_string()];
+    for it in timeline {
+        parts.push(it.text.clone());
+        parts.extend(it.detail.iter().cloned());
+    }
+    parts.join("\n")
+}
+
+/// One-time: index a `card` search chunk for any card generated before card
+/// search existed, so old sessions become searchable without waiting for regen.
+fn backfill_card_search_chunks(store: &mut Store) {
+    for sid in store.cards_without_search_chunk().unwrap_or_default() {
+        if let Ok(Some(card)) = store.get_card(&sid) {
+            let timeline: Vec<TimelineItem> = serde_json::from_str(&card.timeline).unwrap_or_default();
+            let _ = store.put_card_search_chunk(&sid, &card_search_text(&card.summary, &timeline));
+        }
+    }
 }
 
 /// Wrap a string in single quotes for safe `sh -c` interpolation, escaping any
@@ -58,7 +96,7 @@ pub fn generate_card(db_path: &Path, session_id: &str) -> Result<(), String> {
     let joined: String = chunks
         .iter()
         .rev()
-        .take(30)
+        .take(40)
         .rev()
         .map(|c| c.text.as_str())
         .collect::<Vec<_>>()
@@ -101,10 +139,12 @@ pub fn generate_card(db_path: &Path, session_id: &str) -> Result<(), String> {
         serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())?;
     let result_text = envelope.get("result").and_then(|v| v.as_str()).ok_or("no result field")?;
     let card = extract_card_json(result_text).ok_or("result not card JSON")?;
+    let timeline_json = serde_json::to_string(&card.timeline).map_err(|e| e.to_string())?;
+    let search_text = card_search_text(&card.summary, &card.timeline);
 
     let mut store = Store::open(db_path).map_err(|e| e.to_string())?;
     store
-        .put_card(session_id, &card.goal, &card.state, &card.next_step, row.message_count)
+        .put_card(session_id, &card.summary, &timeline_json, &search_text, row.message_count)
         .map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -137,7 +177,16 @@ fn now_ms() -> i64 {
 /// Failing sessions back off exponentially instead of retrying every cycle.
 pub fn run(app: AppHandle, db_path: PathBuf) {
     let mut failures: Failures = Failures::new();
+    let mut backfilled = false;
     loop {
+        // Index search chunks for cards predating card-search (retries next cycle
+        // if the DB was locked by the initial sync on the first attempt).
+        if !backfilled {
+            if let Ok(mut store) = Store::open(&db_path) {
+                backfill_card_search_chunks(&mut store);
+                backfilled = true;
+            }
+        }
         let candidates = Store::open(&db_path)
             .ok()
             .and_then(|s| s.sessions_needing_cards(10, now_ms()).ok())
@@ -160,9 +209,8 @@ pub fn run(app: AppHandle, db_path: PathBuf) {
 
 #[derive(serde::Serialize)]
 pub struct CardView {
-    pub goal: String,
-    pub state: String,
-    pub next_step: String,
+    pub summary: String,
+    pub timeline: Vec<TimelineItem>,
     pub generated_at: i64,
 }
 
@@ -170,9 +218,9 @@ pub struct CardView {
 pub fn get_card(db: tauri::State<'_, crate::index::AppDb>, session_id: String) -> Result<Option<CardView>, String> {
     let store = db.0.lock().unwrap();
     Ok(store.get_card(&session_id).map_err(|e| e.to_string())?.map(|c| CardView {
-        goal: c.goal,
-        state: c.state,
-        next_step: c.next_step,
+        summary: c.summary,
+        // stored timeline is app-owned JSON; tolerate anything unparseable
+        timeline: serde_json::from_str(&c.timeline).unwrap_or_default(),
         generated_at: c.generated_at,
     }))
 }
@@ -208,14 +256,37 @@ mod tests {
 
     #[test]
     fn extracts_plain_fenced_and_wrapped_json() {
-        let plain = r#"{"goal":"g","state":"s","next_step":"n"}"#;
-        let fenced = "```json\n{\"goal\":\"g\",\"state\":\"s\",\"next_step\":\"n\"}\n```";
-        let wrapped = "Here you go: {\"goal\":\"g\",\"state\":\"s\",\"next_step\":\"n\"} hope that helps";
+        let body = r#"{"summary":"fix telemetry","timeline":[{"text":"a","detail":["x","y"]},{"text":"b","in_progress":true}]}"#;
+        let plain = body.to_string();
+        let fenced = format!("```json\n{body}\n```");
+        let wrapped = format!("Here you go: {body} hope that helps");
         for t in [plain, fenced, wrapped] {
-            let c = extract_card_json(t).unwrap();
-            assert_eq!((c.goal.as_str(), c.state.as_str(), c.next_step.as_str()), ("g", "s", "n"));
+            let c = extract_card_json(&t).unwrap();
+            assert_eq!(c.summary, "fix telemetry");
+            assert_eq!(c.timeline.len(), 2);
+            assert_eq!(c.timeline[0].detail, vec!["x".to_string(), "y".to_string()]);
+            assert!(!c.timeline[0].in_progress);
+            assert!(c.timeline[1].in_progress);
+            assert!(c.timeline[1].detail.is_empty());
         }
         assert!(extract_card_json("no json here").is_none());
+    }
+
+    #[test]
+    fn card_search_text_joins_summary_and_timeline() {
+        let timeline = vec![
+            TimelineItem { text: "set up indexer".into(), detail: vec!["sqlite".into(), "fts5".into()], in_progress: false },
+            TimelineItem { text: "wire search".into(), detail: vec![], in_progress: true },
+        ];
+        let t = card_search_text("telemetry pipeline", &timeline);
+        assert_eq!(t, "telemetry pipeline\nset up indexer\nsqlite\nfts5\nwire search");
+    }
+
+    #[test]
+    fn card_json_tolerates_missing_timeline() {
+        let c = extract_card_json(r#"{"summary":"just a summary"}"#).unwrap();
+        assert_eq!(c.summary, "just a summary");
+        assert!(c.timeline.is_empty());
     }
 
     #[test]
