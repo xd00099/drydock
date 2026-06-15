@@ -12,6 +12,15 @@ export type SessionView = {
 
 export type Snapshot = { sessions: SessionView[]; hidden: string[] }
 
+// In-pane "find within session" (⌘F). Each pane (terminal/transcript) exposes
+// this so the FindBar can drive it. `incremental` keeps the current match when
+// the query only grew (live typing), vs explicitly advancing on next/prev.
+export type FindDir = 'next' | 'prev'
+export type PaneSearch = {
+  find: (query: string, opts: { dir: FindDir; incremental?: boolean }) => void
+  clear: () => void
+}
+
 export type TimelineItem = { text: string; detail: string[]; in_progress: boolean }
 export type CardView = { summary: string; timeline: TimelineItem[]; generated_at: number }
 

@@ -8,8 +8,9 @@ import TerminalPane from './TerminalPane'
 import TranscriptView from './TranscriptView'
 import SearchPalette from './SearchPalette'
 import BriefingPanel from './BriefingPanel'
+import FindBar from './FindBar'
 import { useSessions } from './useSessions'
-import type { SessionView, Tab } from './types'
+import type { PaneSearch, SessionView, Tab } from './types'
 import { clip, sessionLabel } from './types'
 
 let nextTabId = 1
@@ -22,6 +23,12 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [claudeVersion, setClaudeVersion] = useState<string | null | 'checking'>('checking')
   const [shellDirs, setShellDirs] = useState<Record<number, string>>({})
+  // ⌘F find-in-session state; each pane registers a PaneSearch controller by id
+  const paneSearch = useRef<Record<number, PaneSearch | null>>({})
+  const [findOpen, setFindOpen] = useState(false)
+  const [findQuery, setFindQuery] = useState('')
+  const [findMatches, setFindMatches] = useState({ index: -1, count: 0 })
+  const [findNonce, setFindNonce] = useState(0)
 
   useEffect(() => {
     invoke<string | null>('check_claude').then(setClaudeVersion).catch(() => setClaudeVersion(null))
@@ -86,8 +93,18 @@ export default function App() {
   const closeTab = (id: number) => {
     setTabs((p) => p.filter((t) => t.id !== id))
     setShellDirs((d) => (id in d ? Object.fromEntries(Object.entries(d).filter(([k]) => Number(k) !== id)) : d))
+    delete paneSearch.current[id]
     const next = tabs.filter((t) => t.id !== id)
     setActiveId((a) => (a === id ? (next.length ? next[next.length - 1].id : null) : a))
+  }
+
+  const findStep = (dir: 'next' | 'prev') => {
+    if (activeId != null) paneSearch.current[activeId]?.find(findQuery, { dir })
+  }
+  const closeFind = () => {
+    setFindOpen(false)
+    Object.values(paneSearch.current).forEach((p) => p?.clear())
+    setFindMatches({ index: -1, count: 0 })
   }
 
   newShellRef.current = () => newShell()
@@ -125,8 +142,9 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.isComposing) return // never act on keys mid-IME-composition
-      // ⌘K and ⌘F both open the search palette (⌘F is the habitual "find")
-      if (e.metaKey && (e.key === 'k' || e.key === 'f')) { e.preventDefault(); setPaletteOpen((v) => !v) }
+      if (e.metaKey && e.key === 'k') { e.preventDefault(); setPaletteOpen((v) => !v) }
+      // ⌘F: find within the active session (terminal scrollback or transcript)
+      if (e.metaKey && e.key === 'f') { e.preventDefault(); if (tabsRef.current.length) { setFindOpen(true); setFindNonce((n) => n + 1) } }
       if (e.metaKey && e.key === 't') { e.preventDefault(); newShellRef.current() }
       if (e.metaKey && e.key === 'w') { e.preventDefault(); closeActiveRef.current() }
       if (e.metaKey && e.key === 'd') { e.preventDefault(); starActiveRef.current() }
@@ -161,6 +179,12 @@ export default function App() {
     return () => { cancelled = true; un?.() }
   }, [])
 
+  // live (incremental) find as the query changes, the bar opens, or the tab switches
+  useEffect(() => {
+    if (!findOpen || activeId == null) return
+    paneSearch.current[activeId]?.find(findQuery, { dir: 'next', incremental: true })
+  }, [findOpen, findQuery, activeId])
+
   return (
     <div style={{ display: 'flex', width: '100vw', height: '100vh', background: '#10141a' }}>
       {claudeVersion === null && (
@@ -183,12 +207,24 @@ export default function App() {
           {tabs.map((t) => (
             <div key={t.id} style={{ position: 'absolute', inset: 8, display: t.id === activeId ? 'block' : 'none' }}>
               {t.kind === 'pty' ? (
-                <TerminalPane id={t.id} program={t.program} args={t.args} cwd={t.cwd} visible={t.id === activeId} onExit={() => markExited(t.id)} onInteract={() => promote(t.id)} />
+                <TerminalPane
+                  ref={(h) => { paneSearch.current[t.id] = h }}
+                  id={t.id}
+                  program={t.program}
+                  args={t.args}
+                  cwd={t.cwd}
+                  visible={t.id === activeId}
+                  onExit={() => markExited(t.id)}
+                  onInteract={() => promote(t.id)}
+                  onMatches={(index, count) => setFindMatches({ index, count })}
+                />
               ) : (
                 <TranscriptView
+                  ref={(h) => { paneSearch.current[t.id] = h }}
                   sessionId={t.sessionId!}
                   session={sessions.find((x) => x.session_id === t.sessionId)}
                   onInteract={() => promote(t.id)}
+                  onMatches={(index, count) => setFindMatches({ index, count })}
                   onResumeHere={() => {
                     const s = sessions.find((x) => x.session_id === t.sessionId)
                     closeTab(t.id)
@@ -202,6 +238,17 @@ export default function App() {
             <div style={{ color: '#5b6675', fontFamily: 'system-ui', fontSize: 13, padding: 24 }}>
               Pick a session on the left, or ＋ for a shell.
             </div>
+          )}
+          {findOpen && (
+            <FindBar
+              query={findQuery}
+              onQuery={setFindQuery}
+              matches={findMatches}
+              focusNonce={findNonce}
+              onNext={() => findStep('next')}
+              onPrev={() => findStep('prev')}
+              onClose={closeFind}
+            />
           )}
         </div>
       </div>

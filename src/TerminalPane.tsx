@@ -1,8 +1,10 @@
-import { useEffect, useRef } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import { SearchAddon } from '@xterm/addon-search'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import type { PaneSearch } from './types'
 import '@xterm/xterm/css/xterm.css'
 
 type Props = {
@@ -13,6 +15,17 @@ type Props = {
   visible: boolean
   onExit: () => void
   onInteract?: () => void // any user input into the terminal
+  onMatches?: (index: number, count: number) => void // ⌘F find results (active match, total)
+}
+
+// ⌘F highlight colors: dim wash for all matches, amber for the active one.
+const DECORATIONS = {
+  matchBackground: '#3a4656',
+  matchBorder: '#5a6b82',
+  matchOverviewRuler: '#8ab4f8',
+  activeMatchBackground: '#e8c35a',
+  activeMatchBorder: '#e8c35a',
+  activeMatchColorOverviewRuler: '#e8c35a',
 }
 
 function b64ToBytes(b64: string): Uint8Array {
@@ -28,15 +41,35 @@ function bytesToB64(bytes: Uint8Array): string {
   return btoa(bin)
 }
 
-export default function TerminalPane({ id, program, args, cwd, visible, onExit, onInteract }: Props) {
+const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
+  { id, program, args, cwd, visible, onExit, onInteract, onMatches },
+  ref,
+) {
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
+  const searchRef = useRef<SearchAddon | null>(null)
   const readyRef = useRef(false)
   const onExitRef = useRef(onExit)
   onExitRef.current = onExit
   const onInteractRef = useRef(onInteract)
   onInteractRef.current = onInteract
+  const onMatchesRef = useRef(onMatches)
+  onMatchesRef.current = onMatches
+
+  useImperativeHandle(ref, (): PaneSearch => ({
+    find(query, { dir, incremental }) {
+      const search = searchRef.current
+      if (!search) return
+      if (!query) { search.clearDecorations(); onMatchesRef.current?.(-1, 0); return }
+      const opts = { incremental: !!incremental, decorations: DECORATIONS }
+      if (dir === 'prev') search.findPrevious(query, opts)
+      else search.findNext(query, opts)
+    },
+    clear() {
+      searchRef.current?.clearDecorations()
+    },
+  }), [])
 
   useEffect(() => {
     const host = hostRef.current
@@ -48,11 +81,15 @@ export default function TerminalPane({ id, program, args, cwd, visible, onExit, 
       theme: { background: '#10141a' },
     })
     const fit = new FitAddon()
+    const search = new SearchAddon()
     term.loadAddon(fit)
+    term.loadAddon(search)
     term.open(host)
     fit.fit()
     termRef.current = term
     fitRef.current = fit
+    searchRef.current = search
+    const resultsSub = search.onDidChangeResults((r) => onMatchesRef.current?.(r.resultIndex, r.resultCount))
 
     let disposed = false
     let unOut: UnlistenFn | null = null
@@ -92,6 +129,7 @@ export default function TerminalPane({ id, program, args, cwd, visible, onExit, 
       disposed = true
       ro.disconnect()
       dataSub.dispose()
+      resultsSub.dispose()
       unOut?.()
       unExit?.()
       if (readyRef.current) invoke('pty_kill', { id })
@@ -111,4 +149,6 @@ export default function TerminalPane({ id, program, args, cwd, visible, onExit, 
   }, [visible, id])
 
   return <div ref={hostRef} style={{ width: '100%', height: '100%' }} />
-}
+})
+
+export default TerminalPane
