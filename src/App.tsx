@@ -38,6 +38,7 @@ export default function App() {
   const newShellRef = useRef(() => {})
   const closeActiveRef = useRef(() => {})
   const starActiveRef = useRef(() => {})
+  const openFindRef = useRef(() => {})
 
   // replaceSession: sweep up stale tabs (exited ptys, superseded transcripts) for that session
   const addTab = (t: Omit<Tab, 'id' | 'exited'> & { exited?: boolean }, replaceSession?: string) => {
@@ -60,9 +61,13 @@ export default function App() {
     )
 
   const resume = (s: SessionView, opts?: { transcript?: boolean; permanent?: boolean }) => {
-    // already open in a running tab here: focus it instead of duplicating
-    const runningHere = tabs.find((t) => t.sessionId === s.session_id && t.kind === 'pty' && !t.exited)
-    if (runningHere) { setActiveId(runningHere.id); return }
+    // already open in a running tab here: focus it instead of duplicating — but
+    // an explicit transcript request (e.g. ⌘F's full-session search) still opens
+    // the transcript even while the session is running in a tab.
+    if (!opts?.transcript) {
+      const runningHere = tabs.find((t) => t.sessionId === s.session_id && t.kind === 'pty' && !t.exited)
+      if (runningHere) { setActiveId(runningHere.id); return }
+    }
     const preview = !opts?.permanent
     if (opts?.transcript || s.live_status !== 'ended') {
       // live in another terminal (or transcript explicitly requested): read-only
@@ -114,6 +119,18 @@ export default function App() {
     const s = active?.sessionId ? sessions.find((x) => x.session_id === active.sessionId) : undefined
     if (s) invoke('set_starred', { sessionId: s.session_id, starred: !s.starred }).then(refresh)
   }
+  // ⌘F: a Claude session runs as a fullscreen (alt-buffer) app, so the live
+  // terminal holds only the visible frame. Route find to its transcript, which
+  // has the whole conversation and scrolls to each match. Plain shells (no
+  // sessionId) keep searching their own scrollback.
+  openFindRef.current = () => {
+    const active = tabs.find((t) => t.id === activeId)
+    if (active?.kind === 'pty' && active.sessionId) {
+      const s = sessions.find((x) => x.session_id === active.sessionId)
+      if (s) resume(s, { transcript: true, permanent: true }) // opens/focuses the transcript tab
+    }
+    if (tabs.length) { setFindOpen(true); setFindNonce((n) => n + 1) }
+  }
 
   // Shell tabs are named after their live working directory. Poll the PTYs
   // (the backend reads each shell process's cwd from the OS) every 2s, and
@@ -143,8 +160,9 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       if (e.isComposing) return // never act on keys mid-IME-composition
       if (e.metaKey && e.key === 'k') { e.preventDefault(); setPaletteOpen((v) => !v) }
-      // ⌘F: find within the active session (terminal scrollback or transcript)
-      if (e.metaKey && e.key === 'f') { e.preventDefault(); if (tabsRef.current.length) { setFindOpen(true); setFindNonce((n) => n + 1) } }
+      // ⌘F: find within the active session (transcript for Claude sessions, else
+      // the terminal's own scrollback)
+      if (e.metaKey && e.key === 'f') { e.preventDefault(); openFindRef.current() }
       if (e.metaKey && e.key === 't') { e.preventDefault(); newShellRef.current() }
       if (e.metaKey && e.key === 'w') { e.preventDefault(); closeActiveRef.current() }
       if (e.metaKey && e.key === 'd') { e.preventDefault(); starActiveRef.current() }

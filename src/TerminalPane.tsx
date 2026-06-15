@@ -109,6 +109,7 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
       fontFamily: 'Menlo, Monaco, monospace',
       fontSize: 13,
       cursorBlink: true,
+      scrollback: 10000, // keep more history searchable (⌘F) in shell tabs
       theme: { background: '#10141a' },
     })
     const fit = new FitAddon()
