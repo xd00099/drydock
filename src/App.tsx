@@ -125,7 +125,8 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.isComposing) return // never act on keys mid-IME-composition
-      if (e.metaKey && e.key === 'k') { e.preventDefault(); setPaletteOpen((v) => !v) }
+      // ⌘K and ⌘F both open the search palette (⌘F is the habitual "find")
+      if (e.metaKey && (e.key === 'k' || e.key === 'f')) { e.preventDefault(); setPaletteOpen((v) => !v) }
       if (e.metaKey && e.key === 't') { e.preventDefault(); newShellRef.current() }
       if (e.metaKey && e.key === 'w') { e.preventDefault(); closeActiveRef.current() }
       if (e.metaKey && e.key === 'd') { e.preventDefault(); starActiveRef.current() }
