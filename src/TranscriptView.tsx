@@ -64,16 +64,20 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
 
   useImperativeHandle(ref, (): PaneSearch => ({
     find(query, { dir, incremental }) {
-      if (!query) { setHl({ q: '', active: -1 }); onMatchesRef.current?.(-1, 0); return }
-      const ms = computeMatches(chunksRef.current, query)
-      if (ms.length === 0) { setHl({ q: query, active: -1 }); onMatchesRef.current?.(-1, 0); return }
-      const prev = hlRef.current
-      let active: number
-      if (incremental) active = prev.active < 0 ? 0 : Math.min(prev.active, ms.length - 1) // live typing: hold position
-      else if (prev.q !== query || prev.active < 0) active = 0 // first search for this query
-      else active = dir === 'next' ? (prev.active + 1) % ms.length : (prev.active - 1 + ms.length) % ms.length
-      setHl({ q: query, active })
-      onMatchesRef.current?.(active, ms.length)
+      try {
+        if (!query) { setHl({ q: '', active: -1 }); onMatchesRef.current?.(-1, 0); return }
+        const ms = computeMatches(chunksRef.current, query)
+        if (ms.length === 0) { setHl({ q: query, active: -1 }); onMatchesRef.current?.(-1, 0); return }
+        const prev = hlRef.current
+        let active: number
+        if (incremental) active = prev.active < 0 ? 0 : Math.min(prev.active, ms.length - 1) // live typing: hold position
+        else if (prev.q !== query || prev.active < 0) active = 0 // first search for this query
+        else active = dir === 'next' ? (prev.active + 1) % ms.length : (prev.active - 1 + ms.length) % ms.length
+        setHl({ q: query, active })
+        onMatchesRef.current?.(active, ms.length)
+      } catch (e) {
+        console.error('transcript find failed:', e)
+      }
     },
     clear() { setHl({ q: '', active: -1 }) },
   }), [])

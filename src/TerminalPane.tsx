@@ -15,17 +15,7 @@ type Props = {
   visible: boolean
   onExit: () => void
   onInteract?: () => void // any user input into the terminal
-  onMatches?: (index: number, count: number) => void // ⌘F find results (active match, total)
-}
-
-// ⌘F highlight colors: dim wash for all matches, amber for the active one.
-const DECORATIONS = {
-  matchBackground: '#3a4656',
-  matchBorder: '#5a6b82',
-  matchOverviewRuler: '#8ab4f8',
-  activeMatchBackground: '#e8c35a',
-  activeMatchBorder: '#e8c35a',
-  activeMatchColorOverviewRuler: '#e8c35a',
+  onMatches?: (index: number, count: number) => void // ⌘F results (index<0 = count-only)
 }
 
 function b64ToBytes(b64: string): Uint8Array {
@@ -39,6 +29,38 @@ function bytesToB64(bytes: Uint8Array): string {
   let bin = ''
   for (const b of bytes) bin += String.fromCharCode(b)
   return btoa(bin)
+}
+
+// Count matches across the buffer ourselves (the search addon's decoration
+// "highlight all" path throws on wide/CJK columns). String-based, so wide chars
+// are counted correctly; wrapped rows are stitched into one logical line.
+function countTermMatches(term: Terminal, q: string): number {
+  if (!q) return 0
+  const needle = q.toLowerCase()
+  const buf = term.buffer.active
+  let count = 0
+  let logical = ''
+  const flush = () => {
+    if (logical) {
+      const hay = logical.toLowerCase()
+      let from = 0
+      for (;;) {
+        const idx = hay.indexOf(needle, from)
+        if (idx < 0) break
+        count++
+        from = idx + needle.length
+      }
+    }
+    logical = ''
+  }
+  for (let i = 0; i < buf.length; i++) {
+    const line = buf.getLine(i)
+    if (!line) continue
+    if (i > 0 && line.isWrapped) logical += line.translateToString(true)
+    else { flush(); logical = line.translateToString(true) }
+  }
+  flush()
+  return count
 }
 
 const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
@@ -60,14 +82,23 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
   useImperativeHandle(ref, (): PaneSearch => ({
     find(query, { dir, incremental }) {
       const search = searchRef.current
-      if (!search) return
-      if (!query) { search.clearDecorations(); onMatchesRef.current?.(-1, 0); return }
-      const opts = { incremental: !!incremental, decorations: DECORATIONS }
-      if (dir === 'prev') search.findPrevious(query, opts)
-      else search.findNext(query, opts)
+      const term = termRef.current
+      if (!search || !term) return
+      try {
+        if (!query) { search.clearDecorations(); onMatchesRef.current?.(-1, 0); return }
+        // No `decorations`: that path highlights all matches but throws on
+        // wide-char columns. Plain find still selects + scrolls to the match.
+        const opts = { caseSensitive: false }
+        if (dir === 'prev') search.findPrevious(query, opts)
+        else search.findNext(query, { ...opts, incremental: !!incremental })
+        onMatchesRef.current?.(-1, countTermMatches(term, query)) // index unknown, total counted
+      } catch (e) {
+        console.error('terminal find failed:', e)
+        onMatchesRef.current?.(-1, 0)
+      }
     },
     clear() {
-      searchRef.current?.clearDecorations()
+      searchRef.current?.clearDecorations() // also clears the selection
     },
   }), [])
 
@@ -89,7 +120,6 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
     termRef.current = term
     fitRef.current = fit
     searchRef.current = search
-    const resultsSub = search.onDidChangeResults((r) => onMatchesRef.current?.(r.resultIndex, r.resultCount))
 
     let disposed = false
     let unOut: UnlistenFn | null = null
@@ -129,7 +159,6 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
       disposed = true
       ro.disconnect()
       dataSub.dispose()
-      resultsSub.dispose()
       unOut?.()
       unExit?.()
       if (readyRef.current) invoke('pty_kill', { id })
