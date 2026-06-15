@@ -52,9 +52,12 @@ The bundle is written to `target/release/bundle/macos/Drydock.app`. It's unsigne
 | Shortcut | Action |
 |---|---|
 | ⌘K | Search all sessions |
+| ⌘F | Find within the active session (prev/next jumps to each match; Esc closes) |
 | ⌘T | New shell tab |
 | ⌘W | Close the active tab |
 | ⌘D | Star / unstar the active session |
+
+⌘F searches in place. In a live Claude session it overlays that session's full conversation (Claude runs fullscreen, so the terminal itself keeps no scrollback) and Esc returns you to the live terminal; in a plain shell it searches the terminal's own scrollback.
 
 Click a session in the sidebar to preview it; start typing in the terminal (or scroll a transcript) to keep the tab. Resuming an ended session reopens it in its original directory; a session that's live in another terminal opens read-only.
 

@@ -25,6 +25,8 @@ export default function App() {
   const [shellDirs, setShellDirs] = useState<Record<number, string>>({})
   // ⌘F find-in-session state; each pane registers a PaneSearch controller by id
   const paneSearch = useRef<Record<number, PaneSearch | null>>({})
+  // the in-place conversation overlay (a live Claude session's ⌘F target)
+  const overlaySearch = useRef<PaneSearch | null>(null)
   const [findOpen, setFindOpen] = useState(false)
   const [findQuery, setFindQuery] = useState('')
   const [findMatches, setFindMatches] = useState({ index: -1, count: 0 })
@@ -103,11 +105,20 @@ export default function App() {
     setActiveId((a) => (a === id ? (next.length ? next[next.length - 1].id : null) : a))
   }
 
-  const findStep = (dir: 'next' | 'prev') => {
-    if (activeId != null) paneSearch.current[activeId]?.find(findQuery, { dir })
-  }
+  // The active tab, and — while ⌘F is open over a live Claude session — the
+  // session id whose conversation the in-place overlay searches (see render).
+  const activeTab = tabs.find((t) => t.id === activeId)
+  const overlaySession =
+    findOpen && activeTab?.kind === 'pty' && activeTab.sessionId ? activeTab.sessionId : null
+
+  // Find routes to that overlay for a live Claude session, else to the active
+  // pane itself (a shell's scrollback or an open transcript tab).
+  const activeSearch = () =>
+    overlaySession ? overlaySearch.current : activeId != null ? paneSearch.current[activeId] : null
+  const findStep = (dir: 'next' | 'prev') => activeSearch()?.find(findQuery, { dir })
   const closeFind = () => {
     setFindOpen(false)
+    overlaySearch.current?.clear()
     Object.values(paneSearch.current).forEach((p) => p?.clear())
     setFindMatches({ index: -1, count: 0 })
   }
@@ -115,21 +126,19 @@ export default function App() {
   newShellRef.current = () => newShell()
   closeActiveRef.current = () => { if (activeId !== null) closeTab(activeId) }
   starActiveRef.current = () => {
-    const active = tabs.find((t) => t.id === activeId)
-    const s = active?.sessionId ? sessions.find((x) => x.session_id === active.sessionId) : undefined
+    const s = activeTab?.sessionId ? sessions.find((x) => x.session_id === activeTab.sessionId) : undefined
     if (s) invoke('set_starred', { sessionId: s.session_id, starred: !s.starred }).then(refresh)
   }
-  // ⌘F: a Claude session runs as a fullscreen (alt-buffer) app, so the live
-  // terminal holds only the visible frame. Route find to its transcript, which
-  // has the whole conversation and scrolls to each match. Plain shells (no
-  // sessionId) keep searching their own scrollback.
+  // ⌘F: find within the active session. A Claude session runs as a fullscreen
+  // (alt-buffer) app, so its live terminal holds only the visible frame — the
+  // whole conversation lives in the indexed transcript. Rather than yank the user
+  // to a separate tab, we overlay that transcript in place over the live terminal
+  // (see the overlay in the render below); Esc returns to the live session, which
+  // never stopped running. Shell tabs and open transcript tabs search themselves.
   openFindRef.current = () => {
-    const active = tabs.find((t) => t.id === activeId)
-    if (active?.kind === 'pty' && active.sessionId) {
-      const s = sessions.find((x) => x.session_id === active.sessionId)
-      if (s) resume(s, { transcript: true, permanent: true }) // opens/focuses the transcript tab
-    }
-    if (tabs.length) { setFindOpen(true); setFindNonce((n) => n + 1) }
+    if (!tabs.length) return
+    setFindOpen(true)
+    setFindNonce((n) => n + 1)
   }
 
   // Shell tabs are named after their live working directory. Poll the PTYs
@@ -160,8 +169,8 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       if (e.isComposing) return // never act on keys mid-IME-composition
       if (e.metaKey && e.key === 'k') { e.preventDefault(); setPaletteOpen((v) => !v) }
-      // ⌘F: find within the active session (transcript for Claude sessions, else
-      // the terminal's own scrollback)
+      // ⌘F: find within the active session (in-place conversation overlay for a
+      // live Claude session, else the terminal's own scrollback)
       if (e.metaKey && e.key === 'f') { e.preventDefault(); openFindRef.current() }
       if (e.metaKey && e.key === 't') { e.preventDefault(); newShellRef.current() }
       if (e.metaKey && e.key === 'w') { e.preventDefault(); closeActiveRef.current() }
@@ -200,7 +209,8 @@ export default function App() {
   // live (incremental) find as the query changes, the bar opens, or the tab switches
   useEffect(() => {
     if (!findOpen || activeId == null) return
-    paneSearch.current[activeId]?.find(findQuery, { dir: 'next', incremental: true })
+    activeSearch()?.find(findQuery, { dir: 'next', incremental: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [findOpen, findQuery, activeId])
 
   return (
@@ -257,6 +267,20 @@ export default function App() {
               Pick a session on the left, or ＋ for a shell.
             </div>
           )}
+          {/* ⌘F on a live Claude session: overlay its full conversation in place
+              (terminal stays live underneath; Esc closes and returns to it). */}
+          {overlaySession && (
+            <div style={{ position: 'absolute', inset: 8, zIndex: 10, background: '#10141a' }}>
+              <TranscriptView
+                ref={(h) => { overlaySearch.current = h }}
+                overlay
+                sessionId={overlaySession}
+                session={sessions.find((x) => x.session_id === overlaySession)}
+                onMatches={(index, count) => setFindMatches({ index, count })}
+                onResumeHere={() => {}}
+              />
+            </div>
+          )}
           {findOpen && (
             <FindBar
               query={findQuery}
@@ -271,13 +295,12 @@ export default function App() {
         </div>
       </div>
       {(() => {
-        const active = tabs.find((t) => t.id === activeId)
-        if (!active?.sessionId) return null
-        const s = sessions.find((x) => x.session_id === active.sessionId)
+        if (!activeTab?.sessionId) return null
+        const s = sessions.find((x) => x.session_id === activeTab.sessionId)
         return (
           <BriefingPanel
-            key={active.sessionId}
-            sessionId={active.sessionId}
+            key={activeTab.sessionId}
+            sessionId={activeTab.sessionId}
             starred={!!s?.starred}
             onToggleStar={
               s ? () => invoke('set_starred', { sessionId: s.session_id, starred: !s.starred }).then(refresh) : undefined

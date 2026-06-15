@@ -11,6 +11,7 @@ type Props = {
   onResumeHere: () => void
   onInteract?: () => void // scrolling/clicking the transcript body
   onMatches?: (index: number, count: number) => void // ⌘F find results (active match, total)
+  overlay?: boolean // rendered as an in-place ⌘F overlay over a live session (no resume affordance)
 }
 
 type Match = { ci: number; start: number; len: number }
@@ -34,7 +35,7 @@ function computeMatches(chunks: ChunkView[], q: string): Match[] {
 }
 
 const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
-  { sessionId, session, onResumeHere, onInteract, onMatches },
+  { sessionId, session, onResumeHere, onInteract, onMatches, overlay },
   ref,
 ) {
   const [chunks, setChunks] = useState<ChunkView[]>([])
@@ -97,6 +98,19 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
     if (hl.active >= 0) activeMarkRef.current?.scrollIntoView({ block: 'center' })
   }, [hl.active, hl.q])
 
+  // Chunks load async. If a query was already set when they arrive (e.g. ⌘F
+  // reopened with a retained query before the transcript finished fetching),
+  // recompute and re-report so the count isn't stuck at the empty-buffer value.
+  useEffect(() => {
+    const q = hlRef.current.q
+    if (!q) return
+    const ms = computeMatches(chunksRef.current, q)
+    const cur = hlRef.current.active
+    const active = ms.length === 0 ? -1 : Math.min(cur < 0 ? 0 : cur, ms.length - 1)
+    if (active !== cur) setHl({ q, active })
+    onMatchesRef.current?.(active, ms.length)
+  }, [chunks])
+
   const renderText = (text: string, ms?: { start: number; len: number; gi: number }[]) => {
     if (!ms || ms.length === 0) return text
     const nodes: React.ReactNode[] = []
@@ -122,14 +136,20 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
   const live = session && session.live_status !== 'ended'
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', color: '#c8cdd5', fontFamily: 'system-ui', fontSize: 13 }}>
-      <div style={{ padding: '6px 10px', background: '#161c25', display: 'flex', alignItems: 'center', gap: 10 }}>
-        <span>
-          {live
-            ? `running in another terminal (${session?.live_status}) — read-only live view`
-            : 'session ended'}
-        </span>
-        {!live && <button onClick={onResumeHere}>Resume here</button>}
-      </div>
+      {overlay ? (
+        <div style={{ padding: '6px 10px', background: '#161c25', display: 'flex', alignItems: 'center', gap: 10, fontSize: 12 }}>
+          <span style={{ color: '#7d8794' }}>⌕ Searching this conversation — press Esc to return to the live session</span>
+        </div>
+      ) : (
+        <div style={{ padding: '6px 10px', background: '#161c25', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span>
+            {live
+              ? `running in another terminal (${session?.live_status}) — read-only live view`
+              : 'session ended'}
+          </span>
+          {!live && <button onClick={onResumeHere}>Resume here</button>}
+        </div>
+      )}
       <div onWheel={onInteract} onMouseDown={onInteract} style={{ flex: 1, overflowY: 'auto', padding: 12, whiteSpace: 'pre-wrap', fontFamily: 'Menlo, monospace', fontSize: 12 }}>
         {chunks.map((c, i) => (
           <div key={i} style={{ marginBottom: 10, color: c.role === 'recap' ? '#e8c35a' : c.role === 'user' ? '#8ab4f8' : '#c8cdd5' }}>
