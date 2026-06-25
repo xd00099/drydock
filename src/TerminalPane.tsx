@@ -2,6 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
+import { WebglAddon } from '@xterm/addon-webgl'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { PaneSearch } from './types'
@@ -31,36 +32,85 @@ function bytesToB64(bytes: Uint8Array): string {
   return btoa(bin)
 }
 
-// Count matches across the buffer ourselves (the search addon's decoration
-// "highlight all" path throws on wide/CJK columns). String-based, so wide chars
-// are counted correctly; wrapped rows are stitched into one logical line.
-function countTermMatches(term: Terminal, q: string): number {
-  if (!q) return 0
+// The search addon navigates to matches, but its "highlight all" decoration
+// path throws on wide/CJK columns — so we never enable it, which also means it
+// can't give us a match index. To still show a "n of m" counter we walk the
+// buffer ourselves: count every match and locate the one the addon just
+// selected. Everything is string-based and cell-width-aware, so CJK (the user
+// types Chinese) and wrapped rows are handled correctly.
+type TermMatchInfo = { count: number; index: number } // index: 0-based active match, -1 if none/unknown
+function termMatchInfo(term: Terminal, q: string): TermMatchInfo {
+  if (!q) return { count: 0, index: -1 }
   const needle = q.toLowerCase()
   const buf = term.buffer.active
+  // The addon leaves the active match selected. getSelectionPosition is 1-based
+  // and in absolute-buffer coords (same space as getLine) — map its start cell
+  // to an offset within the logical line so we can match it to a found index.
+  const sel = term.getSelectionPosition()
+  const selRow = sel ? sel.start.y - 1 : -1
+  const selCol = sel ? sel.start.x - 1 : -1
+
   let count = 0
+  let index = -1
   let logical = ''
+  let rows: { row: number; off: number }[] = [] // each physical row's start offset within `logical`
+
   const flush = () => {
     if (logical) {
+      // Offset of the selected match within this logical line, if it lives here.
+      let selOff = -1
+      const rs = selRow >= 0 ? rows.find((r) => r.row === selRow) : undefined
+      if (rs) {
+        const line = buf.getLine(selRow)
+        let prefix = 0 // chars before selCol (a wide cell counts once; its width-0 tail is skipped)
+        if (line) for (let x = 0; x < selCol; x++) {
+          const cell = line.getCell(x)
+          if (cell && cell.getWidth() > 0) prefix++
+        }
+        selOff = rs.off + prefix
+      }
       const hay = logical.toLowerCase()
       let from = 0
       for (;;) {
         const idx = hay.indexOf(needle, from)
         if (idx < 0) break
+        if (idx === selOff) index = count // the match the addon selected
         count++
         from = idx + needle.length
       }
     }
     logical = ''
+    rows = []
   }
+
   for (let i = 0; i < buf.length; i++) {
     const line = buf.getLine(i)
     if (!line) continue
-    if (i > 0 && line.isWrapped) logical += line.translateToString(true)
-    else { flush(); logical = line.translateToString(true) }
+    // Build each row exactly like the search addon's own stitching: trim trailing
+    // blanks ONLY on the last row of a logical line (a wrapped continuation keeps
+    // its full width), and drop the lone padding cell left when a wide char
+    // wraps to the next row. Matching the addon byte-for-byte keeps our count and
+    // index in sync with the match it actually selected (e.g. queries with spaces).
+    const next = i + 1 < buf.length ? buf.getLine(i + 1) : undefined
+    const continues = !!next && next.isWrapped
+    let s = line.translateToString(!continues)
+    if (continues && next) {
+      const last = line.getCell(line.length - 1)
+      if (last && last.getCode() === 0 && last.getWidth() === 1 && next.getCell(0)?.getWidth() === 2) {
+        s = s.slice(0, -1)
+      }
+    }
+    if (i > 0 && line.isWrapped) {
+      rows.push({ row: i, off: logical.length })
+      logical += s
+    } else {
+      flush()
+      rows.push({ row: i, off: 0 })
+      logical = s
+    }
   }
   flush()
-  return count
+  return { count, index }
 }
 
 const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
@@ -87,11 +137,14 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
       try {
         if (!query) { search.clearDecorations(); onMatchesRef.current?.(-1, 0); return }
         // No `decorations`: that path highlights all matches but throws on
-        // wide-char columns. Plain find still selects + scrolls to the match.
+        // wide-char columns. Plain find still selects + scrolls to the match;
+        // we derive the "n of m" counter ourselves from the selection.
         const opts = { caseSensitive: false }
-        if (dir === 'prev') search.findPrevious(query, opts)
-        else search.findNext(query, { ...opts, incremental: !!incremental })
-        onMatchesRef.current?.(-1, countTermMatches(term, query)) // index unknown, total counted
+        const found = dir === 'prev'
+          ? search.findPrevious(query, opts)
+          : search.findNext(query, { ...opts, incremental: !!incremental })
+        const info = termMatchInfo(term, query)
+        onMatchesRef.current?.(found ? info.index : -1, info.count)
       } catch (e) {
         console.error('terminal find failed:', e)
         onMatchesRef.current?.(-1, 0)
@@ -117,6 +170,20 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
     term.loadAddon(fit)
     term.loadAddon(search)
     term.open(host)
+    // GPU renderer. Claude repaints its whole alt-screen view on every scroll
+    // tick and wraps each frame in "synchronized output" (DEC mode 2026) so a
+    // terminal paints it atomically. xterm's default DOM renderer ignores 2026
+    // and applies those big repaints incrementally — which reads as scroll jank
+    // and "can't reach the bottom." WebGL paints each frame on the GPU (fast +
+    // crisp). Fall back to the DOM renderer if WebGL is unavailable or its
+    // context is lost (e.g. many live terminals exceed the browser's GL contexts).
+    try {
+      const webgl = new WebglAddon()
+      webgl.onContextLoss(() => webgl.dispose()) // dispose → xterm reverts to DOM
+      term.loadAddon(webgl)
+    } catch {
+      /* no GPU / WebGL blocked — DOM renderer stays; still fully functional */
+    }
     fit.fit()
     termRef.current = term
     fitRef.current = fit

@@ -51,6 +51,9 @@ impl PtyManager {
             cmd.cwd(c);
         }
         cmd.env("TERM", "xterm-256color");
+        // xterm.js renders 24-bit color; advertise it so Claude (and other TUIs)
+        // emit truecolor instead of quantizing to the 256-color palette.
+        cmd.env("COLORTERM", "truecolor");
         for (k, v) in self.extra_env.iter() {
             cmd.env(k, v);
         }
