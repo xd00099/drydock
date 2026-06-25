@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod capabilities;
 mod embedder;
 mod enricher;
 mod index;
@@ -202,7 +203,9 @@ fn main() {
             search::search,
             enricher::get_card,
             enricher::refresh_card,
-            enricher::check_claude
+            enricher::check_claude,
+            capabilities::list_skills,
+            capabilities::list_mcp_servers
         ])
         .build(tauri::generate_context!())
         .expect("error while running Drydock")

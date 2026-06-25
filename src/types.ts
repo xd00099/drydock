@@ -24,6 +24,10 @@ export type PaneSearch = {
 export type TimelineItem = { text: string; detail: string[]; in_progress: boolean }
 export type CardView = { summary: string; timeline: TimelineItem[]; generated_at: number }
 
+// Read-only capability views for the right panel (from ~/.claude, secrets stripped)
+export type Skill = { name: string; description: string; plugin: string }
+export type McpServer = { name: string; kind: string; detail: string; scope: string }
+
 /** Display label for a session: AI summary when present, else its raw title. */
 export function sessionLabel(s: SessionView): string {
   return s.summary && s.summary.trim() ? s.summary : s.title
