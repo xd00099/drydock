@@ -2,10 +2,12 @@ import { useEffect, useRef, useState } from 'react'
 import type { SessionView } from './types'
 import { clampPanelWidth, clip, loadNum, relAge, sessionColor, sessionLabel, shortPath } from './types'
 import ResizeHandle from './ResizeHandle'
+import LiveIndicator from './LiveIndicator'
 
 type Props = {
   sessions: SessionView[]
   hidden: string[] // session ids the user hid from Drydock
+  activeSessionId: string | null // session shown in the active tab — highlighted in the list
   onResume: (s: SessionView) => void
   onNewSession: (projectPath: string) => void
   onToggleStar: (s: SessionView) => void
@@ -58,13 +60,14 @@ function loadSet(key: string): Set<string> {
   try { return new Set(JSON.parse(localStorage.getItem(key) || '[]') as string[]) } catch { return new Set() }
 }
 
-function groupDot(list: SessionView[]): string {
-  if (list.some((s) => s.live_status === 'busy')) return '🟢'
-  if (list.some((s) => s.live_status === 'idle')) return '🟡'
-  return ''
+// The strongest live status across a (collapsed) group's sessions.
+function groupStatus(list: SessionView[]): SessionView['live_status'] | null {
+  if (list.some((s) => s.live_status === 'busy')) return 'busy'
+  if (list.some((s) => s.live_status === 'idle')) return 'idle'
+  return null
 }
 
-export default function Sidebar({ sessions, hidden, onResume, onNewSession, onToggleStar, onHide, onDelete }: Props) {
+export default function Sidebar({ sessions, hidden, activeSessionId, onResume, onNewSession, onToggleStar, onHide, onDelete }: Props) {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('dd.sidebarCollapsed') === '1')
   const [width, setWidth] = useState(() => loadNum('dd.sidebarWidth', 300))
   const widthRef = useRef(width)
@@ -111,19 +114,18 @@ export default function Sidebar({ sessions, hidden, onResume, onNewSession, onTo
   // One session row, shared by the Starred section and project groups.
   const sessionRow = (s: SessionView, showProject: boolean) => {
     const isHidden = hiddenSet.has(s.session_id)
+    const isActive = s.session_id === activeSessionId // session shown in the active tab
     const sub = showProject ? shortPath(s.project_path) : s.latest_recap
     return (
       <button
         key={s.session_id}
-        style={{ ...S.row, opacity: isHidden ? 0.45 : 1, borderLeftColor: sessionColor(s.session_id), background: sessionColor(s.session_id, 0.1) }}
+        style={{ ...S.row, opacity: isHidden ? 0.45 : 1, borderLeftColor: sessionColor(s.session_id), background: sessionColor(s.session_id, isActive ? 0.3 : 0.1) }}
         onClick={() => onResume(s)}
         onContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, s }) }}
         title={`${s.title}\n${s.session_id}\n(right-click for options)`}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          {(s.live_status === 'busy' || s.live_status === 'idle') && (
-            <span style={{ flexShrink: 0 }}>{s.live_status === 'busy' ? '🟢' : '🟡'}</span>
-          )}
+          <LiveIndicator status={s.live_status} />
           <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#e8edf4' }}>
             {sessionLabel(s)}
           </span>
@@ -177,7 +179,7 @@ export default function Sidebar({ sessions, hidden, onResume, onNewSession, onTo
                 {shortPath(g.path)}
               </span>
               <span style={{ color: '#5b6675' }}>{g.sessions.length}</span>
-              {isClosed && <span>{groupDot(g.sessions)}</span>}
+              {isClosed && <LiveIndicator status={groupStatus(g.sessions)} />}
               <button style={S.btn} title="New claude session here" onClick={() => onNewSession(g.path)}>＋</button>
             </div>
             {!isClosed && g.sessions.map((s) => sessionRow(s, false))}

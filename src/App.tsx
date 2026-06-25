@@ -223,6 +223,7 @@ export default function App() {
       <Sidebar
         sessions={sessions}
         hidden={hidden}
+        activeSessionId={activeTab?.sessionId ?? null}
         onResume={resume}
         onNewSession={newSession}
         onToggleStar={(s) => invoke('set_starred', { sessionId: s.session_id, starred: !s.starred }).then(refresh)}
@@ -301,6 +302,7 @@ export default function App() {
           <BriefingPanel
             key={activeTab.sessionId}
             sessionId={activeTab.sessionId}
+            projectPath={s?.project_path}
             starred={!!s?.starred}
             onToggleStar={
               s ? () => invoke('set_starred', { sessionId: s.session_id, starred: !s.starred }).then(refresh) : undefined
@@ -314,7 +316,10 @@ export default function App() {
         onPick={(s, transcript) => resume(s, { transcript })}
       />
       {quitGuard && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        // zIndex + own compositing layer: every other overlay has a z-index, but
+        // this modal had none, so over a terminal's WebGL canvas WebKit painted it
+        // on top yet routed clicks to the canvas (visible but not clickable).
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, transform: 'translateZ(0)' }}>
           <div style={{ background: '#161c25', color: '#e8edf4', padding: 20, borderRadius: 8, fontFamily: 'system-ui', fontSize: 13 }}>
             <div style={{ marginBottom: 12 }}>Sessions are still running in tabs. Quit anyway?</div>
             <button onClick={() => invoke('force_quit')} style={{ marginRight: 8 }}>Quit anyway</button>
