@@ -15,6 +15,10 @@ import { clip, sessionLabel, uuidv4 } from './types'
 
 let nextTabId = 1
 const EMPTY_ARTIFACTS: Artifact[] = [] // stable ref so an artifact-less panel doesn't churn
+// Artifacts live only in memory (never written to disk). Bound that memory: a
+// session that re-renders many times keeps only its most recent N (each up to
+// the backend's 4 MB cap); older versions are dropped.
+const MAX_ARTIFACTS_PER_TAB = 20
 
 export default function App() {
   const { sessions, hidden, refresh } = useSessions()
@@ -117,7 +121,15 @@ export default function App() {
 
   const newShell = () => addTab({ title: 'shell', kind: 'pty', program: null, args: ['-l'], cwd: null, terminal: true })
 
-  const markExited = (id: number) => setTabs((p) => p.map((t) => (t.id === id ? { ...t, exited: true } : t)))
+  // A session's process exiting (claude quit / killed) frees its artifacts right
+  // away — they're in-memory only, so an ended session shouldn't keep holding
+  // them. The tab can stay open to read the final transcript; closeTab also
+  // frees them for the case where the tab is closed while still live.
+  const markExited = (id: number) => {
+    setTabs((p) => p.map((t) => (t.id === id ? { ...t, exited: true } : t)))
+    setArtifactsByTab((d) => { if (!(id in d)) return d; const n = { ...d }; delete n[id]; return n })
+    setUnread((d) => { if (!(id in d)) return d; const n = { ...d }; delete n[id]; return n })
+  }
 
   const closeTab = (id: number) => {
     setTabs((p) => p.filter((t) => t.id !== id))
@@ -246,7 +258,11 @@ export default function App() {
       const p = e.payload
       const kind: ArtifactKind = p.kind === 'svg' || p.kind === 'markdown' ? p.kind : 'html'
       const art: Artifact = { id: p.id, title: p.title || 'Untitled', kind, content: p.content }
-      setArtifactsByTab((prev) => ({ ...prev, [p.pty_id]: [...(prev[p.pty_id] ?? []), art] }))
+      setArtifactsByTab((prev) => {
+        const next = [...(prev[p.pty_id] ?? []), art]
+        if (next.length > MAX_ARTIFACTS_PER_TAB) next.splice(0, next.length - MAX_ARTIFACTS_PER_TAB)
+        return { ...prev, [p.pty_id]: next }
+      })
       if (p.pty_id !== activeIdRef.current) setUnread((u) => ({ ...u, [p.pty_id]: (u[p.pty_id] ?? 0) + 1 }))
     }).then((u) => { if (cancelled) u(); else un = u })
     return () => { cancelled = true; un?.() }
