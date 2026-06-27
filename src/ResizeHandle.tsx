@@ -14,13 +14,36 @@ export default function ResizeHandle({ onDelta, onEnd }: Props) {
   const start = (e: React.MouseEvent) => {
     e.preventDefault()
     let lastX = e.clientX
-    const move = (ev: MouseEvent) => { onDelta(ev.clientX - lastX); lastX = ev.clientX }
+    let pending = 0
+    let raf = 0
+    // Apply the accumulated delta at most once per frame: high-frequency
+    // mousemove (trackpads/120Hz) would otherwise trigger a layout + an artifact
+    // iframe reflow on every event.
+    const flush = () => { raf = 0; if (pending !== 0) { onDelta(pending); pending = 0 } }
+    const move = (ev: MouseEvent) => {
+      pending += ev.clientX - lastX
+      lastX = ev.clientX
+      if (!raf) raf = requestAnimationFrame(flush)
+    }
+    // A transparent full-viewport shield placed ABOVE everything during the drag.
+    // The Artifacts panel renders a sandboxed iframe, which is a separate
+    // document that captures mouse events whenever the cursor is over it — so
+    // without the shield the drag freezes the instant the cursor crosses the
+    // iframe (the parent window stops receiving mousemove). The shield keeps
+    // every event on the parent document.
+    const shield = document.createElement('div')
+    shield.style.cssText = 'position:fixed;inset:0;z-index:2147483647;cursor:col-resize'
+    document.body.appendChild(shield)
     const up = () => {
       window.removeEventListener('mousemove', move)
       window.removeEventListener('mouseup', up)
+      if (raf) cancelAnimationFrame(raf)
+      if (pending !== 0) { onDelta(pending); pending = 0 } // apply the final delta
+      shield.remove()
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
-      onEnd?.()
+      // persist after the final width commits next frame, so onEnd reads it fresh
+      requestAnimationFrame(() => onEnd?.())
     }
     window.addEventListener('mousemove', move)
     window.addEventListener('mouseup', up)
