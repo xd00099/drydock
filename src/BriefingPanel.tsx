@@ -233,13 +233,13 @@ function PreviewTab({ artifacts }: { artifacts: Artifact[] }) {
   }, [full])
 
   if (artifacts.length === 0)
-    return <div style={S.muted}>No preview yet. When Claude renders an artifact (HTML, SVG, or Markdown) in this session, it shows up here.</div>
+    return <div style={{ ...S.muted, flex: 1, minHeight: 0, padding: 12 }}>No preview yet. When Claude renders an artifact (HTML, SVG, or Markdown) in this session, it shows up here.</div>
 
   // Default to the newest; a manual pick sticks until that artifact is gone.
   const current = artifacts.find((a) => a.id === selectedId) ?? artifacts[artifacts.length - 1]
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px 8px' }}>
         <span style={{ ...S.name, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={current.title}>{current.title}</span>
         <span style={S.chip}>{current.kind}</span>
         <button style={S.iconBtn} title="Expand to full window" onClick={() => setFull(true)}>⤢</button>
@@ -248,14 +248,15 @@ function PreviewTab({ artifacts }: { artifacts: Artifact[] }) {
         <select
           value={current.id}
           onChange={(e) => setSelectedId(e.target.value)}
-          style={{ background: '#161c25', color: '#d6dbe3', border: '1px solid #2c3647', borderRadius: 4, padding: '3px 4px', fontSize: 11 }}
+          style={{ margin: '0 12px 8px', background: '#161c25', color: '#d6dbe3', border: '1px solid #2c3647', borderRadius: 4, padding: '3px 4px', fontSize: 11 }}
         >
           {artifacts.map((a, i) => (
             <option key={a.id} value={a.id}>{i + 1}. {a.title} ({a.kind})</option>
           ))}
         </select>
       )}
-      <ArtifactView artifact={current} style={{ height: 360, borderRadius: 6, border: '1px solid #1d2530' }} />
+      {/* Fill the rest of the panel edge-to-edge, no frame. */}
+      <ArtifactView artifact={current} style={{ flex: 1, minHeight: 0, border: 'none', borderRadius: 0 }} />
       {full && (
         // Full-window overlay so UI artifacts get usable space. zIndex below the
         // quit guard (100); translateZ(0) gives it its own compositing layer so
@@ -294,6 +295,23 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
     return () => { cancelled = true; un?.() }
   }, [refresh])
 
+  // When a NEW artifact arrives for this tab, surface it: jump to the Preview
+  // sub-tab, open the panel if collapsed, and give it room (~1/3 of the window,
+  // never shrinking a panel the user already widened).
+  const seenArtifacts = useRef(artifacts.length)
+  useEffect(() => {
+    if (artifacts.length > seenArtifacts.current) {
+      setTab('preview'); localStorage.setItem('dd.rightTab', 'preview')
+      setCollapsed(false); localStorage.setItem('dd.briefingCollapsed', '0')
+      setWidth((w) => {
+        const next = Math.max(w, clampPanelWidth(Math.round(window.innerWidth / 3)))
+        localStorage.setItem('dd.briefingWidth', String(next))
+        return next
+      })
+    }
+    seenArtifacts.current = artifacts.length
+  }, [artifacts.length])
+
   const toggleCollapsed = () =>
     setCollapsed((c) => { const n = !c; localStorage.setItem('dd.briefingCollapsed', n ? '1' : '0'); return n })
   const selectTab = (t: RightTab) => { setTab(t); localStorage.setItem('dd.rightTab', t) }
@@ -313,8 +331,8 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
         onDelta={(dx) => setWidth((w) => clampPanelWidth(w - dx))}
         onEnd={() => localStorage.setItem('dd.briefingWidth', String(widthRef.current))}
       />
-      <div style={{ width, minWidth: width, boxSizing: 'border-box', background: '#0b0e13', padding: 12, fontFamily: 'system-ui', fontSize: 12, overflowY: 'auto' }}>
-        <div style={{ display: 'flex', alignItems: 'stretch', gap: 6, marginBottom: 12 }}>
+      <div style={{ width, minWidth: width, boxSizing: 'border-box', background: '#0b0e13', fontFamily: 'system-ui', fontSize: 12, display: 'flex', flexDirection: 'column', height: '100%' }}>
+        <div style={{ display: 'flex', alignItems: 'stretch', gap: 6, padding: '12px 12px 0', flex: 'none' }}>
           <button onClick={toggleCollapsed} title="Collapse panel" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#7d8794', fontSize: 15, padding: 0, lineHeight: 1, alignSelf: 'flex-end', marginBottom: 4 }}>»</button>
           <div style={{ display: 'flex', flex: 1, gap: 2 }}>
             {TABS.map((t) => (
@@ -326,10 +344,16 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
           </div>
         </div>
 
-        {tab === 'briefing' && <BriefingTab sessionId={sessionId} card={card} starred={starred} onToggleStar={onToggleStar} />}
-        {tab === 'skills' && <SkillsTab />}
-        {tab === 'mcp' && <McpTab projectPath={projectPath} />}
-        {tab === 'preview' && <PreviewTab artifacts={artifacts} />}
+        {/* Preview fills the panel edge-to-edge; the other tabs scroll inside padding. */}
+        {tab === 'preview' ? (
+          <PreviewTab artifacts={artifacts} />
+        ) : (
+          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 12 }}>
+            {tab === 'briefing' && <BriefingTab sessionId={sessionId} card={card} starred={starred} onToggleStar={onToggleStar} />}
+            {tab === 'skills' && <SkillsTab />}
+            {tab === 'mcp' && <McpTab projectPath={projectPath} />}
+          </div>
+        )}
       </div>
     </div>
   )

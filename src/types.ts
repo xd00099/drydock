@@ -83,9 +83,10 @@ export function loadNum(key: string, fallback: number): number {
   return Number.isFinite(v) && v > 0 ? v : fallback
 }
 
-/** Clamp a side-panel width to sensible drag bounds. */
+/** Clamp a side-panel width to sensible drag bounds. Upper bound is roomy so the
+ *  Preview panel can auto-size to ~1/3 of the window for rendered artifacts. */
 export function clampPanelWidth(w: number): number {
-  return Math.max(180, Math.min(560, w))
+  return Math.max(180, Math.min(900, w))
 }
 
 /** Last path segment ("/Users/x/Desktop" → "Desktop", "~" → "~", "/" → "/"). */
