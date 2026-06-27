@@ -26,18 +26,31 @@ function toSrcDoc(a: Artifact): string {
   return isDoc ? clean : wrapDoc(clean)
 }
 
-/** Renders one artifact in a locked-down iframe. Three independent layers keep
- *  model-authored HTML from running code: DOMPurify strips scripts/handlers;
- *  `sandbox=""` disables scripting + same-origin entirely; and the inherited
- *  main CSP (`script-src 'self'`) blocks any inline script in the srcdoc. */
+/** Renders one artifact in a locked-down iframe.
+ *
+ *  HTML artifacts are meant to run (charts, animations, click handlers), so they
+ *  are served from their own isolated `artifact://` origin (the backend scheme
+ *  handler) under a per-artifact CSP that allows inline + well-known-CDN scripts
+ *  but blocks outbound network (`connect-src 'none'`). The `sandbox` here keeps
+ *  scripting on but withholds `allow-same-origin`, so the frame runs in an opaque
+ *  origin walled off from the app — it cannot reach the parent, the filesystem,
+ *  or Drydock's own APIs, and (no `allow-top-navigation`) cannot navigate us away.
+ *
+ *  SVG/Markdown never need scripting, so they keep the strict path: DOMPurify
+ *  strips scripts/handlers, `sandbox=""` disables scripting, and the inherited
+ *  app CSP blocks inline scripts — three independent layers. */
 export default function ArtifactView({ artifact, style }: { artifact: Artifact; style?: React.CSSProperties }) {
-  const srcDoc = useMemo(() => toSrcDoc(artifact), [artifact])
-  return (
-    <iframe
-      title={artifact.title}
-      sandbox=""
-      srcDoc={srcDoc}
-      style={{ width: '100%', height: '100%', border: 'none', background: '#0f1115', ...style }}
-    />
-  )
+  const srcDoc = useMemo(() => (artifact.kind === 'html' ? '' : toSrcDoc(artifact)), [artifact])
+  const baseStyle: React.CSSProperties = { width: '100%', height: '100%', border: 'none', background: '#0f1115', ...style }
+  if (artifact.kind === 'html') {
+    return (
+      <iframe
+        title={artifact.title}
+        sandbox="allow-scripts allow-modals"
+        src={`artifact://localhost/${encodeURIComponent(artifact.id)}`}
+        style={baseStyle}
+      />
+    )
+  }
+  return <iframe title={artifact.title} sandbox="" srcDoc={srcDoc} style={baseStyle} />
 }

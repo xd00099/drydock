@@ -313,7 +313,21 @@ fn macos_menu(handle: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>
 }
 
 fn main() {
-    let builder = tauri::Builder::default();
+    let builder = tauri::Builder::default()
+        // Serve HTML artifacts from their own isolated `artifact://` origin so
+        // they run their JavaScript under a locked-down per-artifact CSP (charts,
+        // animations, clicks) instead of inheriting the app's strict CSP, which
+        // would block all scripts. The id is the trailing path segment; the bytes
+        // live in ArtifactServer (managed state), evicted on session exit.
+        .register_uri_scheme_protocol("artifact", |ctx, req| {
+            use tauri::Manager;
+            let id = req.uri().path().trim_start_matches('/').to_string();
+            let html = ctx
+                .app_handle()
+                .try_state::<artifacts::ArtifactServer>()
+                .and_then(|s| s.lookup_html(&id));
+            artifacts::artifact_response(html)
+        });
     #[cfg(target_os = "macos")]
     let builder = builder.menu(macos_menu).on_menu_event(|app, event| {
         if event.id() == QUIT_MENU_ID {
