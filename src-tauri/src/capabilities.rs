@@ -101,14 +101,21 @@ fn collect_plugin_skills(cache: &Path, out: &mut Vec<Skill>, seen: &mut BTreeSet
     }
 }
 
-pub fn skills() -> Vec<Skill> {
+/// All skills available to a session: plugin skills + personal
+/// (`~/.claude/skills`) + this project's own (`<project>/.claude/skills`).
+/// Personal and project are separate groups (different `plugin` key), so a
+/// project skill that shadows a personal one shows under "project" instead of
+/// being deduped away.
+pub fn skills(project_path: Option<&str>) -> Vec<Skill> {
     let mut out: Vec<Skill> = Vec::new();
     let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
-    let Some(home) = home() else {
-        return out;
-    };
-    collect_plugin_skills(&home.join(".claude/plugins/cache"), &mut out, &mut seen);
-    collect_skill_dir(&home.join(".claude/skills"), "personal", &mut out, &mut seen);
+    if let Some(home) = home() {
+        collect_plugin_skills(&home.join(".claude/plugins/cache"), &mut out, &mut seen);
+        collect_skill_dir(&home.join(".claude/skills"), "personal", &mut out, &mut seen);
+    }
+    if let Some(p) = project_path {
+        collect_skill_dir(&Path::new(p).join(".claude/skills"), "project", &mut out, &mut seen);
+    }
     out.sort_by(|a, b| a.plugin.cmp(&b.plugin).then_with(|| a.name.cmp(&b.name)));
     out
 }
@@ -324,8 +331,8 @@ pub fn mcp_status(project_path: Option<&str>) -> Vec<(String, String)> {
 // ---- tauri commands -----------------------------------------------------
 
 #[tauri::command]
-pub fn list_skills() -> Vec<Skill> {
-    skills()
+pub fn list_skills(project_path: Option<String>) -> Vec<Skill> {
+    skills(project_path.as_deref())
 }
 
 #[cfg(test)]
@@ -338,6 +345,23 @@ mod tests {
         let (name, desc) = parse_skill_frontmatter(md).unwrap();
         assert_eq!(name, "my-skill");
         assert_eq!(desc, "Does a thing. Use when X.");
+    }
+
+    #[test]
+    fn skills_picks_up_project_scoped_skill() {
+        let root = std::env::temp_dir().join(format!("drydock-skills-test-{}", std::process::id()));
+        let skill_dir = root.join(".claude/skills/proj-helper");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: proj-helper\ndescription: A project skill.\n---\nbody",
+        )
+        .unwrap();
+        let got = skills(Some(root.to_str().unwrap()));
+        let found = got.iter().find(|s| s.name == "proj-helper").expect("project skill listed");
+        assert_eq!(found.plugin, "project");
+        assert_eq!(found.description, "A project skill.");
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

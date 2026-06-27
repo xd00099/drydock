@@ -119,10 +119,10 @@ function BriefingTab({ sessionId, card, starred, onToggleStar }: { sessionId: st
   )
 }
 
-function SkillsTab() {
-  // Skills are global, but fetching per-mount (~17 file reads) keeps them fresh
-  // when plugins change and avoids a module cache that would pin a transient
-  // failure forever.
+function SkillsTab({ projectPath }: { projectPath?: string }) {
+  // Fetched per-mount (~17 file reads) so it stays fresh when plugins change and
+  // a transient failure isn't pinned by a module cache. Includes plugin +
+  // personal (~/.claude) skills and this project's own (<project>/.claude/skills).
   const [state, setState] = useState<'loading' | 'error' | Skill[]>('loading')
   // Groups start collapsed (just a header + count); persisted so an expand
   // survives the panel's per-session remount.
@@ -130,11 +130,11 @@ function SkillsTab() {
   useEffect(() => {
     let live = true
     setState('loading')
-    invoke<Skill[]>('list_skills')
+    invoke<Skill[]>('list_skills', { projectPath: projectPath ?? null })
       .then((s) => live && setState(s))
       .catch(() => live && setState('error'))
     return () => { live = false }
-  }, [])
+  }, [projectPath])
 
   const toggle = (plugin: string) =>
     setExpanded((prev) => {
@@ -155,7 +155,7 @@ function SkillsTab() {
   }
   return (
     <div>
-      <div style={{ color: '#5b6675', fontSize: 10, marginBottom: 8 }}>{state.length} skills · available to every session</div>
+      <div style={{ color: '#5b6675', fontSize: 10, marginBottom: 8 }}>{state.length} skills · plugin, personal &amp; project</div>
       {[...groups.entries()].map(([plugin, list]) => {
         const open = expanded.has(plugin)
         return (
@@ -456,7 +456,7 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
         ) : (
           <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 12 }}>
             {tab === 'briefing' && <BriefingTab sessionId={sessionId} card={card} starred={starred} onToggleStar={onToggleStar} />}
-            {tab === 'skills' && <SkillsTab />}
+            {tab === 'skills' && <SkillsTab projectPath={projectPath} />}
             {tab === 'mcp' && <McpTab projectPath={projectPath} />}
           </div>
         )}
