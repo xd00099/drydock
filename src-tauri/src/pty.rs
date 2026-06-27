@@ -121,6 +121,25 @@ impl PtyManager {
         }
         Ok(())
     }
+
+    /// Terminate every live session — used when quitting Drydock so no claude
+    /// process is left running in the background. Each PTY slave is its own
+    /// session/group leader (the pty layer calls setsid), so signalling the
+    /// negative pid hits the WHOLE group: claude AND anything it spawned (MCP
+    /// servers, tool subprocesses), not just the foreground process. SIGKILL is
+    /// deliberate — quitting must be deterministic, and claude persists its
+    /// transcript incrementally so there's nothing to flush.
+    pub fn kill_all(&self) {
+        let mut map = self.sessions.lock().unwrap();
+        for s in map.values_mut() {
+            #[cfg(unix)]
+            if let Some(pid) = s.child.process_id() {
+                // SAFETY: a plain kill(2); a stale pid just yields ESRCH.
+                unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+            }
+            let _ = s.child.kill(); // fallback (and the non-unix path)
+        }
+    }
 }
 
 /// Current working directory of a process via the macOS `proc_pidinfo` KPI.
@@ -268,6 +287,33 @@ mod tests {
         mgr.kill(3).unwrap();
         // on_exit fires after the reader thread removes the map entry
         exit_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(mgr.is_empty());
+    }
+
+    #[test]
+    fn kill_all_terminates_every_session() {
+        let mgr = PtyManager::default();
+        let (exit_tx, exit_rx) = mpsc::channel::<()>();
+        for id in [10u32, 11, 12] {
+            let tx = exit_tx.clone();
+            mgr.spawn(
+                id,
+                "/bin/sh",
+                &["-c".into(), "sleep 30".into()],
+                None,
+                80,
+                24,
+                |_, _| {},
+                move |_, _| { let _ = tx.send(()); },
+            )
+            .unwrap();
+        }
+        assert!(!mgr.is_empty());
+        mgr.kill_all();
+        // every session's reader sees EOF and fires on_exit
+        for _ in 0..3 {
+            exit_rx.recv_timeout(Duration::from_secs(5)).expect("session should exit");
+        }
         assert!(mgr.is_empty());
     }
 }

@@ -245,9 +245,12 @@ fn set_mcp_enabled(
 }
 
 /// Quit confirmed by the frontend: "Quit anyway" from the guard modal, or a
-/// ⌘Q that the frontend found no live tabs for.
+/// ⌘Q that the frontend found no live tabs for. Terminate every running session
+/// first so quitting Drydock doesn't leave orphaned claude processes behind.
 #[tauri::command]
 fn force_quit(app: AppHandle) {
+    use tauri::Manager;
+    app.state::<PtyManager>().kill_all();
     app.exit(0)
 }
 
