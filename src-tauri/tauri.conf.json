@@ -13,7 +13,10 @@
     "windows": [
       { "title": "Drydock", "width": 1100, "height": 720, "minWidth": 600, "minHeight": 400 }
     ],
-    "security": { "csp": null }
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; frame-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'",
+      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost ws://localhost:5173 http://localhost:5173; frame-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'"
+    }
   },
   "bundle": {
     "active": true,
