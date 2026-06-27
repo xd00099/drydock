@@ -28,6 +28,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tauri::http::{Response, StatusCode};
 use tauri::{AppHandle, Emitter};
 
 /// MCP server name (the key in the injected --mcp-config). The tool the model
@@ -50,9 +51,49 @@ const TOOL_DESCRIPTION: &str = "Render a self-contained visual artifact (HTML pa
 /// gets an isError result it can react to.
 const MAX_CONTENT: usize = 4 * 1024 * 1024;
 
+/// Keep at most this many HTML artifacts per session in the served store, so a
+/// session that re-renders many times can't grow memory without bound (mirrors
+/// the frontend's per-tab cap). Older ones are evicted by arrival order.
+const MAX_ARTIFACTS_PER_PTY: usize = 20;
+
+/// Minimal dark-theme wrapper for an HTML *fragment* (a full document keeps its
+/// own head/styles). Kept small and inline so a fragment still reads on the dark
+/// panel; full pages style themselves.
+const ARTIFACT_FRAME_CSS: &str = ":root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;padding:16px;background:#0f1115;color:#e8edf4;font-family:system-ui,-apple-system,sans-serif;font-size:14px;line-height:1.55}";
+
+/// Content-Security-Policy served WITH each HTML artifact (its own isolated
+/// `artifact://` origin, so this — not the main app's strict CSP — governs it).
+/// Intent: run the artifact's own JavaScript (inline + a few well-known CDN
+/// libraries) so charts/animations/clicks work like Chrome, but block it from
+/// sending data back out (`connect-src 'none'`: no fetch/XHR/WebSocket/beacon)
+/// or navigating/embedding anything. 'self' is deliberately unused — the iframe
+/// runs sandboxed (opaque origin), so we permit by explicit source, not origin.
+const ARTIFACT_CSP: &str = "default-src 'none'; \
+script-src 'unsafe-inline' 'unsafe-eval' blob: https://cdn.jsdelivr.net https://unpkg.com https://cdnjs.cloudflare.com https://cdn.tailwindcss.com https://cdn.plot.ly https://d3js.org; \
+style-src 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com https://cdnjs.cloudflare.com https://fonts.googleapis.com; \
+img-src data: blob: https:; \
+media-src data: blob: https:; \
+font-src data: https://fonts.gstatic.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; \
+worker-src blob:; \
+connect-src 'none'; frame-src 'none'; child-src blob:; object-src 'none'; base-uri 'none'; form-action 'none'";
+
 /// Per-session render token → (owning pty tab id, that session's working
 /// directory). The cwd resolves relative `path` arguments to render_artifact.
 type Tokens = Arc<Mutex<HashMap<String, (u32, Option<PathBuf>)>>>;
+
+/// One HTML artifact held for the webview to fetch over the `artifact://` scheme.
+/// `seq` is the monotonic id (also the map key as a string), used to evict the
+/// oldest when a session exceeds the per-pty cap.
+struct Stored {
+    pty_id: u32,
+    seq: u64,
+    html: String,
+}
+
+/// Artifact id (string form of the monotonic counter) → stored HTML. Only HTML
+/// artifacts live here; SVG/Markdown ride the event payload and render in a
+/// sanitized srcdoc, so they never need a fetchable origin.
+type Store = Arc<Mutex<HashMap<String, Stored>>>;
 
 /// Artifact pushed to the webview. Field names cross to the frontend verbatim.
 #[derive(Clone, serde::Serialize)]
@@ -69,6 +110,7 @@ struct ArtifactEvent {
 pub struct ArtifactServer {
     pub port: u16,
     tokens: Tokens,
+    store: Store,
 }
 
 impl ArtifactServer {
@@ -81,9 +123,16 @@ impl ArtifactServer {
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         let port = listener.local_addr()?.port();
         let tokens: Tokens = Arc::new(Mutex::new(HashMap::new()));
+        let store: Store = Arc::new(Mutex::new(HashMap::new()));
         let t = Arc::clone(&tokens);
-        std::thread::spawn(move || serve(listener, t, app));
-        Ok(Self { port, tokens })
+        let s = Arc::clone(&store);
+        std::thread::spawn(move || serve(listener, t, s, app));
+        Ok(Self { port, tokens, store })
+    }
+
+    /// Stored HTML for an artifact id, for the `artifact://` scheme handler.
+    pub fn lookup_html(&self, id: &str) -> Option<String> {
+        self.store.lock().unwrap().get(id).map(|s| s.html.clone())
     }
 
     /// Mint a token for a tab id (call once per claude spawn). `cwd` is the
@@ -95,9 +144,11 @@ impl ArtifactServer {
         token
     }
 
-    /// Drop every token for a tab id (on pty exit).
+    /// Drop every token AND stored artifact for a tab id (on pty exit) — an
+    /// ended session keeps nothing in memory.
     pub fn release(&self, pty_id: u32) {
         self.tokens.lock().unwrap().retain(|_, v| v.0 != pty_id);
+        self.store.lock().unwrap().retain(|_, s| s.pty_id != pty_id);
     }
 
     /// Shared handle to the token map, for an exit closure that outlives `&self`.
@@ -114,15 +165,16 @@ fn random_token() -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
 }
 
-fn serve(listener: TcpListener, tokens: Tokens, app: AppHandle) {
+fn serve(listener: TcpListener, tokens: Tokens, store: Store, app: AppHandle) {
     let counter = Arc::new(AtomicU64::new(1));
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
         let tokens = Arc::clone(&tokens);
+        let store = Arc::clone(&store);
         let app = app.clone();
         let counter = Arc::clone(&counter);
         std::thread::spawn(move || {
-            let _ = handle_conn(stream, &tokens, &app, &counter);
+            let _ = handle_conn(stream, &tokens, &store, &app, &counter);
         });
     }
 }
@@ -130,6 +182,7 @@ fn serve(listener: TcpListener, tokens: Tokens, app: AppHandle) {
 fn handle_conn(
     mut stream: TcpStream,
     tokens: &Tokens,
+    store: &Store,
     app: &AppHandle,
     counter: &AtomicU64,
 ) -> std::io::Result<()> {
@@ -176,16 +229,22 @@ fn handle_conn(
 
         let routed = route(&req.body, cwd.as_deref());
         for e in &routed.emits {
-            let id = counter.fetch_add(1, Ordering::Relaxed);
+            let seq = counter.fetch_add(1, Ordering::Relaxed);
+            let id = seq.to_string();
+            // HTML artifacts run their own JS, so they are served from the
+            // isolated `artifact://` origin (see artifact_response) and pulled in
+            // by the webview via an <iframe src> — stash the bytes here and send
+            // NO content on the event. SVG/Markdown need no scripting; they ride
+            // the event payload and render through the sanitized srcdoc path.
+            let content = if e.kind == "html" {
+                store_insert(store, &id, pty_id, seq, &e.content);
+                String::new()
+            } else {
+                e.content.clone()
+            };
             let _ = app.emit(
                 "artifact",
-                ArtifactEvent {
-                    pty_id,
-                    id: id.to_string(),
-                    title: e.title.clone(),
-                    kind: e.kind.clone(),
-                    content: e.content.clone(),
-                },
+                ArtifactEvent { pty_id, id, title: e.title.clone(), kind: e.kind.clone(), content },
             );
         }
         match &routed.json {
@@ -529,6 +588,62 @@ fn tools_call(id: Value, msg: &Value, cwd: Option<&Path>) -> Routed {
     }
 }
 
+// ---- HTML artifact store + `artifact://` rendering --------------------------
+
+/// Store one HTML artifact under `id`, then evict this pty's oldest if it now
+/// exceeds the per-session cap (oldest = smallest `seq`).
+fn store_insert(store: &Store, id: &str, pty_id: u32, seq: u64, html: &str) {
+    let mut m = store.lock().unwrap();
+    m.insert(id.to_string(), Stored { pty_id, seq, html: html.to_string() });
+    let mut mine: Vec<(String, u64)> =
+        m.iter().filter(|(_, s)| s.pty_id == pty_id).map(|(k, s)| (k.clone(), s.seq)).collect();
+    if mine.len() > MAX_ARTIFACTS_PER_PTY {
+        mine.sort_by_key(|(_, seq)| *seq);
+        for (k, _) in mine.iter().take(mine.len() - MAX_ARTIFACTS_PER_PTY) {
+            m.remove(k);
+        }
+    }
+}
+
+/// Whether `html` is already a full document (keep it verbatim) vs a bare
+/// fragment we need to wrap. Mirrors the frontend's srcdoc heuristic.
+fn is_full_document(html: &str) -> bool {
+    let head = html.get(..html.len().min(512)).unwrap_or(html).to_ascii_lowercase();
+    head.contains("<!doctype") || head.contains("<html")
+}
+
+/// The exact HTML document served for an artifact: a full page passes through;
+/// a fragment gets the minimal dark-theme wrapper.
+fn build_artifact_document(html: &str) -> String {
+    if is_full_document(html) {
+        html.to_string()
+    } else {
+        format!(
+            "<!doctype html><html><head><meta charset=\"utf-8\"><style>{ARTIFACT_FRAME_CSS}</style></head><body>{html}</body></html>"
+        )
+    }
+}
+
+/// Build the HTTP response the `artifact://` scheme handler returns: the stored
+/// HTML under the locked-down [`ARTIFACT_CSP`] (its own origin governs it, not
+/// the app's strict CSP), or a 404 when the id is unknown/evicted.
+pub fn artifact_response(html: Option<String>) -> Response<Vec<u8>> {
+    match html {
+        Some(h) => Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "text/html; charset=utf-8")
+            .header("Content-Security-Policy", ARTIFACT_CSP)
+            .header("X-Content-Type-Options", "nosniff")
+            .body(build_artifact_document(&h).into_bytes())
+            .unwrap(),
+        None => Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header("Content-Type", "text/plain; charset=utf-8")
+            .body(b"artifact not found".to_vec())
+            .unwrap(),
+    }
+}
+
 /// A tool-level failure: a normal result with isError:true, so the model sees it
 /// and can correct itself (vs a protocol error that aborts the call).
 fn tool_error(id: Value, text: &str) -> Routed {
@@ -769,6 +884,68 @@ mod tests {
             String::from_utf8(buf).unwrap(),
             "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         );
+    }
+
+    #[test]
+    fn store_caps_artifacts_per_pty_evicting_oldest() {
+        let store: Store = Arc::new(Mutex::new(HashMap::new()));
+        let n = MAX_ARTIFACTS_PER_PTY as u64 + 5;
+        for i in 1..=n {
+            store_insert(&store, &i.to_string(), 7, i, &format!("<p>{i}</p>"));
+        }
+        let m = store.lock().unwrap();
+        let mine = m.values().filter(|s| s.pty_id == 7).count();
+        assert_eq!(mine, MAX_ARTIFACTS_PER_PTY, "cap holds");
+        assert!(!m.contains_key("1"), "oldest evicted");
+        assert!(m.contains_key(&n.to_string()), "newest retained");
+    }
+
+    #[test]
+    fn store_cap_is_per_pty_not_global() {
+        let store: Store = Arc::new(Mutex::new(HashMap::new()));
+        // two sessions each fill to the cap; neither evicts the other's
+        for i in 1..=(MAX_ARTIFACTS_PER_PTY as u64) {
+            store_insert(&store, &format!("a{i}"), 1, i, "x");
+            store_insert(&store, &format!("b{i}"), 2, 1000 + i, "y");
+        }
+        let m = store.lock().unwrap();
+        assert_eq!(m.values().filter(|s| s.pty_id == 1).count(), MAX_ARTIFACTS_PER_PTY);
+        assert_eq!(m.values().filter(|s| s.pty_id == 2).count(), MAX_ARTIFACTS_PER_PTY);
+    }
+
+    #[test]
+    fn is_full_document_detects_doc_vs_fragment() {
+        assert!(is_full_document("<!doctype html><html></html>"));
+        assert!(is_full_document("<HTML><body>x</body></HTML>"));
+        assert!(!is_full_document("<div>hi</div>"));
+        assert!(!is_full_document("<svg></svg>"));
+    }
+
+    #[test]
+    fn artifact_response_serves_html_under_locked_csp() {
+        let r = artifact_response(Some("<div>hi</div>".to_string()));
+        assert_eq!(r.status(), 200);
+        let csp = r.headers().get("Content-Security-Policy").unwrap().to_str().unwrap();
+        assert!(csp.contains("script-src 'unsafe-inline'"), "JS allowed: {csp}");
+        assert!(csp.contains("connect-src 'none'"), "data send-out blocked: {csp}");
+        assert_eq!(r.headers().get("Content-Type").unwrap(), "text/html; charset=utf-8");
+        let body = String::from_utf8(r.body().clone()).unwrap();
+        assert!(body.contains("<div>hi</div>"));
+        assert!(body.to_ascii_lowercase().contains("<!doctype"), "fragment is wrapped");
+    }
+
+    #[test]
+    fn artifact_response_passes_full_document_through_unwrapped() {
+        let doc = "<!doctype html><html><head></head><body><script>1</script></body></html>";
+        let r = artifact_response(Some(doc.to_string()));
+        let body = String::from_utf8(r.body().clone()).unwrap();
+        assert_eq!(body, doc, "a full page is served verbatim, not double-wrapped");
+    }
+
+    #[test]
+    fn artifact_response_unknown_id_is_404() {
+        let r = artifact_response(None);
+        assert_eq!(r.status(), 404);
     }
 
     #[test]
