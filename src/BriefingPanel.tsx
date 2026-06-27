@@ -19,7 +19,7 @@ const TABS: { id: RightTab; label: string }[] = [
   { id: 'briefing', label: 'Briefing' },
   { id: 'skills', label: 'Skills' },
   { id: 'mcp', label: 'MCP' },
-  { id: 'preview', label: 'Preview' },
+  { id: 'preview', label: 'Artifacts' }, // id stays 'preview' so saved dd.rightTab keeps working
 ]
 
 const loadStrSet = (key: string): Set<string> => {
@@ -259,7 +259,7 @@ function McpTab({ projectPath }: { projectPath?: string }) {
   const dotFor = (s: McpServer): { status: string; title: string } => {
     if (s.builtin)
       return s.enabled
-        ? { status: 'connected', title: 'Listening · renders to the Preview tab' }
+        ? { status: 'connected', title: 'Listening · renders to the Artifacts tab' }
         : { status: 'unknown', title: 'Off — new sessions won’t get the render tool' }
     if (status === null) return { status: 'checking', title: 'Checking…' }
     const st = status[s.name] ?? 'unknown'
@@ -315,7 +315,7 @@ function McpTab({ projectPath }: { projectPath?: string }) {
                   <div key={t} style={{ paddingLeft: 24, marginTop: 4 }}>
                     <div style={S.name}>{t}</div>
                     {s.builtin && (
-                      <div style={S.desc}>Renders a self-contained HTML / SVG / Markdown artifact into Drydock’s Preview tab.</div>
+                      <div style={S.desc}>Renders a self-contained HTML / SVG / Markdown artifact into Drydock’s Artifacts tab.</div>
                     )}
                   </div>
                 ))}
@@ -339,7 +339,7 @@ function PreviewTab({ artifacts }: { artifacts: Artifact[] }) {
   }, [full])
 
   if (artifacts.length === 0)
-    return <div style={{ ...S.muted, flex: 1, minHeight: 0, padding: 12 }}>No preview yet. When Claude renders an artifact (HTML, SVG, or Markdown) in this session, it shows up here.</div>
+    return <div style={{ ...S.muted, flex: 1, minHeight: 0, padding: 12 }}>No artifacts yet. When Claude renders an artifact (HTML, SVG, or Markdown) in this session, it shows up here.</div>
 
   // Default to the newest; a manual pick sticks until that artifact is gone.
   const current = artifacts.find((a) => a.id === selectedId) ?? artifacts[artifacts.length - 1]

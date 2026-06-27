@@ -42,7 +42,7 @@ export type McpServer = {
 export type McpStatus = 'connected' | 'failed' | 'pending' | 'unknown'
 
 // A visual artifact a session rendered via the loopback MCP server, shown in the
-// right-panel "Preview" tab. `id` is server-assigned (stable React key).
+// right-panel "Artifacts" tab. `id` is server-assigned (stable React key).
 export type ArtifactKind = 'html' | 'svg' | 'markdown'
 export type Artifact = { id: string; title: string; kind: ArtifactKind; content: string }
 

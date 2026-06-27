@@ -1,5 +1,5 @@
 //! Loopback MCP server that lets a Claude Code session render an artifact in
-//! Drydock's right-panel "Preview" tab.
+//! Drydock's right-panel "Artifacts" tab.
 //!
 //! Why this shape (see docs/artifact-preview.md for the full rationale): Claude
 //! Code is a terminal MCP *client* and cannot render HTML. But because Drydock
@@ -39,9 +39,9 @@ pub const TOOL_ID: &str = "mcp__drydock-artifacts__render_artifact";
 /// line with NO single quotes/apostrophes — it is spliced single-quoted into the
 /// shell `-c` command. It names the exact tool id because current Claude Code may
 /// defer/lazy-load MCP tool schemas, so the model needs an explicit pointer.
-pub const NUDGE: &str = "You are running inside Drydock, which has a Preview side panel. When you create a self-contained visual artifact for the user to look at (an HTML page or UI mockup, an SVG image or diagram, or a Markdown document), ALSO call the tool mcp__drydock-artifacts__render_artifact with a short title, the kind (html, svg, or markdown), and the complete content, so it renders in the Preview panel. It renders locally inside Drydock and is not published to claude.ai. Prefer calling this tool whenever the user would benefit from seeing the result, in addition to any file you write.";
+pub const NUDGE: &str = "You are running inside Drydock, which has an Artifacts side panel. When you create a self-contained visual artifact for the user to look at (an HTML page or UI mockup, an SVG image or diagram, or a Markdown document), ALSO call the tool mcp__drydock-artifacts__render_artifact with a short title, the kind (html, svg, or markdown), and the complete content, so it renders in the Artifacts panel. It renders locally inside Drydock and is not published to claude.ai. Prefer calling this tool whenever the user would benefit from seeing the result, in addition to any file you write.";
 
-const TOOL_DESCRIPTION: &str = "Render a self-contained visual artifact in Drydock's Preview side panel so the user can SEE it immediately. Use this whenever you produce something visual to look at — an HTML page or UI mockup, an SVG image/diagram, or a Markdown document — instead of only writing a file or printing code. The artifact renders locally inside Drydock and is NOT published to claude.ai.";
+const TOOL_DESCRIPTION: &str = "Render a self-contained visual artifact in Drydock's Artifacts side panel so the user can SEE it immediately. Use this whenever you produce something visual to look at — an HTML page or UI mockup, an SVG image/diagram, or a Markdown document — instead of only writing a file or printing code. The artifact renders locally inside Drydock and is NOT published to claude.ai.";
 
 /// Reject content larger than this (bytes). Bounds webview memory; the model
 /// gets an isError result it can react to.
@@ -457,7 +457,7 @@ fn tools_call(id: Value, msg: &Value, _pty_id: u32) -> Routed {
             "jsonrpc": "2.0",
             "id": id,
             "result": {
-                "content": [{ "type": "text", "text": format!("Rendered \"{title}\" in Drydock's Preview panel.") }]
+                "content": [{ "type": "text", "text": format!("Rendered \"{title}\" in Drydock's Artifacts panel.") }]
             }
         })),
         emits: vec![Emit { title: title.to_string(), kind: kind.to_string(), content: content.to_string() }],

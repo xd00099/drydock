@@ -208,7 +208,7 @@ fn list_mcp_servers(
     let builtin = capabilities::McpServer {
         name: artifacts::SERVER_NAME.to_string(),
         kind: "http".to_string(),
-        detail: format!("loopback 127.0.0.1:{} · renders to the Preview tab", artifacts.port),
+        detail: format!("loopback 127.0.0.1:{} · renders to the Artifacts tab", artifacts.port),
         scope: "drydock".to_string(),
         builtin: true,
         enabled: settings.artifacts_enabled(),

@@ -65,7 +65,7 @@ export default function TabBar({ tabs, sessions, activeId, shellDirs, unread, on
     >
       <span style={{ fontStyle: t.preview ? 'italic' : undefined }}>{clip(label, 22)}{t.exited ? ' ·ended' : ''}</span>
       {unread[t.id] ? (
-        <span title={`${unread[t.id]} new preview${unread[t.id] > 1 ? 's' : ''}`} style={{ background: '#5a7fb0', color: '#0b0e13', borderRadius: 8, fontSize: 9, fontWeight: 700, padding: '0 5px', lineHeight: '14px' }}>{unread[t.id]}</span>
+        <span title={`${unread[t.id]} new artifact${unread[t.id] > 1 ? 's' : ''}`} style={{ background: '#5a7fb0', color: '#0b0e13', borderRadius: 8, fontSize: 9, fontWeight: 700, padding: '0 5px', lineHeight: '14px' }}>{unread[t.id]}</span>
       ) : null}
       <span style={S.close} onClick={(e) => { e.stopPropagation(); onClose(t.id) }}>✕</span>
     </div>
