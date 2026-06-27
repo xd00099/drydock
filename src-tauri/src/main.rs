@@ -35,6 +35,30 @@ fn inject_artifact_flags(cmd: &str, cfg_path: &str) -> String {
     )
 }
 
+/// Insert an arbitrary flag string right after `exec claude`, preserving the
+/// rest. Used to splice the MCP deny-list ahead of any `--resume`/`--session-id`.
+fn splice_claude_flags(cmd: &str, flags: &str) -> String {
+    let rest = &cmd["exec claude".len()..];
+    format!("exec claude {flags}{rest}")
+}
+
+/// `--disallowedTools 'mcp__<name>' …` for the servers the user switched off, so
+/// their tools aren't offered to this session — without touching ~/.claude. Each
+/// token is single-quoted for the shell `-c`; a name containing a single quote is
+/// skipped (can't be quoted safely). Returns None when nothing is disabled.
+fn disallowed_flags(disabled: &[String]) -> Option<String> {
+    let toks: Vec<String> = disabled
+        .iter()
+        .filter(|n| !n.is_empty() && !n.contains('\''))
+        .map(|n| format!("'mcp__{n}'"))
+        .collect();
+    if toks.is_empty() {
+        None
+    } else {
+        Some(format!("--disallowedTools {}", toks.join(" ")))
+    }
+}
+
 /// Spawn a PTY under a frontend-chosen id. program=None → login shell from $SHELL.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
@@ -42,6 +66,7 @@ fn pty_spawn(
     app: AppHandle,
     mgr: State<'_, PtyManager>,
     artifacts: State<'_, artifacts::ArtifactServer>,
+    settings: State<'_, settings::SettingsState>,
     id: u32,
     program: Option<String>,
     args: Option<Vec<String>>,
@@ -58,13 +83,19 @@ fn pty_spawn(
     // nameable directory instead of the app's launch dir ("/").
     let cwd = cwd.or_else(|| std::env::var("HOME").ok());
 
-    // Give claude tabs the Preview-panel artifact tool: a per-session
-    // --mcp-config pointing at Drydock's loopback MCP server. Written to
-    // Drydock's OWN app-data dir, never ~/.claude. `--mcp-config` is additive
-    // (no --strict), so it never clobbers the user's own MCP servers.
+    // Drydock shapes the MCP surface of the claude tabs it launches purely with
+    // spawn flags — it NEVER edits ~/.claude. For a claude tab we:
+    //  1. deny the tools of any server the user switched off in the MCP panel
+    //     (`--disallowedTools`), leaving that server's config untouched; and
+    //  2. inject the Preview artifact tool when enabled (a per-session
+    //     `--mcp-config` at Drydock's loopback server, additive — no --strict —
+    //     so the user's own servers are untouched).
     let mut cleanup_cfg: Option<std::path::PathBuf> = None;
-    if artifacts.enabled {
-        if let Some(idx) = args.iter().position(|a| is_claude_exec(a)) {
+    if let Some(idx) = args.iter().position(|a| is_claude_exec(a)) {
+        if let Some(flags) = disallowed_flags(&settings.mcp_disabled()) {
+            args[idx] = splice_claude_flags(&args[idx], &flags);
+        }
+        if settings.artifacts_enabled() {
             if let Ok(dir) = app.path().app_data_dir() {
                 let mcp_dir = dir.join("mcp");
                 let _ = std::fs::create_dir_all(&mcp_dir);
@@ -159,6 +190,60 @@ fn pty_cwds(mgr: State<'_, PtyManager>, ids: Vec<u32>) -> Vec<(u32, String)> {
         .collect()
 }
 
+/// MCP servers visible to `project_path`, with Drydock's own loopback server
+/// (`drydock-artifacts`) prepended and each config-sourced server's `enabled`
+/// reflecting the Drydock deny-list. This is the config/intent view; live
+/// connection status comes separately from `mcp_status`.
+#[tauri::command]
+fn list_mcp_servers(
+    project_path: Option<String>,
+    settings: State<'_, settings::SettingsState>,
+    artifacts: State<'_, artifacts::ArtifactServer>,
+) -> Vec<capabilities::McpServer> {
+    let disabled = settings.mcp_disabled();
+    let mut servers = capabilities::mcp_servers(project_path.as_deref());
+    for s in &mut servers {
+        s.enabled = !disabled.iter().any(|d| d == &s.name);
+    }
+    let builtin = capabilities::McpServer {
+        name: artifacts::SERVER_NAME.to_string(),
+        kind: "http".to_string(),
+        detail: format!("loopback 127.0.0.1:{} · renders to the Preview tab", artifacts.port),
+        scope: "drydock".to_string(),
+        builtin: true,
+        enabled: settings.artifacts_enabled(),
+        tools: vec![artifacts::TOOL_NAME.to_string()],
+    };
+    let mut out = Vec::with_capacity(servers.len() + 1);
+    out.push(builtin); // Drydock's own server first
+    out.extend(servers);
+    out
+}
+
+/// Live `claude mcp list` health-check for the user's configured servers, keyed
+/// by name. Best-effort and read-only (see capabilities::mcp_status).
+#[tauri::command]
+fn mcp_status(project_path: Option<String>) -> Vec<(String, String)> {
+    capabilities::mcp_status(project_path.as_deref())
+}
+
+/// Toggle a server on/off for the claude tabs Drydock launches. `drydock-artifacts`
+/// flips Drydock's own injection; any other name is added to/removed from the
+/// deny-list. Persists to Drydock's settings.json — never ~/.claude — and takes
+/// effect on the next session spawned.
+#[tauri::command]
+fn set_mcp_enabled(
+    name: String,
+    enabled: bool,
+    settings: State<'_, settings::SettingsState>,
+) -> Result<(), String> {
+    if name == artifacts::SERVER_NAME {
+        settings.set_artifacts_enabled(enabled).map_err(|e| e.to_string())
+    } else {
+        settings.set_mcp_disabled(&name, !enabled).map_err(|e| e.to_string())
+    }
+}
+
 /// Quit confirmed by the frontend: "Quit anyway" from the guard modal, or a
 /// ⌘Q that the frontend found no live tabs for.
 #[tauri::command]
@@ -251,9 +336,11 @@ fn main() {
             app.manage(PtyManager::with_env(cfg.env_pairs()));
             // Loopback MCP server for the Preview panel; pty_spawn injects a
             // per-session --mcp-config pointing at it into claude tabs.
-            let artifact_server =
-                artifacts::ArtifactServer::start(app.handle().clone(), cfg.artifacts_enabled)?;
+            let artifact_server = artifacts::ArtifactServer::start(app.handle().clone())?;
             app.manage(artifact_server);
+            // Live, mutable settings (artifact toggle + MCP deny-list). Read at
+            // spawn time and written back by the MCP-panel toggles.
+            app.manage(settings::SettingsState::new(cfg, data.clone()));
             index::start(&app.handle().clone())?;
             {
                 let db = data.join("drydock.db");
@@ -273,6 +360,9 @@ fn main() {
             pty_resize,
             pty_kill,
             pty_cwds,
+            list_mcp_servers,
+            mcp_status,
+            set_mcp_enabled,
             force_quit,
             index::sessions_snapshot,
             index::set_starred,
@@ -283,8 +373,7 @@ fn main() {
             enricher::get_card,
             enricher::refresh_card,
             enricher::check_claude,
-            capabilities::list_skills,
-            capabilities::list_mcp_servers
+            capabilities::list_skills
         ])
         .build(tauri::generate_context!())
         .expect("error while running Drydock")
@@ -319,5 +408,36 @@ mod tests {
         assert!(out.starts_with("exec claude --mcp-config '/cfg/7.json'"));
         assert!(out.contains(artifacts::TOOL_ID));
         assert!(out.ends_with("--session-id 'abc-123'"));
+    }
+
+    #[test]
+    fn disallowed_flags_quotes_names_and_skips_unsafe() {
+        assert_eq!(disallowed_flags(&[]), None);
+        assert_eq!(
+            disallowed_flags(&["github".into(), "sentry".into()]),
+            Some("--disallowedTools 'mcp__github' 'mcp__sentry'".to_string())
+        );
+        // a name with a single quote can't be shell-quoted safely → dropped
+        assert_eq!(disallowed_flags(&["ev'il".into()]), None);
+    }
+
+    #[test]
+    fn splice_claude_flags_inserts_before_resume() {
+        let out = splice_claude_flags(
+            "exec claude --resume 'sid'",
+            "--disallowedTools 'mcp__github'",
+        );
+        assert_eq!(out, "exec claude --disallowedTools 'mcp__github' --resume 'sid'");
+    }
+
+    #[test]
+    fn both_injections_compose_on_one_command() {
+        // deny-list spliced first, then the artifact flags — both present, the
+        // original suffix preserved.
+        let denied = splice_claude_flags("exec claude", "--disallowedTools 'mcp__github'");
+        let full = inject_artifact_flags(&denied, "/cfg/3.json");
+        assert!(full.contains("--disallowedTools 'mcp__github'"));
+        assert!(full.contains("--mcp-config '/cfg/3.json'"));
+        assert!(full.contains(artifacts::TOOL_ID));
     }
 }

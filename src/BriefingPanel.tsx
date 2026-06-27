@@ -179,16 +179,94 @@ function SkillsTab() {
   )
 }
 
+// Connection-health dot color per status token from `claude mcp list`.
+const STATUS_COLOR: Record<string, string> = {
+  connected: '#5fb98a',
+  failed: '#cf6b6b',
+  pending: '#d6b24a',
+  unknown: '#5b6675',
+  checking: '#3a4350',
+}
+
+function StatusDot({ status, title }: { status: string; title: string }) {
+  return <span title={title} style={{ width: 8, height: 8, borderRadius: '50%', flex: 'none', background: STATUS_COLOR[status] ?? '#5b6675' }} />
+}
+
+// A small on/off switch. `on` = Drydock offers this server to the sessions it
+// launches; off denies its tools to new sessions (the server config is untouched).
+function Toggle({ on, busy, onClick, title }: { on: boolean; busy: boolean; onClick: () => void; title: string }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={busy}
+      title={title}
+      style={{ flex: 'none', width: 26, height: 15, borderRadius: 8, border: '1px solid #2c3647', background: on ? '#2f6b4f' : '#222a36', position: 'relative', cursor: busy ? 'default' : 'pointer', padding: 0, opacity: busy ? 0.5 : 1 }}
+    >
+      <span style={{ position: 'absolute', top: 1, left: on ? 12 : 1, width: 11, height: 11, borderRadius: '50%', background: '#cdd5df', transition: 'left .12s' }} />
+    </button>
+  )
+}
+
 function McpTab({ projectPath }: { projectPath?: string }) {
   const [servers, setServers] = useState<McpServer[] | null>(null)
+  // null = not fetched yet (show "checking"); {} = fetched, no statuses
+  const [status, setStatus] = useState<Record<string, string> | null>(null)
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [busy, setBusy] = useState<Set<string>>(new Set())
+
   useEffect(() => {
     let live = true
     setServers(null)
+    setStatus(null)
     invoke<McpServer[]>('list_mcp_servers', { projectPath: projectPath ?? null })
-      .then((s) => live && setServers(s))
-      .catch(() => live && setServers([]))
+      .then((list) => {
+        if (!live) return
+        setServers(list)
+        // only health-check (spawns the user's servers) if there are external ones
+        if (list.some((s) => !s.builtin)) {
+          invoke<[string, string][]>('mcp_status', { projectPath: projectPath ?? null })
+            .then((pairs) => { if (live) setStatus(Object.fromEntries(pairs)) })
+            .catch(() => { if (live) setStatus({}) })
+        } else {
+          setStatus({})
+        }
+      })
+      .catch(() => {
+        if (!live) return
+        setServers([])
+        setStatus({})
+      })
     return () => { live = false }
   }, [projectPath])
+
+  const toggleExpand = (name: string) =>
+    setExpanded((prev) => { const n = new Set(prev); if (n.has(name)) n.delete(name); else n.add(name); return n })
+
+  const toggle = async (s: McpServer) => {
+    setBusy((prev) => new Set(prev).add(s.name))
+    try {
+      await invoke('set_mcp_enabled', { name: s.name, enabled: !s.enabled })
+      setServers((prev) => prev && prev.map((x) => (x.name === s.name ? { ...x, enabled: !x.enabled } : x)))
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setBusy((prev) => { const n = new Set(prev); n.delete(s.name); return n })
+    }
+  }
+
+  // Health dot: the builtin loopback server is "connected" whenever enabled;
+  // external servers reflect the live `claude mcp list` check (or "checking").
+  const dotFor = (s: McpServer): { status: string; title: string } => {
+    if (s.builtin)
+      return s.enabled
+        ? { status: 'connected', title: 'Listening · renders to the Preview tab' }
+        : { status: 'unknown', title: 'Off — new sessions won’t get the render tool' }
+    if (status === null) return { status: 'checking', title: 'Checking…' }
+    const st = status[s.name] ?? 'unknown'
+    const title =
+      st === 'connected' ? 'Connected' : st === 'failed' ? 'Failed to connect' : st === 'pending' ? 'Pending approval' : 'Status unknown'
+    return { status: st, title }
+  }
 
   const proj = projectPath ? baseName(projectPath) : undefined
   return (
@@ -198,24 +276,52 @@ function McpTab({ projectPath }: { projectPath?: string }) {
           for project: <span style={{ color: '#c8cdd5' }}>{proj}</span>
         </div>
       )}
-      <div style={{ color: '#5b6675', fontSize: 10, marginBottom: 8 }}>ⓘ configured, not live status · secrets hidden</div>
+      <div style={{ color: '#5b6675', fontSize: 10, marginBottom: 8, lineHeight: 1.4 }}>● live status · toggling applies to new sessions · secrets hidden</div>
       {servers === null ? (
         <div style={S.muted}>loading…</div>
       ) : servers.length === 0 ? (
         <div style={S.muted}>no MCP servers configured{proj ? ' for this project' : ''}</div>
       ) : (
-        servers.map((s) => (
-          <div key={s.name} style={{ marginBottom: 9 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={S.name}>{s.name}</span>
-              <span style={S.chip}>{s.kind}</span>
-              <span style={{ color: '#4a5462', fontSize: 9 }}>{s.scope}</span>
+        servers.map((s) => {
+          const open = expanded.has(s.name)
+          const hasTools = s.tools.length > 0
+          const dot = dotFor(s)
+          return (
+            <div key={s.name} style={{ marginBottom: 9, opacity: s.enabled ? 1 : 0.55 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                {hasTools ? (
+                  <button onClick={() => toggleExpand(s.name)} title={open ? 'Hide tools' : 'Show tools'} style={{ ...S.groupBtn, width: 10, flex: 'none', padding: 0 }}>
+                    <span style={{ color: '#5b6675' }}>{open ? '▾' : '▸'}</span>
+                  </button>
+                ) : (
+                  <span style={{ width: 10, flex: 'none' }} />
+                )}
+                <StatusDot status={dot.status} title={dot.title} />
+                <span style={{ ...S.name, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={s.name}>{s.name}</span>
+                <span style={S.chip}>{s.kind}</span>
+                <span style={{ color: '#4a5462', fontSize: 9 }}>{s.scope}</span>
+                <Toggle
+                  on={s.enabled}
+                  busy={busy.has(s.name)}
+                  onClick={() => toggle(s)}
+                  title={s.enabled ? 'Disable for new Drydock sessions' : 'Enable for new Drydock sessions'}
+                />
+              </div>
+              {s.detail && (
+                <div style={{ color: '#7d8794', wordBreak: 'break-all', fontFamily: 'Menlo, monospace', fontSize: 11, marginTop: 1, paddingLeft: 16 }}>{s.detail}</div>
+              )}
+              {open &&
+                s.tools.map((t) => (
+                  <div key={t} style={{ paddingLeft: 24, marginTop: 4 }}>
+                    <div style={S.name}>{t}</div>
+                    {s.builtin && (
+                      <div style={S.desc}>Renders a self-contained HTML / SVG / Markdown artifact into Drydock’s Preview tab.</div>
+                    )}
+                  </div>
+                ))}
             </div>
-            {s.detail && (
-              <div style={{ color: '#7d8794', wordBreak: 'break-all', fontFamily: 'Menlo, monospace', fontSize: 11, marginTop: 1 }}>{s.detail}</div>
-            )}
-          </div>
-        ))
+          )
+        })
       )}
     </div>
   )

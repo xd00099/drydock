@@ -26,7 +26,10 @@ pub struct McpServer {
     pub name: String,
     pub kind: String,   // "stdio" | "http" | "sse"
     pub detail: String, // command+args or url; env/headers never read, secrets in argv/url redacted
-    pub scope: String,  // where it's configured: "project" | "user" | "global"
+    pub scope: String,  // where it's configured: "project" | "user" | "global" | "drydock"
+    pub builtin: bool,  // true → Drydock's own injected server (drydock-artifacts)
+    pub enabled: bool,  // false → Drydock denies its tools to new sessions it launches
+    pub tools: Vec<String>, // known tool names (only populated for the builtin server)
 }
 
 // ---- skills -------------------------------------------------------------
@@ -196,7 +199,10 @@ fn add_servers(obj: &serde_json::Value, scope: &str, out: &mut Vec<McpServer>, s
             continue;
         }
         let (kind, detail) = describe_server(cfg);
-        out.push(McpServer { name: name.clone(), kind, detail, scope: scope.to_string() });
+        // enabled/builtin/tools are filled by the command layer, which knows the
+        // Drydock deny-list and the loopback server; here every config-sourced
+        // server starts as an enabled, non-builtin entry with no known tools.
+        out.push(McpServer { name: name.clone(), kind, detail, scope: scope.to_string(), builtin: false, enabled: true, tools: Vec::new() });
     }
 }
 
@@ -263,16 +269,63 @@ pub fn mcp_servers(project_path: Option<&str>) -> Vec<McpServer> {
     out
 }
 
+// ---- live status (claude mcp list) --------------------------------------
+
+/// Map one server's trailing status text to a stable token the UI styles.
+fn classify_status(rest: &str) -> &'static str {
+    let lower = rest.to_ascii_lowercase();
+    if rest.contains('✓') || lower.contains("connected") {
+        "connected"
+    } else if rest.contains('✗') || lower.contains("failed") {
+        "failed"
+    } else if rest.contains('⏸') || lower.contains("pending") {
+        "pending"
+    } else {
+        "unknown"
+    }
+}
+
+/// Parse `claude mcp list` human output into (server name, status) pairs. Each
+/// configured line looks like `name: <detail> - ✓ Connected`; headers ("Checking
+/// MCP server health…"), blanks, and the "No MCP servers configured" notice have
+/// no leading `name:` token and are skipped. Pure (no IO) so it unit-tests.
+pub fn parse_mcp_list(output: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for line in output.lines() {
+        let Some((name, rest)) = line.split_once(':') else { continue };
+        let name = name.trim();
+        // server names are identifiers (no spaces); this drops prose lines that
+        // happen to contain a colon.
+        if name.is_empty() || name.contains(char::is_whitespace) {
+            continue;
+        }
+        out.push((name.to_string(), classify_status(rest).to_string()));
+    }
+    out
+}
+
+/// Health-check the user's MCP servers via `claude mcp list`, run in `project_path`
+/// (so project-scoped `.mcp.json` servers are included) through a login shell —
+/// GUI apps lack PATH, matching the enricher's claude invocation. Read-only; it
+/// never writes config. Best-effort: any failure yields an empty map.
+pub fn mcp_status(project_path: Option<&str>) -> Vec<(String, String)> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+    let mut cmd = std::process::Command::new(shell);
+    cmd.args(["-l", "-c", "claude mcp list"]);
+    if let Some(p) = project_path {
+        cmd.current_dir(p);
+    }
+    match cmd.output() {
+        Ok(o) => parse_mcp_list(&String::from_utf8_lossy(&o.stdout)),
+        Err(_) => Vec::new(),
+    }
+}
+
 // ---- tauri commands -----------------------------------------------------
 
 #[tauri::command]
 pub fn list_skills() -> Vec<Skill> {
     skills()
-}
-
-#[tauri::command]
-pub fn list_mcp_servers(project_path: Option<String>) -> Vec<McpServer> {
-    mcp_servers(project_path.as_deref())
 }
 
 #[cfg(test)]
@@ -336,6 +389,35 @@ mod tests {
         assert!(names.contains(&"proj"));
         // the project's `shared` is added first, so it wins over the top-level one
         assert_eq!(out.iter().find(|s| s.name == "shared").unwrap().detail, "https://project-override");
+    }
+
+    #[test]
+    fn parse_mcp_list_extracts_names_and_status() {
+        let out = "Checking MCP server health...\n\n\
+            github: https://api.githubcopilot.com/mcp/ (HTTP) - ✓ Connected\n\
+            sentry: npx -y @sentry/mcp-server - ✗ Failed to connect\n\
+            local-fs: /usr/local/bin/fs-server (stdio) - ⏸ Pending approval\n";
+        let got = parse_mcp_list(out);
+        assert_eq!(
+            got,
+            vec![
+                ("github".to_string(), "connected".to_string()),
+                ("sentry".to_string(), "failed".to_string()),
+                ("local-fs".to_string(), "pending".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_mcp_list_skips_prose_and_empty() {
+        // the no-servers notice and headers carry no `name:` identifier token
+        assert!(parse_mcp_list("No MCP servers configured. Use `claude mcp add` to add a server.").is_empty());
+        assert!(parse_mcp_list("Checking MCP server health...\n\n").is_empty());
+        // a url-bearing detail still yields just the leading name + a status
+        assert_eq!(
+            parse_mcp_list("x: https://h:443/mcp - ✓ Connected"),
+            vec![("x".to_string(), "connected".to_string())]
+        );
     }
 
     #[test]

@@ -26,7 +26,20 @@ export type CardView = { summary: string; timeline: TimelineItem[]; generated_at
 
 // Read-only capability views for the right panel (from ~/.claude, secrets stripped)
 export type Skill = { name: string; description: string; plugin: string }
-export type McpServer = { name: string; kind: string; detail: string; scope: string }
+// `builtin` = Drydock's own drydock-artifacts server; `enabled` = whether Drydock
+// offers it to the sessions it launches (false → its tools are denied for new
+// sessions); `tools` is only populated for the builtin server.
+export type McpServer = {
+  name: string
+  kind: string
+  detail: string
+  scope: string
+  builtin: boolean
+  enabled: boolean
+  tools: string[]
+}
+// Live connection status from `claude mcp list`, per server name.
+export type McpStatus = 'connected' | 'failed' | 'pending' | 'unknown'
 
 // A visual artifact a session rendered via the loopback MCP server, shown in the
 // right-panel "Preview" tab. `id` is server-assigned (stable React key).

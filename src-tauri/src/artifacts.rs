@@ -64,21 +64,22 @@ struct ArtifactEvent {
 /// mints a token per claude tab; the serve thread resolves tokens to tab ids.
 pub struct ArtifactServer {
     pub port: u16,
-    pub enabled: bool,
     tokens: Tokens,
 }
 
 impl ArtifactServer {
-    /// Bind the loopback listener and (if enabled) start the accept thread.
-    pub fn start(app: AppHandle, enabled: bool) -> std::io::Result<Self> {
+    /// Bind the loopback listener and start the accept thread. The server always
+    /// listens — it's token-gated, so an idle/disabled state simply means no
+    /// tokens are minted (every request 401s). Whether new sessions get the tool
+    /// is decided at spawn time from settings (`artifacts_enabled`), which lets
+    /// the user toggle it at runtime without restarting the listener.
+    pub fn start(app: AppHandle) -> std::io::Result<Self> {
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         let port = listener.local_addr()?.port();
         let tokens: Tokens = Arc::new(Mutex::new(HashMap::new()));
-        if enabled {
-            let t = Arc::clone(&tokens);
-            std::thread::spawn(move || serve(listener, t, app));
-        }
-        Ok(Self { port, enabled, tokens })
+        let t = Arc::clone(&tokens);
+        std::thread::spawn(move || serve(listener, t, app));
+        Ok(Self { port, tokens })
     }
 
     /// Mint a token for a tab id (call once per claude spawn). The token goes in
