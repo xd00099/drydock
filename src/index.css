@@ -1,0 +1,14 @@
+/* Global reset. Lives in an imported stylesheet (not an inline <style> in
+   index.html) so the production build emits no inline <style> tag. That matters
+   for the Content-Security-Policy: Tauri nonces any inline <style>, and a nonce
+   in style-src voids 'unsafe-inline' — which would block React's runtime inline
+   styles and xterm's dynamically-injected <style>. No inline <style> → no style
+   nonce → 'unsafe-inline' (which the all-inline-styled UI needs) stays effective. */
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #10141a;
+}

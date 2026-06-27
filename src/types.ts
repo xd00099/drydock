@@ -26,11 +26,41 @@ export type CardView = { summary: string; timeline: TimelineItem[]; generated_at
 
 // Read-only capability views for the right panel (from ~/.claude, secrets stripped)
 export type Skill = { name: string; description: string; plugin: string }
-export type McpServer = { name: string; kind: string; detail: string; scope: string }
+// `builtin` = Drydock's own drydock-artifacts server; `enabled` = whether Drydock
+// offers it to the sessions it launches (false → its tools are denied for new
+// sessions); `tools` is only populated for the builtin server.
+export type McpServer = {
+  name: string
+  kind: string
+  detail: string
+  scope: string
+  builtin: boolean
+  enabled: boolean
+  tools: string[]
+}
+// Live connection status from `claude mcp list`, per server name.
+export type McpStatus = 'connected' | 'failed' | 'pending' | 'unknown'
+
+// A visual artifact a session rendered via the loopback MCP server, shown in the
+// right-panel "Artifacts" tab. `id` is server-assigned (stable React key).
+export type ArtifactKind = 'html' | 'svg' | 'markdown'
+export type Artifact = { id: string; title: string; kind: ArtifactKind; content: string }
 
 /** Display label for a session: AI summary when present, else its raw title. */
 export function sessionLabel(s: SessionView): string {
   return s.summary && s.summary.trim() ? s.summary : s.title
+}
+
+/** RFC-4122 v4 UUID via WebCrypto. Used to pin a *new* claude session's id at
+ *  launch (`claude --session-id`), so its tab can be matched back to the sidebar
+ *  entry immediately — exactly like a resumed session. Uses getRandomValues
+ *  (always available) rather than crypto.randomUUID (secure-context only). */
+export function uuidv4(): string {
+  const b = crypto.getRandomValues(new Uint8Array(16))
+  b[6] = (b[6] & 0x0f) | 0x40 // version 4
+  b[8] = (b[8] & 0x3f) | 0x80 // variant 1
+  const h = Array.from(b, (x) => x.toString(16).padStart(2, '0'))
+  return `${h[0]}${h[1]}${h[2]}${h[3]}-${h[4]}${h[5]}-${h[6]}${h[7]}-${h[8]}${h[9]}-${h[10]}${h[11]}${h[12]}${h[13]}${h[14]}${h[15]}`
 }
 
 export type Tab = {
@@ -78,9 +108,10 @@ export function loadNum(key: string, fallback: number): number {
   return Number.isFinite(v) && v > 0 ? v : fallback
 }
 
-/** Clamp a side-panel width to sensible drag bounds. */
+/** Clamp a side-panel width to sensible drag bounds. Upper bound is roomy so the
+ *  Preview panel can auto-size to ~1/3 of the window for rendered artifacts. */
 export function clampPanelWidth(w: number): number {
-  return Math.max(180, Math.min(560, w))
+  return Math.max(180, Math.min(900, w))
 }
 
 /** Last path segment ("/Users/x/Desktop" → "Desktop", "~" → "~", "/" → "/"). */

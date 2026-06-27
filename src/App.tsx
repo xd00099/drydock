@@ -10,10 +10,15 @@ import SearchPalette from './SearchPalette'
 import BriefingPanel from './BriefingPanel'
 import FindBar from './FindBar'
 import { useSessions } from './useSessions'
-import type { PaneSearch, SessionView, Tab } from './types'
-import { clip, sessionLabel } from './types'
+import type { Artifact, ArtifactKind, PaneSearch, SessionView, Tab } from './types'
+import { clip, sessionLabel, uuidv4 } from './types'
 
 let nextTabId = 1
+const EMPTY_ARTIFACTS: Artifact[] = [] // stable ref so an artifact-less panel doesn't churn
+// Artifacts live only in memory (never written to disk). Bound that memory: a
+// session that re-renders many times keeps only its most recent N (each up to
+// the backend's 4 MB cap); older versions are dropped.
+const MAX_ARTIFACTS_PER_TAB = 20
 
 export default function App() {
   const { sessions, hidden, refresh } = useSessions()
@@ -23,6 +28,10 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [claudeVersion, setClaudeVersion] = useState<string | null | 'checking'>('checking')
   const [shellDirs, setShellDirs] = useState<Record<number, string>>({})
+  // Artifacts a session rendered (right-panel Preview), kept in memory per tab
+  // id; `unread` counts artifacts that arrived for a non-active tab.
+  const [artifactsByTab, setArtifactsByTab] = useState<Record<number, Artifact[]>>({})
+  const [unread, setUnread] = useState<Record<number, number>>({})
   // ⌘F find-in-session state; each pane registers a PaneSearch controller by id
   const paneSearch = useRef<Record<number, PaneSearch | null>>({})
   // the in-place conversation overlay (a live Claude session's ⌘F target)
@@ -37,6 +46,8 @@ export default function App() {
   }, [])
   const tabsRef = useRef(tabs)
   tabsRef.current = tabs
+  const activeIdRef = useRef(activeId) // for the once-registered artifact listener
+  activeIdRef.current = activeId
   const newShellRef = useRef(() => {})
   const closeActiveRef = useRef(() => {})
   const starActiveRef = useRef(() => {})
@@ -90,17 +101,42 @@ export default function App() {
     }, s.session_id)
   }
 
-  const newSession = (projectPath: string) =>
-    addTab({ title: 'claude', kind: 'pty', program: null, args: ['-l', '-c', 'exec claude'], cwd: projectPath })
+  // A brand-new session has no id until claude generates one, so we'd have no way
+  // to match its tab back to the sidebar (re-clicking would open a read-only
+  // transcript instead of focusing the live tab, and the tab name would stay
+  // "claude"). Pin the id ourselves via `--session-id` and set it on the tab, so
+  // a new session behaves exactly like a resumed one. The label then resolves
+  // live from the index once the session is picked up (see TabBar).
+  const newSession = (projectPath: string) => {
+    const sessionId = uuidv4()
+    addTab({
+      title: 'claude',
+      kind: 'pty',
+      program: null,
+      args: ['-l', '-c', `exec claude --session-id '${sessionId}'`],
+      cwd: projectPath,
+      sessionId,
+    })
+  }
 
   const newShell = () => addTab({ title: 'shell', kind: 'pty', program: null, args: ['-l'], cwd: null, terminal: true })
 
-  const markExited = (id: number) => setTabs((p) => p.map((t) => (t.id === id ? { ...t, exited: true } : t)))
+  // A session's process exiting (claude quit / killed) frees its artifacts right
+  // away — they're in-memory only, so an ended session shouldn't keep holding
+  // them. The tab can stay open to read the final transcript; closeTab also
+  // frees them for the case where the tab is closed while still live.
+  const markExited = (id: number) => {
+    setTabs((p) => p.map((t) => (t.id === id ? { ...t, exited: true } : t)))
+    setArtifactsByTab((d) => { if (!(id in d)) return d; const n = { ...d }; delete n[id]; return n })
+    setUnread((d) => { if (!(id in d)) return d; const n = { ...d }; delete n[id]; return n })
+  }
 
   const closeTab = (id: number) => {
     setTabs((p) => p.filter((t) => t.id !== id))
     setShellDirs((d) => (id in d ? Object.fromEntries(Object.entries(d).filter(([k]) => Number(k) !== id)) : d))
     delete paneSearch.current[id]
+    setArtifactsByTab((d) => { if (!(id in d)) return d; const n = { ...d }; delete n[id]; return n })
+    setUnread((d) => { if (!(id in d)) return d; const n = { ...d }; delete n[id]; return n })
     const next = tabs.filter((t) => t.id !== id)
     setActiveId((a) => (a === id ? (next.length ? next[next.length - 1].id : null) : a))
   }
@@ -213,6 +249,31 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [findOpen, findQuery, activeId])
 
+  // A session rendered an artifact (via the loopback MCP server): file it under
+  // its tab id for the Preview panel, and badge the tab if it's not in focus.
+  useEffect(() => {
+    let cancelled = false
+    let un: UnlistenFn | null = null
+    listen<{ pty_id: number; id: string; title: string; kind: string; content: string }>('artifact', (e) => {
+      const p = e.payload
+      const kind: ArtifactKind = p.kind === 'svg' || p.kind === 'markdown' ? p.kind : 'html'
+      const art: Artifact = { id: p.id, title: p.title || 'Untitled', kind, content: p.content }
+      setArtifactsByTab((prev) => {
+        const next = [...(prev[p.pty_id] ?? []), art]
+        if (next.length > MAX_ARTIFACTS_PER_TAB) next.splice(0, next.length - MAX_ARTIFACTS_PER_TAB)
+        return { ...prev, [p.pty_id]: next }
+      })
+      if (p.pty_id !== activeIdRef.current) setUnread((u) => ({ ...u, [p.pty_id]: (u[p.pty_id] ?? 0) + 1 }))
+    }).then((u) => { if (cancelled) u(); else un = u })
+    return () => { cancelled = true; un?.() }
+  }, [])
+
+  // Focusing a tab clears its unread-artifact badge.
+  useEffect(() => {
+    if (activeId == null) return
+    setUnread((u) => { if (!u[activeId]) return u; const n = { ...u }; delete n[activeId]; return n })
+  }, [activeId])
+
   return (
     <div style={{ display: 'flex', width: '100vw', height: '100vh', background: '#10141a' }}>
       {claudeVersion === null && (
@@ -231,7 +292,7 @@ export default function App() {
         onDelete={(sessionId) => invoke('delete_session_permanently', { sessionId }).then(refresh)}
       />
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-        <TabBar tabs={tabs} activeId={activeId} shellDirs={shellDirs} onSelect={setActiveId} onClose={closeTab} onNewShell={newShell} />
+        <TabBar tabs={tabs} sessions={sessions} activeId={activeId} shellDirs={shellDirs} unread={unread} onSelect={setActiveId} onClose={closeTab} onNewShell={newShell} />
         <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
           {tabs.map((t) => (
             <div key={t.id} style={{ position: 'absolute', inset: 8, display: t.id === activeId ? 'block' : 'none' }}>
@@ -295,15 +356,18 @@ export default function App() {
           )}
         </div>
       </div>
-      {(() => {
-        if (!activeTab?.sessionId) return null
-        const s = sessions.find((x) => x.session_id === activeTab.sessionId)
+      {/* Right panel for any claude/transcript tab (not plain shells). Keyed by
+          tab id — NOT sessionId — so distinct tabs (e.g. a live session and its
+          read-only transcript share one id) each keep their own panel state. */}
+      {activeTab && !activeTab.terminal && (() => {
+        const s = activeTab.sessionId ? sessions.find((x) => x.session_id === activeTab.sessionId) : undefined
         return (
           <BriefingPanel
-            key={activeTab.sessionId}
-            sessionId={activeTab.sessionId}
-            projectPath={s?.project_path}
+            key={activeTab.id}
+            sessionId={activeTab.sessionId ?? null}
+            projectPath={s?.project_path ?? activeTab.cwd ?? undefined}
             starred={!!s?.starred}
+            artifacts={artifactsByTab[activeTab.id] ?? EMPTY_ARTIFACTS}
             onToggleStar={
               s ? () => invoke('set_starred', { sessionId: s.session_id, starred: !s.starred }).then(refresh) : undefined
             }

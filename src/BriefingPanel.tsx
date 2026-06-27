@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { clampPanelWidth, loadNum, relAge, baseName, type CardView, type McpServer, type Skill, type TimelineItem } from './types'
+import { clampPanelWidth, loadNum, relAge, baseName, type Artifact, type CardView, type McpServer, type Skill, type TimelineItem } from './types'
+import ArtifactView from './ArtifactView'
 import ResizeHandle from './ResizeHandle'
 
-type RightTab = 'briefing' | 'skills' | 'mcp'
+type RightTab = 'briefing' | 'skills' | 'mcp' | 'preview'
 
 type Props = {
-  sessionId: string
+  sessionId: string | null // null for a brand-new claude tab with no session id yet
   projectPath?: string // active session's project, for per-project MCP lookup
   starred: boolean
+  artifacts: Artifact[] // visual artifacts this tab's session has rendered
   onToggleStar?: () => void
 }
 
@@ -17,6 +19,7 @@ const TABS: { id: RightTab; label: string }[] = [
   { id: 'briefing', label: 'Briefing' },
   { id: 'skills', label: 'Skills' },
   { id: 'mcp', label: 'MCP' },
+  { id: 'preview', label: 'Artifacts' }, // id stays 'preview' so saved dd.rightTab keeps working
 ]
 
 const loadStrSet = (key: string): Set<string> => {
@@ -52,6 +55,7 @@ const S = {
     overflow: 'hidden',
   } as const,
   chip: { fontSize: 9, color: '#9aa3af', background: '#1b2230', border: '1px solid #2c3647', borderRadius: 4, padding: '0 5px' } as const,
+  iconBtn: { background: 'none', border: '1px solid #2c3647', borderRadius: 4, cursor: 'pointer', color: '#9aa3af', fontSize: 12, lineHeight: 1, padding: '2px 6px' } as const,
 }
 
 function Item({ it }: { it: TimelineItem }) {
@@ -76,7 +80,9 @@ function Item({ it }: { it: TimelineItem }) {
   )
 }
 
-function BriefingTab({ sessionId, card, starred, onToggleStar }: { sessionId: string; card: CardView | null; starred: boolean; onToggleStar?: () => void }) {
+function BriefingTab({ sessionId, card, starred, onToggleStar }: { sessionId: string | null; card: CardView | null; starred: boolean; onToggleStar?: () => void }) {
+  if (!sessionId)
+    return <div style={S.muted}>No indexed session yet — once this conversation is saved, its briefing card appears here.</div>
   return (
     <>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 12 }}>
@@ -113,10 +119,10 @@ function BriefingTab({ sessionId, card, starred, onToggleStar }: { sessionId: st
   )
 }
 
-function SkillsTab() {
-  // Skills are global, but fetching per-mount (~17 file reads) keeps them fresh
-  // when plugins change and avoids a module cache that would pin a transient
-  // failure forever.
+function SkillsTab({ projectPath }: { projectPath?: string }) {
+  // Fetched per-mount (~17 file reads) so it stays fresh when plugins change and
+  // a transient failure isn't pinned by a module cache. Includes plugin +
+  // personal (~/.claude) skills and this project's own (<project>/.claude/skills).
   const [state, setState] = useState<'loading' | 'error' | Skill[]>('loading')
   // Groups start collapsed (just a header + count); persisted so an expand
   // survives the panel's per-session remount.
@@ -124,11 +130,11 @@ function SkillsTab() {
   useEffect(() => {
     let live = true
     setState('loading')
-    invoke<Skill[]>('list_skills')
+    invoke<Skill[]>('list_skills', { projectPath: projectPath ?? null })
       .then((s) => live && setState(s))
       .catch(() => live && setState('error'))
     return () => { live = false }
-  }, [])
+  }, [projectPath])
 
   const toggle = (plugin: string) =>
     setExpanded((prev) => {
@@ -149,7 +155,7 @@ function SkillsTab() {
   }
   return (
     <div>
-      <div style={{ color: '#5b6675', fontSize: 10, marginBottom: 8 }}>{state.length} skills · available to every session</div>
+      <div style={{ color: '#5b6675', fontSize: 10, marginBottom: 8 }}>{state.length} skills · plugin, personal &amp; project</div>
       {[...groups.entries()].map(([plugin, list]) => {
         const open = expanded.has(plugin)
         return (
@@ -173,16 +179,94 @@ function SkillsTab() {
   )
 }
 
+// Connection-health dot color per status token from `claude mcp list`.
+const STATUS_COLOR: Record<string, string> = {
+  connected: '#5fb98a',
+  failed: '#cf6b6b',
+  pending: '#d6b24a',
+  unknown: '#5b6675',
+  checking: '#3a4350',
+}
+
+function StatusDot({ status, title }: { status: string; title: string }) {
+  return <span title={title} style={{ width: 8, height: 8, borderRadius: '50%', flex: 'none', background: STATUS_COLOR[status] ?? '#5b6675' }} />
+}
+
+// A small on/off switch. `on` = Drydock offers this server to the sessions it
+// launches; off denies its tools to new sessions (the server config is untouched).
+function Toggle({ on, busy, onClick, title }: { on: boolean; busy: boolean; onClick: () => void; title: string }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={busy}
+      title={title}
+      style={{ flex: 'none', width: 26, height: 15, borderRadius: 8, border: '1px solid #2c3647', background: on ? '#2f6b4f' : '#222a36', position: 'relative', cursor: busy ? 'default' : 'pointer', padding: 0, opacity: busy ? 0.5 : 1 }}
+    >
+      <span style={{ position: 'absolute', top: 1, left: on ? 12 : 1, width: 11, height: 11, borderRadius: '50%', background: '#cdd5df', transition: 'left .12s' }} />
+    </button>
+  )
+}
+
 function McpTab({ projectPath }: { projectPath?: string }) {
   const [servers, setServers] = useState<McpServer[] | null>(null)
+  // null = not fetched yet (show "checking"); {} = fetched, no statuses
+  const [status, setStatus] = useState<Record<string, string> | null>(null)
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [busy, setBusy] = useState<Set<string>>(new Set())
+
   useEffect(() => {
     let live = true
     setServers(null)
+    setStatus(null)
     invoke<McpServer[]>('list_mcp_servers', { projectPath: projectPath ?? null })
-      .then((s) => live && setServers(s))
-      .catch(() => live && setServers([]))
+      .then((list) => {
+        if (!live) return
+        setServers(list)
+        // only health-check (spawns the user's servers) if there are external ones
+        if (list.some((s) => !s.builtin)) {
+          invoke<[string, string][]>('mcp_status', { projectPath: projectPath ?? null })
+            .then((pairs) => { if (live) setStatus(Object.fromEntries(pairs)) })
+            .catch(() => { if (live) setStatus({}) })
+        } else {
+          setStatus({})
+        }
+      })
+      .catch(() => {
+        if (!live) return
+        setServers([])
+        setStatus({})
+      })
     return () => { live = false }
   }, [projectPath])
+
+  const toggleExpand = (name: string) =>
+    setExpanded((prev) => { const n = new Set(prev); if (n.has(name)) n.delete(name); else n.add(name); return n })
+
+  const toggle = async (s: McpServer) => {
+    setBusy((prev) => new Set(prev).add(s.name))
+    try {
+      await invoke('set_mcp_enabled', { name: s.name, enabled: !s.enabled })
+      setServers((prev) => prev && prev.map((x) => (x.name === s.name ? { ...x, enabled: !x.enabled } : x)))
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setBusy((prev) => { const n = new Set(prev); n.delete(s.name); return n })
+    }
+  }
+
+  // Health dot: the builtin loopback server is "connected" whenever enabled;
+  // external servers reflect the live `claude mcp list` check (or "checking").
+  const dotFor = (s: McpServer): { status: string; title: string } => {
+    if (s.builtin)
+      return s.enabled
+        ? { status: 'connected', title: 'Listening · renders to the Artifacts tab' }
+        : { status: 'unknown', title: 'Off — new sessions won’t get the render tool' }
+    if (status === null) return { status: 'checking', title: 'Checking…' }
+    const st = status[s.name] ?? 'unknown'
+    const title =
+      st === 'connected' ? 'Connected' : st === 'failed' ? 'Failed to connect' : st === 'pending' ? 'Pending approval' : 'Status unknown'
+    return { status: st, title }
+  }
 
   const proj = projectPath ? baseName(projectPath) : undefined
   return (
@@ -192,30 +276,111 @@ function McpTab({ projectPath }: { projectPath?: string }) {
           for project: <span style={{ color: '#c8cdd5' }}>{proj}</span>
         </div>
       )}
-      <div style={{ color: '#5b6675', fontSize: 10, marginBottom: 8 }}>ⓘ configured, not live status · secrets hidden</div>
+      <div style={{ color: '#5b6675', fontSize: 10, marginBottom: 8, lineHeight: 1.4 }}>● live status · toggling applies to new sessions · secrets hidden</div>
       {servers === null ? (
         <div style={S.muted}>loading…</div>
       ) : servers.length === 0 ? (
         <div style={S.muted}>no MCP servers configured{proj ? ' for this project' : ''}</div>
       ) : (
-        servers.map((s) => (
-          <div key={s.name} style={{ marginBottom: 9 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={S.name}>{s.name}</span>
-              <span style={S.chip}>{s.kind}</span>
-              <span style={{ color: '#4a5462', fontSize: 9 }}>{s.scope}</span>
+        servers.map((s) => {
+          const open = expanded.has(s.name)
+          const hasTools = s.tools.length > 0
+          const dot = dotFor(s)
+          return (
+            <div key={s.name} style={{ marginBottom: 9, opacity: s.enabled ? 1 : 0.55 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                {hasTools ? (
+                  <button onClick={() => toggleExpand(s.name)} title={open ? 'Hide tools' : 'Show tools'} style={{ ...S.groupBtn, width: 10, flex: 'none', padding: 0 }}>
+                    <span style={{ color: '#5b6675' }}>{open ? '▾' : '▸'}</span>
+                  </button>
+                ) : (
+                  <span style={{ width: 10, flex: 'none' }} />
+                )}
+                <StatusDot status={dot.status} title={dot.title} />
+                <span style={{ ...S.name, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={s.name}>{s.name}</span>
+                <span style={S.chip}>{s.kind}</span>
+                <span style={{ color: '#4a5462', fontSize: 9 }}>{s.scope}</span>
+                <Toggle
+                  on={s.enabled}
+                  busy={busy.has(s.name)}
+                  onClick={() => toggle(s)}
+                  title={s.enabled ? 'Disable for new Drydock sessions' : 'Enable for new Drydock sessions'}
+                />
+              </div>
+              {s.detail && (
+                <div style={{ color: '#7d8794', wordBreak: 'break-all', fontFamily: 'Menlo, monospace', fontSize: 11, marginTop: 1, paddingLeft: 16 }}>{s.detail}</div>
+              )}
+              {open &&
+                s.tools.map((t) => (
+                  <div key={t} style={{ paddingLeft: 24, marginTop: 4 }}>
+                    <div style={S.name}>{t}</div>
+                    {s.builtin && (
+                      <div style={S.desc}>Renders a self-contained HTML / SVG / Markdown artifact into Drydock’s Artifacts tab.</div>
+                    )}
+                  </div>
+                ))}
             </div>
-            {s.detail && (
-              <div style={{ color: '#7d8794', wordBreak: 'break-all', fontFamily: 'Menlo, monospace', fontSize: 11, marginTop: 1 }}>{s.detail}</div>
-            )}
-          </div>
-        ))
+          )
+        })
       )}
     </div>
   )
 }
 
-export default function BriefingPanel({ sessionId, projectPath, starred, onToggleStar }: Props) {
+function PreviewTab({ artifacts }: { artifacts: Artifact[] }) {
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [full, setFull] = useState(false)
+  // Esc closes the expanded overlay.
+  useEffect(() => {
+    if (!full) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setFull(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [full])
+
+  if (artifacts.length === 0)
+    return <div style={{ ...S.muted, flex: 1, minHeight: 0, padding: 12 }}>No artifacts yet. When Claude renders an artifact (HTML, SVG, or Markdown) in this session, it shows up here.</div>
+
+  // Default to the newest; a manual pick sticks until that artifact is gone.
+  const current = artifacts.find((a) => a.id === selectedId) ?? artifacts[artifacts.length - 1]
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px 8px' }}>
+        <span style={{ ...S.name, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={current.title}>{current.title}</span>
+        <span style={S.chip}>{current.kind}</span>
+        <button style={S.iconBtn} title="Expand to full window" onClick={() => setFull(true)}>⤢</button>
+      </div>
+      {artifacts.length > 1 && (
+        <select
+          value={current.id}
+          onChange={(e) => setSelectedId(e.target.value)}
+          style={{ margin: '0 12px 8px', background: '#161c25', color: '#d6dbe3', border: '1px solid #2c3647', borderRadius: 4, padding: '3px 4px', fontSize: 11 }}
+        >
+          {artifacts.map((a, i) => (
+            <option key={a.id} value={a.id}>{i + 1}. {a.title} ({a.kind})</option>
+          ))}
+        </select>
+      )}
+      {/* Fill the rest of the panel edge-to-edge, no frame. */}
+      <ArtifactView artifact={current} style={{ flex: 1, minHeight: 0, border: 'none', borderRadius: 0 }} />
+      {full && (
+        // Full-window overlay so UI artifacts get usable space. zIndex below the
+        // quit guard (100); translateZ(0) gives it its own compositing layer so
+        // it's clickable over a terminal's WebGL canvas in WKWebView.
+        <div style={{ position: 'fixed', inset: 0, zIndex: 90, background: '#0b0e13', display: 'flex', flexDirection: 'column', transform: 'translateZ(0)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid #1d2530' }}>
+            <span style={{ flex: 1, color: '#e8edf4', fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{current.title}</span>
+            <span style={S.chip}>{current.kind}</span>
+            <button style={S.iconBtn} title="Close (Esc)" onClick={() => setFull(false)}>✕</button>
+          </div>
+          <ArtifactView artifact={current} style={{ flex: 1 }} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+export default function BriefingPanel({ sessionId, projectPath, starred, artifacts, onToggleStar }: Props) {
   const [card, setCard] = useState<CardView | null>(null)
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('dd.briefingCollapsed') === '1')
   const [width, setWidth] = useState(() => loadNum('dd.briefingWidth', 252))
@@ -224,6 +389,7 @@ export default function BriefingPanel({ sessionId, projectPath, starred, onToggl
   widthRef.current = width
 
   const refresh = useCallback(() => {
+    if (!sessionId) { setCard(null); return } // a session-less new tab has no card
     invoke<CardView | null>('get_card', { sessionId }).then(setCard).catch(console.error)
   }, [sessionId])
   useEffect(() => {
@@ -234,6 +400,23 @@ export default function BriefingPanel({ sessionId, projectPath, starred, onToggl
     listen('index-updated', refresh).then((u) => { if (cancelled) u(); else un = u })
     return () => { cancelled = true; un?.() }
   }, [refresh])
+
+  // When a NEW artifact arrives for this tab, surface it: jump to the Preview
+  // sub-tab, open the panel if collapsed, and give it room (~1/3 of the window,
+  // never shrinking a panel the user already widened).
+  const seenArtifacts = useRef(artifacts.length)
+  useEffect(() => {
+    if (artifacts.length > seenArtifacts.current) {
+      setTab('preview'); localStorage.setItem('dd.rightTab', 'preview')
+      setCollapsed(false); localStorage.setItem('dd.briefingCollapsed', '0')
+      setWidth((w) => {
+        const next = Math.max(w, clampPanelWidth(Math.round(window.innerWidth / 3)))
+        localStorage.setItem('dd.briefingWidth', String(next))
+        return next
+      })
+    }
+    seenArtifacts.current = artifacts.length
+  }, [artifacts.length])
 
   const toggleCollapsed = () =>
     setCollapsed((c) => { const n = !c; localStorage.setItem('dd.briefingCollapsed', n ? '1' : '0'); return n })
@@ -254,21 +437,29 @@ export default function BriefingPanel({ sessionId, projectPath, starred, onToggl
         onDelta={(dx) => setWidth((w) => clampPanelWidth(w - dx))}
         onEnd={() => localStorage.setItem('dd.briefingWidth', String(widthRef.current))}
       />
-      <div style={{ width, minWidth: width, boxSizing: 'border-box', background: '#0b0e13', padding: 12, fontFamily: 'system-ui', fontSize: 12, overflowY: 'auto' }}>
-        <div style={{ display: 'flex', alignItems: 'stretch', gap: 6, marginBottom: 12 }}>
+      <div style={{ width, minWidth: width, boxSizing: 'border-box', background: '#0b0e13', fontFamily: 'system-ui', fontSize: 12, display: 'flex', flexDirection: 'column', height: '100%' }}>
+        <div style={{ display: 'flex', alignItems: 'stretch', gap: 6, padding: '12px 12px 0', flex: 'none' }}>
           <button onClick={toggleCollapsed} title="Collapse panel" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#7d8794', fontSize: 15, padding: 0, lineHeight: 1, alignSelf: 'flex-end', marginBottom: 4 }}>»</button>
           <div style={{ display: 'flex', flex: 1, gap: 2 }}>
             {TABS.map((t) => (
               <button key={t.id} onClick={() => selectTab(t.id)} style={S.tabBtn(t.id === tab)}>
                 {t.label}
+                {t.id === 'preview' && artifacts.length > 0 ? ` (${artifacts.length})` : ''}
               </button>
             ))}
           </div>
         </div>
 
-        {tab === 'briefing' && <BriefingTab sessionId={sessionId} card={card} starred={starred} onToggleStar={onToggleStar} />}
-        {tab === 'skills' && <SkillsTab />}
-        {tab === 'mcp' && <McpTab projectPath={projectPath} />}
+        {/* Preview fills the panel edge-to-edge; the other tabs scroll inside padding. */}
+        {tab === 'preview' ? (
+          <PreviewTab artifacts={artifacts} />
+        ) : (
+          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 12 }}>
+            {tab === 'briefing' && <BriefingTab sessionId={sessionId} card={card} starred={starred} onToggleStar={onToggleStar} />}
+            {tab === 'skills' && <SkillsTab projectPath={projectPath} />}
+            {tab === 'mcp' && <McpTab projectPath={projectPath} />}
+          </div>
+        )}
       </div>
     </div>
   )
