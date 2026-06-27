@@ -10,10 +10,12 @@
 //!
 //! The transport is a hand-rolled minimal Streamable-HTTP / JSON-RPC server on
 //! `127.0.0.1:0` — no tokio/rmcp, matching Drydock's `std::thread` idiom and
-//! adding zero new backend dependencies. It only ever INGESTS render calls; it
-//! exposes no read path to session data. Each request is gated by a per-session
-//! bearer token (the tab id is guessable; the random token is the auth) and an
-//! Origin check (reject non-loopback origins to block DNS-rebinding).
+//! adding zero new backend dependencies. A render call carries either inline
+//! content OR a path to a file the session wrote — which Drydock reads (size
+//! capped) and renders only in its own local webview, the same content the model
+//! could already print; it exposes no other read path. Each request is gated by a
+//! per-session bearer token (the tab id is guessable; the random token is the
+//! auth) and an Origin check (reject non-loopback origins to block DNS-rebinding).
 //!
 //! NOTHING here is written under ~/.claude.
 
@@ -22,6 +24,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -39,16 +42,17 @@ pub const TOOL_ID: &str = "mcp__drydock-artifacts__render_artifact";
 /// line with NO single quotes/apostrophes — it is spliced single-quoted into the
 /// shell `-c` command. It names the exact tool id because current Claude Code may
 /// defer/lazy-load MCP tool schemas, so the model needs an explicit pointer.
-pub const NUDGE: &str = "You are running inside Drydock, which has an Artifacts side panel. When you create a self-contained visual artifact for the user to look at (an HTML page or UI mockup, an SVG image or diagram, or a Markdown document), ALSO call the tool mcp__drydock-artifacts__render_artifact with a short title, the kind (html, svg, or markdown), and the complete content, so it renders in the Artifacts panel. It renders locally inside Drydock and is not published to claude.ai. Prefer calling this tool whenever the user would benefit from seeing the result, in addition to any file you write.";
+pub const NUDGE: &str = "You are running inside Drydock, which has an Artifacts side panel. When you create a self-contained visual artifact for the user to look at (an HTML page or UI mockup, an SVG image or diagram, or a Markdown document), show it by calling the tool mcp__drydock-artifacts__render_artifact with a short title. IMPORTANT for efficiency: if the artifact is in a file (including one you just wrote), pass its `path` (absolute, or relative to your working directory) and do NOT paste the file contents into the call — Drydock reads the file itself, so you avoid regenerating it. Use the `content` argument only for artifacts that are not saved to any file. It renders locally inside Drydock and is not published to claude.ai.";
 
-const TOOL_DESCRIPTION: &str = "Render a self-contained visual artifact in Drydock's Artifacts side panel so the user can SEE it immediately. Use this whenever you produce something visual to look at — an HTML page or UI mockup, an SVG image/diagram, or a Markdown document — instead of only writing a file or printing code. The artifact renders locally inside Drydock and is NOT published to claude.ai.";
+const TOOL_DESCRIPTION: &str = "Render a self-contained visual artifact (HTML page/UI mockup, SVG image/diagram, or Markdown document) in Drydock's Artifacts side panel so the user can SEE it immediately. Pass EITHER `path` (preferred — a file you already wrote; Drydock reads it, so you don't resend or regenerate its content) OR inline `content` (only for artifacts not saved to a file). Renders locally inside Drydock and is NOT published to claude.ai.";
 
 /// Reject content larger than this (bytes). Bounds webview memory; the model
 /// gets an isError result it can react to.
 const MAX_CONTENT: usize = 4 * 1024 * 1024;
 
-/// Per-session render token → the pty tab id that owns the session.
-type Tokens = Arc<Mutex<HashMap<String, u32>>>;
+/// Per-session render token → (owning pty tab id, that session's working
+/// directory). The cwd resolves relative `path` arguments to render_artifact.
+type Tokens = Arc<Mutex<HashMap<String, (u32, Option<PathBuf>)>>>;
 
 /// Artifact pushed to the webview. Field names cross to the frontend verbatim.
 #[derive(Clone, serde::Serialize)]
@@ -82,17 +86,18 @@ impl ArtifactServer {
         Ok(Self { port, tokens })
     }
 
-    /// Mint a token for a tab id (call once per claude spawn). The token goes in
-    /// the injected --mcp-config Authorization header; it never hits a cmdline.
-    pub fn mint(&self, pty_id: u32) -> String {
+    /// Mint a token for a tab id (call once per claude spawn). `cwd` is the
+    /// session's working directory, used to resolve relative artifact paths. The
+    /// token goes in the injected --mcp-config Authorization header; never a cmdline.
+    pub fn mint(&self, pty_id: u32, cwd: Option<PathBuf>) -> String {
         let token = random_token();
-        self.tokens.lock().unwrap().insert(token.clone(), pty_id);
+        self.tokens.lock().unwrap().insert(token.clone(), (pty_id, cwd));
         token
     }
 
     /// Drop every token for a tab id (on pty exit).
     pub fn release(&self, pty_id: u32) {
-        self.tokens.lock().unwrap().retain(|_, v| *v != pty_id);
+        self.tokens.lock().unwrap().retain(|_, v| v.0 != pty_id);
     }
 
     /// Shared handle to the token map, for an exit closure that outlives `&self`.
@@ -159,17 +164,17 @@ fn handle_conn(
             if keep_alive { continue } else { return Ok(()) }
         }
 
-        // Auth: resolve the bearer token to the owning tab id.
-        let pty_id = {
+        // Auth: resolve the bearer token to the owning tab id (+ its cwd).
+        let resolved = {
             let map = tokens.lock().unwrap();
             resolve_token(header(&req, "authorization"), &map)
         };
-        let Some(pty_id) = pty_id else {
+        let Some((pty_id, cwd)) = resolved else {
             write_status(&mut stream, 401, keep_alive)?;
             if keep_alive { continue } else { return Ok(()) }
         };
 
-        let routed = route(&req.body, pty_id);
+        let routed = route(&req.body, cwd.as_deref());
         for e in &routed.emits {
             let id = counter.fetch_add(1, Ordering::Relaxed);
             let _ = app.emit(
@@ -298,9 +303,9 @@ fn parse_bearer(h: &str) -> Option<&str> {
         .map(str::trim)
 }
 
-fn resolve_token(auth: Option<&str>, tokens: &HashMap<String, u32>) -> Option<u32> {
+fn resolve_token(auth: Option<&str>, tokens: &HashMap<String, (u32, Option<PathBuf>)>) -> Option<(u32, Option<PathBuf>)> {
     let token = parse_bearer(auth?)?;
-    tokens.get(token).copied()
+    tokens.get(token).cloned()
 }
 
 /// Allow the CLI (no Origin) and loopback origins; reject everything else so a
@@ -339,7 +344,8 @@ struct Routed {
 }
 
 /// Route a raw request body (single message, or a batch array) to a response.
-fn route(body: &[u8], pty_id: u32) -> Routed {
+/// `cwd` is the calling session's working directory, for relative artifact paths.
+fn route(body: &[u8], cwd: Option<&Path>) -> Routed {
     let v: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
         Err(_) => {
@@ -354,7 +360,7 @@ fn route(body: &[u8], pty_id: u32) -> Routed {
         let mut out = Vec::new();
         let mut emits = Vec::new();
         for it in &items {
-            let r = route_one(it, pty_id);
+            let r = route_one(it, cwd);
             if let Some(j) = r.json {
                 out.push(j);
             }
@@ -366,11 +372,11 @@ fn route(body: &[u8], pty_id: u32) -> Routed {
             Routed { status: 200, json: Some(Value::Array(out)), emits }
         }
     } else {
-        route_one(&v, pty_id)
+        route_one(&v, cwd)
     }
 }
 
-fn route_one(msg: &Value, pty_id: u32) -> Routed {
+fn route_one(msg: &Value, cwd: Option<&Path>) -> Routed {
     // No id → JSON-RPC notification: never gets a response.
     let Some(id) = msg.get("id").cloned() else {
         return Routed { status: 202, json: None, emits: vec![] };
@@ -380,7 +386,7 @@ fn route_one(msg: &Value, pty_id: u32) -> Routed {
         "initialize" => respond(id, initialize_result(msg)),
         "ping" => respond(id, json!({})),
         "tools/list" => respond(id, tools_list_result()),
-        "tools/call" => tools_call(id, msg, pty_id),
+        "tools/call" => tools_call(id, msg, cwd),
         _ => respond_err(id, -32601, "Method not found"),
     }
 }
@@ -425,49 +431,101 @@ fn tools_list_result() -> Value {
                 "type": "object",
                 "properties": {
                     "title": { "type": "string", "description": "Short title for the artifact." },
-                    "kind": { "type": "string", "enum": ["html", "svg", "markdown"], "description": "Content type." },
-                    "content": { "type": "string", "description": "The complete artifact source: a full HTML document, SVG markup, or Markdown text." }
+                    "path": { "type": "string", "description": "PREFERRED. Path to the file to render (absolute, or relative to your working directory). Use this for any artifact saved to a file so you don't resend its content. Kind is inferred from the extension (.html/.htm, .svg, .md/.markdown)." },
+                    "content": { "type": "string", "description": "Inline artifact source (full HTML document, SVG markup, or Markdown). Use only when the artifact is NOT in a file; otherwise pass `path`." },
+                    "kind": { "type": "string", "enum": ["html", "svg", "markdown"], "description": "Content type. Optional when `path` has a known extension; required with inline `content`." }
                 },
-                "required": ["title", "kind", "content"]
+                "required": ["title"]
             }
         }]
     })
 }
 
-fn tools_call(id: Value, msg: &Value, _pty_id: u32) -> Routed {
+/// Infer artifact kind from a file extension, if recognizable.
+fn kind_from_path(path: &str) -> Option<&'static str> {
+    match Path::new(path).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+        Some("html") | Some("htm") => Some("html"),
+        Some("svg") => Some("svg"),
+        Some("md") | Some("markdown") => Some("markdown"),
+        _ => None,
+    }
+}
+
+/// Read a model-supplied artifact file: absolute, or resolved against the
+/// session cwd. Bounded to MAX_CONTENT and required to be UTF-8 text. The model
+/// already has filesystem read access, and the bytes only reach the local
+/// webview — so this grants no new capability, but we still fail closed on
+/// oversize / unreadable / non-text inputs.
+fn read_artifact_file(path: &str, cwd: Option<&Path>) -> Result<String, String> {
+    let p = Path::new(path);
+    let resolved = if p.is_absolute() {
+        p.to_path_buf()
+    } else if let Some(base) = cwd {
+        base.join(p)
+    } else {
+        return Err(format!("relative path \"{path}\" can't be resolved here — pass an absolute path"));
+    };
+    let meta = std::fs::metadata(&resolved).map_err(|_| format!("can't read file: {}", resolved.display()))?;
+    if !meta.is_file() {
+        return Err(format!("not a regular file: {}", resolved.display()));
+    }
+    if meta.len() as usize > MAX_CONTENT {
+        return Err("file too large (4 MB limit)".to_string());
+    }
+    std::fs::read_to_string(&resolved).map_err(|_| format!("file is not UTF-8 text: {}", resolved.display()))
+}
+
+fn tools_call(id: Value, msg: &Value, cwd: Option<&Path>) -> Routed {
     let params = msg.get("params");
     let name = params.and_then(|p| p.get("name")).and_then(Value::as_str);
     if name != Some(TOOL_NAME) {
         return respond_err(id, -32602, "Unknown tool");
     }
     let args = params.and_then(|p| p.get("arguments"));
-    let get = |k: &str| args.and_then(|a| a.get(k)).and_then(Value::as_str).unwrap_or("");
-    let title = {
-        let t = get("title");
-        if t.is_empty() { "Untitled" } else { t }
+    let get = |k: &str| args.and_then(|a| a.get(k)).and_then(Value::as_str);
+    let title = match get("title") {
+        Some(t) if !t.trim().is_empty() => t,
+        _ => "Untitled",
     };
-    let kind = get("kind");
-    let content = get("content");
+    let path = get("path").map(str::trim).filter(|s| !s.is_empty());
+    let inline = get("content").filter(|s| !s.is_empty());
+    let kind_arg = get("kind");
 
-    if !matches!(kind, "html" | "svg" | "markdown") {
-        return tool_error(id, "kind must be one of: html, svg, markdown");
-    }
-    if content.is_empty() {
-        return tool_error(id, "content must not be empty");
+    // Resolve the source: a file `path` (preferred — no content re-sent) or
+    // inline `content`. Exactly one must be given.
+    let (content, kind_from_ext) = match (path, inline) {
+        (Some(_), Some(_)) => return tool_error(id, "provide either `path` or `content`, not both"),
+        (None, None) => return tool_error(id, "provide `path` (preferred — a file you wrote) or inline `content`"),
+        (Some(p), None) => match read_artifact_file(p, cwd) {
+            Ok(text) => (text, kind_from_path(p)),
+            Err(e) => return tool_error(id, &e),
+        },
+        (None, Some(c)) => (c.to_string(), None),
+    };
+
+    // kind: explicit arg wins, else inferred from the file extension.
+    let kind = match kind_arg.or(kind_from_ext) {
+        Some(k) if matches!(k, "html" | "svg" | "markdown") => k,
+        Some(_) => return tool_error(id, "kind must be one of: html, svg, markdown"),
+        None => return tool_error(id, "specify `kind` (html, svg, or markdown) — it can't be inferred from the file"),
+    };
+    if content.trim().is_empty() {
+        return tool_error(id, "the artifact is empty");
     }
     if content.len() > MAX_CONTENT {
         return tool_error(id, "content too large (4 MB limit)");
     }
+    let from = path.map(|p| format!(" from {p}")).unwrap_or_default();
     Routed {
         status: 200,
         json: Some(json!({
             "jsonrpc": "2.0",
             "id": id,
             "result": {
-                "content": [{ "type": "text", "text": format!("Rendered \"{title}\" in Drydock's Artifacts panel.") }]
+                "content": [{ "type": "text", "text": format!("Rendered \"{title}\"{from} in Drydock's Artifacts panel.") }]
             }
         })),
-        emits: vec![Emit { title: title.to_string(), kind: kind.to_string(), content: content.to_string() }],
+        emits: vec![Emit { title: title.to_string(), kind: kind.to_string(), content }],
     }
 }
 
@@ -493,8 +551,8 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
-    fn tokens(pairs: &[(&str, u32)]) -> HashMap<String, u32> {
-        pairs.iter().map(|(t, id)| (t.to_string(), *id)).collect()
+    fn tokens(pairs: &[(&str, u32)]) -> HashMap<String, (u32, Option<PathBuf>)> {
+        pairs.iter().map(|(t, id)| (t.to_string(), (*id, None))).collect()
     }
 
     #[test]
@@ -507,7 +565,7 @@ mod tests {
     #[test]
     fn resolve_token_matches_only_known_tokens() {
         let map = tokens(&[("good", 5)]);
-        assert_eq!(resolve_token(Some("Bearer good"), &map), Some(5));
+        assert_eq!(resolve_token(Some("Bearer good"), &map), Some((5, None)));
         assert_eq!(resolve_token(Some("Bearer bad"), &map), None);
         assert_eq!(resolve_token(None, &map), None);
     }
@@ -527,7 +585,7 @@ mod tests {
     #[test]
     fn initialize_echoes_version_and_names_server() {
         let msg = json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "protocolVersion": "2025-03-26" } });
-        let r = route(msg.to_string().as_bytes(), 1);
+        let r = route(msg.to_string().as_bytes(), None);
         let res = &r.json.unwrap()["result"];
         assert_eq!(res["protocolVersion"], "2025-03-26");
         assert_eq!(res["serverInfo"]["name"], SERVER_NAME);
@@ -537,7 +595,7 @@ mod tests {
     #[test]
     fn tools_list_exposes_render_artifact() {
         let msg = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" });
-        let r = route(msg.to_string().as_bytes(), 1);
+        let r = route(msg.to_string().as_bytes(), None);
         let tools = r.json.unwrap()["result"]["tools"].clone();
         assert_eq!(tools[0]["name"], TOOL_NAME);
         assert_eq!(tools[0]["inputSchema"]["required"][0], "title");
@@ -549,7 +607,7 @@ mod tests {
             "jsonrpc": "2.0", "id": 3, "method": "tools/call",
             "params": { "name": "render_artifact", "arguments": { "title": "Hi", "kind": "html", "content": "<p>x</p>" } }
         });
-        let r = route(msg.to_string().as_bytes(), 9);
+        let r = route(msg.to_string().as_bytes(), None);
         assert_eq!(r.emits.len(), 1);
         assert_eq!(r.emits[0].kind, "html");
         assert_eq!(r.emits[0].content, "<p>x</p>");
@@ -563,7 +621,7 @@ mod tests {
             "jsonrpc": "2.0", "id": 4, "method": "tools/call",
             "params": { "name": "render_artifact", "arguments": { "title": "X", "kind": "pdf", "content": "y" } }
         });
-        let r = route(msg.to_string().as_bytes(), 1);
+        let r = route(msg.to_string().as_bytes(), None);
         assert!(r.emits.is_empty());
         assert_eq!(r.json.unwrap()["result"]["isError"], true);
     }
@@ -574,15 +632,73 @@ mod tests {
             "jsonrpc": "2.0", "id": 5, "method": "tools/call",
             "params": { "name": "render_artifact", "arguments": { "title": "X", "kind": "svg", "content": "" } }
         });
-        let r = route(msg.to_string().as_bytes(), 1);
+        let r = route(msg.to_string().as_bytes(), None);
         assert!(r.emits.is_empty());
         assert_eq!(r.json.unwrap()["result"]["isError"], true);
     }
 
     #[test]
+    fn tools_call_path_reads_file_and_infers_kind() {
+        let dir = std::env::temp_dir().join(format!("drydock-artifact-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("mockup.html"), "<h1>hi</h1>").unwrap();
+        // relative path resolves against the session cwd; kind inferred from .html
+        let msg = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "render_artifact", "arguments": { "title": "Mock", "path": "mockup.html" } }
+        });
+        let r = route(msg.to_string().as_bytes(), Some(dir.as_path()));
+        assert_eq!(r.emits.len(), 1, "the file's content should be emitted");
+        assert_eq!(r.emits[0].kind, "html");
+        assert_eq!(r.emits[0].content, "<h1>hi</h1>");
+        let ack = r.json.unwrap()["result"]["content"][0]["text"].as_str().unwrap().to_string();
+        assert!(ack.contains("mockup.html"), "ack should name the file: {ack}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn tools_call_missing_file_is_tool_error() {
+        let msg = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "render_artifact", "arguments": { "title": "X", "path": "/no/such/file-xyz.html" } }
+        });
+        let r = route(msg.to_string().as_bytes(), None);
+        assert!(r.emits.is_empty());
+        assert_eq!(r.json.unwrap()["result"]["isError"], true);
+    }
+
+    #[test]
+    fn tools_call_rejects_both_and_neither_source() {
+        let both = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "render_artifact", "arguments": { "title": "X", "path": "a.html", "content": "<p>x</p>", "kind": "html" } } });
+        assert_eq!(route(both.to_string().as_bytes(), None).json.unwrap()["result"]["isError"], true);
+        let neither = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "render_artifact", "arguments": { "title": "X" } } });
+        assert_eq!(route(neither.to_string().as_bytes(), None).json.unwrap()["result"]["isError"], true);
+    }
+
+    #[test]
+    fn tools_call_inline_without_kind_errors() {
+        let msg = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "render_artifact", "arguments": { "title": "X", "content": "<p>x</p>" } } });
+        let r = route(msg.to_string().as_bytes(), None);
+        assert!(r.emits.is_empty());
+        assert_eq!(r.json.unwrap()["result"]["isError"], true);
+    }
+
+    #[test]
+    fn kind_from_path_infers_known_extensions() {
+        assert_eq!(kind_from_path("a/b/page.HTML"), Some("html"));
+        assert_eq!(kind_from_path("diagram.svg"), Some("svg"));
+        assert_eq!(kind_from_path("notes.md"), Some("markdown"));
+        assert_eq!(kind_from_path("data.json"), None);
+        assert_eq!(kind_from_path("noext"), None);
+    }
+
+    #[test]
     fn notification_gets_no_response() {
         let msg = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
-        let r = route(msg.to_string().as_bytes(), 1);
+        let r = route(msg.to_string().as_bytes(), None);
         assert_eq!(r.status, 202);
         assert!(r.json.is_none());
     }
@@ -590,13 +706,13 @@ mod tests {
     #[test]
     fn unknown_method_is_method_not_found() {
         let msg = json!({ "jsonrpc": "2.0", "id": 7, "method": "resources/list" });
-        let r = route(msg.to_string().as_bytes(), 1);
+        let r = route(msg.to_string().as_bytes(), None);
         assert_eq!(r.json.unwrap()["error"]["code"], -32601);
     }
 
     #[test]
     fn malformed_json_is_parse_error() {
-        let r = route(b"not json", 1);
+        let r = route(b"not json", None);
         assert_eq!(r.json.unwrap()["error"]["code"], -32700);
     }
 
@@ -607,7 +723,7 @@ mod tests {
             { "jsonrpc": "2.0", "id": 1, "method": "tools/call",
               "params": { "name": "render_artifact", "arguments": { "title": "B", "kind": "markdown", "content": "# hi" } } }
         ]);
-        let r = route(batch.to_string().as_bytes(), 2);
+        let r = route(batch.to_string().as_bytes(), None);
         assert_eq!(r.emits.len(), 1);
         let arr = r.json.unwrap();
         assert_eq!(arr.as_array().unwrap().len(), 1); // notification produced no response
