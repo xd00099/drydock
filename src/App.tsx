@@ -11,7 +11,7 @@ import BriefingPanel from './BriefingPanel'
 import FindBar from './FindBar'
 import { useSessions } from './useSessions'
 import type { Artifact, ArtifactKind, PaneSearch, SessionView, Tab } from './types'
-import { clip, sessionLabel } from './types'
+import { clip, sessionLabel, uuidv4 } from './types'
 
 let nextTabId = 1
 const EMPTY_ARTIFACTS: Artifact[] = [] // stable ref so an artifact-less panel doesn't churn
@@ -97,8 +97,23 @@ export default function App() {
     }, s.session_id)
   }
 
-  const newSession = (projectPath: string) =>
-    addTab({ title: 'claude', kind: 'pty', program: null, args: ['-l', '-c', 'exec claude'], cwd: projectPath })
+  // A brand-new session has no id until claude generates one, so we'd have no way
+  // to match its tab back to the sidebar (re-clicking would open a read-only
+  // transcript instead of focusing the live tab, and the tab name would stay
+  // "claude"). Pin the id ourselves via `--session-id` and set it on the tab, so
+  // a new session behaves exactly like a resumed one. The label then resolves
+  // live from the index once the session is picked up (see TabBar).
+  const newSession = (projectPath: string) => {
+    const sessionId = uuidv4()
+    addTab({
+      title: 'claude',
+      kind: 'pty',
+      program: null,
+      args: ['-l', '-c', `exec claude --session-id '${sessionId}'`],
+      cwd: projectPath,
+      sessionId,
+    })
+  }
 
   const newShell = () => addTab({ title: 'shell', kind: 'pty', program: null, args: ['-l'], cwd: null, terminal: true })
 
@@ -261,7 +276,7 @@ export default function App() {
         onDelete={(sessionId) => invoke('delete_session_permanently', { sessionId }).then(refresh)}
       />
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-        <TabBar tabs={tabs} activeId={activeId} shellDirs={shellDirs} unread={unread} onSelect={setActiveId} onClose={closeTab} onNewShell={newShell} />
+        <TabBar tabs={tabs} sessions={sessions} activeId={activeId} shellDirs={shellDirs} unread={unread} onSelect={setActiveId} onClose={closeTab} onNewShell={newShell} />
         <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
           {tabs.map((t) => (
             <div key={t.id} style={{ position: 'absolute', inset: 8, display: t.id === activeId ? 'block' : 'none' }}>
@@ -326,8 +341,8 @@ export default function App() {
         </div>
       </div>
       {/* Right panel for any claude/transcript tab (not plain shells). Keyed by
-          tab id — NOT sessionId — so brand-new sessions (no id yet) each get
-          their own instance instead of collapsing to one shared key={undefined}. */}
+          tab id — NOT sessionId — so distinct tabs (e.g. a live session and its
+          read-only transcript share one id) each keep their own panel state. */}
       {activeTab && !activeTab.terminal && (() => {
         const s = activeTab.sessionId ? sessions.find((x) => x.session_id === activeTab.sessionId) : undefined
         return (

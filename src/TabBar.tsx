@@ -1,8 +1,9 @@
-import type { Tab } from './types'
-import { baseName, clip, sessionColor } from './types'
+import type { SessionView, Tab } from './types'
+import { baseName, clip, sessionColor, sessionLabel } from './types'
 
 type Props = {
   tabs: Tab[]
+  sessions: SessionView[] // index, for resolving a session tab's live label
   activeId: number | null
   shellDirs: Record<number, string> // live cwd per shell tab id
   unread: Record<number, number> // unseen artifact count per tab id
@@ -33,10 +34,18 @@ const S = {
   plus: { flexShrink: 0, background: 'none', border: 'none', color: '#7d8794', cursor: 'pointer', fontSize: 14 } as const,
 }
 
-export default function TabBar({ tabs, activeId, shellDirs, unread, onSelect, onClose, onNewShell }: Props) {
+export default function TabBar({ tabs, sessions, activeId, shellDirs, unread, onSelect, onClose, onNewShell }: Props) {
   const sessionTabs = tabs.filter((t) => !t.terminal)
   const termTabs = tabs.filter((t) => t.terminal)
   const termNames = terminalLabels(termTabs, shellDirs)
+
+  // Prefer the session's live label from the index (so a new "claude" tab takes
+  // on its real name once the session is picked up); fall back to the title we
+  // baked at creation while it isn't indexed yet.
+  const sessionTabLabel = (t: Tab): string => {
+    const s = t.sessionId ? sessions.find((x) => x.session_id === t.sessionId) : undefined
+    return s ? sessionLabel(s) : t.title
+  }
 
   const chip = (t: Tab, label: string, accent?: string, tip?: string) => (
     <div
@@ -67,7 +76,7 @@ export default function TabBar({ tabs, activeId, shellDirs, unread, onSelect, on
       {sessionTabs.length > 0 && (
         <div style={S.lane}>
           <span style={S.laneLabel}>SESSIONS</span>
-          {sessionTabs.map((t) => chip(t, t.title, t.sessionId ? sessionColor(t.sessionId) : undefined, t.title))}
+          {sessionTabs.map((t) => { const label = sessionTabLabel(t); return chip(t, label, t.sessionId ? sessionColor(t.sessionId) : undefined, label) })}
         </div>
       )}
       <div style={{ ...S.lane, borderTop: sessionTabs.length > 0 ? '1px solid #161c25' : undefined }}>

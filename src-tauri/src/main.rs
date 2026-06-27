@@ -294,3 +294,30 @@ fn main() {
         // guarded by the frontend's onCloseRequested, ⌘Q by the menu above.
         .run(|_, _| {});
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_claude_exec_matches_new_resume_and_session_id_forms() {
+        // a plain new session, and the new --session-id form the frontend now
+        // uses to pin a brand-new session's id
+        assert!(is_claude_exec("exec claude"));
+        assert!(is_claude_exec("exec claude --session-id 'abc-123'"));
+        assert!(is_claude_exec("exec claude --resume 'abc-123'"));
+        // shells and look-alikes must not match
+        assert!(!is_claude_exec("-l"));
+        assert!(!is_claude_exec("exec claudette"));
+        assert!(!is_claude_exec("echo exec claude"));
+    }
+
+    #[test]
+    fn inject_artifact_flags_preserves_session_id_suffix() {
+        let out = inject_artifact_flags("exec claude --session-id 'abc-123'", "/cfg/7.json");
+        // flags are spliced right after `exec claude`, the rest is preserved
+        assert!(out.starts_with("exec claude --mcp-config '/cfg/7.json'"));
+        assert!(out.contains(artifacts::TOOL_ID));
+        assert!(out.ends_with("--session-id 'abc-123'"));
+    }
+}
