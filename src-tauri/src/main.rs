@@ -101,7 +101,7 @@ fn pty_spawn(
                 let _ = std::fs::create_dir_all(&mcp_dir);
                 let cfg_path = mcp_dir.join(format!("{id}.json"));
                 let cfg_str = cfg_path.to_string_lossy().to_string();
-                let token = artifacts.mint(id);
+                let token = artifacts.mint(id, cwd.clone().map(std::path::PathBuf::from));
                 let mut servers = serde_json::Map::new();
                 servers.insert(
                     artifacts::SERVER_NAME.to_string(),
@@ -138,7 +138,7 @@ fn pty_spawn(
         move |id, code| {
             // The session is gone: invalidate its render token and remove its
             // injected config file.
-            release_tokens.lock().unwrap().retain(|_, v| *v != id);
+            release_tokens.lock().unwrap().retain(|_, v| v.0 != id);
             if let Some(p) = &exit_cfg {
                 let _ = std::fs::remove_file(p);
             }
