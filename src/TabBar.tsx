@@ -5,6 +5,7 @@ type Props = {
   tabs: Tab[]
   activeId: number | null
   shellDirs: Record<number, string> // live cwd per shell tab id
+  unread: Record<number, number> // unseen artifact count per tab id
   onSelect: (id: number) => void
   onClose: (id: number) => void
   onNewShell: () => void
@@ -32,7 +33,7 @@ const S = {
   plus: { flexShrink: 0, background: 'none', border: 'none', color: '#7d8794', cursor: 'pointer', fontSize: 14 } as const,
 }
 
-export default function TabBar({ tabs, activeId, shellDirs, onSelect, onClose, onNewShell }: Props) {
+export default function TabBar({ tabs, activeId, shellDirs, unread, onSelect, onClose, onNewShell }: Props) {
   const sessionTabs = tabs.filter((t) => !t.terminal)
   const termTabs = tabs.filter((t) => t.terminal)
   const termNames = terminalLabels(termTabs, shellDirs)
@@ -54,6 +55,9 @@ export default function TabBar({ tabs, activeId, shellDirs, onSelect, onClose, o
       }}
     >
       <span style={{ fontStyle: t.preview ? 'italic' : undefined }}>{clip(label, 22)}{t.exited ? ' ·ended' : ''}</span>
+      {unread[t.id] ? (
+        <span title={`${unread[t.id]} new preview${unread[t.id] > 1 ? 's' : ''}`} style={{ background: '#5a7fb0', color: '#0b0e13', borderRadius: 8, fontSize: 9, fontWeight: 700, padding: '0 5px', lineHeight: '14px' }}>{unread[t.id]}</span>
+      ) : null}
       <span style={S.close} onClick={(e) => { e.stopPropagation(); onClose(t.id) }}>✕</span>
     </div>
   )

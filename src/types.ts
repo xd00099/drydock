@@ -28,6 +28,11 @@ export type CardView = { summary: string; timeline: TimelineItem[]; generated_at
 export type Skill = { name: string; description: string; plugin: string }
 export type McpServer = { name: string; kind: string; detail: string; scope: string }
 
+// A visual artifact a session rendered via the loopback MCP server, shown in the
+// right-panel "Preview" tab. `id` is server-assigned (stable React key).
+export type ArtifactKind = 'html' | 'svg' | 'markdown'
+export type Artifact = { id: string; title: string; kind: ArtifactKind; content: string }
+
 /** Display label for a session: AI summary when present, else its raw title. */
 export function sessionLabel(s: SessionView): string {
   return s.summary && s.summary.trim() ? s.summary : s.title

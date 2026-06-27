@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { clampPanelWidth, loadNum, relAge, baseName, type CardView, type McpServer, type Skill, type TimelineItem } from './types'
+import { clampPanelWidth, loadNum, relAge, baseName, type Artifact, type CardView, type McpServer, type Skill, type TimelineItem } from './types'
+import ArtifactView from './ArtifactView'
 import ResizeHandle from './ResizeHandle'
 
-type RightTab = 'briefing' | 'skills' | 'mcp'
+type RightTab = 'briefing' | 'skills' | 'mcp' | 'preview'
 
 type Props = {
-  sessionId: string
+  sessionId: string | null // null for a brand-new claude tab with no session id yet
   projectPath?: string // active session's project, for per-project MCP lookup
   starred: boolean
+  artifacts: Artifact[] // visual artifacts this tab's session has rendered
   onToggleStar?: () => void
 }
 
@@ -17,6 +19,7 @@ const TABS: { id: RightTab; label: string }[] = [
   { id: 'briefing', label: 'Briefing' },
   { id: 'skills', label: 'Skills' },
   { id: 'mcp', label: 'MCP' },
+  { id: 'preview', label: 'Preview' },
 ]
 
 const loadStrSet = (key: string): Set<string> => {
@@ -52,6 +55,7 @@ const S = {
     overflow: 'hidden',
   } as const,
   chip: { fontSize: 9, color: '#9aa3af', background: '#1b2230', border: '1px solid #2c3647', borderRadius: 4, padding: '0 5px' } as const,
+  iconBtn: { background: 'none', border: '1px solid #2c3647', borderRadius: 4, cursor: 'pointer', color: '#9aa3af', fontSize: 12, lineHeight: 1, padding: '2px 6px' } as const,
 }
 
 function Item({ it }: { it: TimelineItem }) {
@@ -76,7 +80,9 @@ function Item({ it }: { it: TimelineItem }) {
   )
 }
 
-function BriefingTab({ sessionId, card, starred, onToggleStar }: { sessionId: string; card: CardView | null; starred: boolean; onToggleStar?: () => void }) {
+function BriefingTab({ sessionId, card, starred, onToggleStar }: { sessionId: string | null; card: CardView | null; starred: boolean; onToggleStar?: () => void }) {
+  if (!sessionId)
+    return <div style={S.muted}>No indexed session yet — once this conversation is saved, its briefing card appears here.</div>
   return (
     <>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 12 }}>
@@ -215,7 +221,59 @@ function McpTab({ projectPath }: { projectPath?: string }) {
   )
 }
 
-export default function BriefingPanel({ sessionId, projectPath, starred, onToggleStar }: Props) {
+function PreviewTab({ artifacts }: { artifacts: Artifact[] }) {
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [full, setFull] = useState(false)
+  // Esc closes the expanded overlay.
+  useEffect(() => {
+    if (!full) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setFull(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [full])
+
+  if (artifacts.length === 0)
+    return <div style={S.muted}>No preview yet. When Claude renders an artifact (HTML, SVG, or Markdown) in this session, it shows up here.</div>
+
+  // Default to the newest; a manual pick sticks until that artifact is gone.
+  const current = artifacts.find((a) => a.id === selectedId) ?? artifacts[artifacts.length - 1]
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ ...S.name, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={current.title}>{current.title}</span>
+        <span style={S.chip}>{current.kind}</span>
+        <button style={S.iconBtn} title="Expand to full window" onClick={() => setFull(true)}>⤢</button>
+      </div>
+      {artifacts.length > 1 && (
+        <select
+          value={current.id}
+          onChange={(e) => setSelectedId(e.target.value)}
+          style={{ background: '#161c25', color: '#d6dbe3', border: '1px solid #2c3647', borderRadius: 4, padding: '3px 4px', fontSize: 11 }}
+        >
+          {artifacts.map((a, i) => (
+            <option key={a.id} value={a.id}>{i + 1}. {a.title} ({a.kind})</option>
+          ))}
+        </select>
+      )}
+      <ArtifactView artifact={current} style={{ height: 360, borderRadius: 6, border: '1px solid #1d2530' }} />
+      {full && (
+        // Full-window overlay so UI artifacts get usable space. zIndex below the
+        // quit guard (100); translateZ(0) gives it its own compositing layer so
+        // it's clickable over a terminal's WebGL canvas in WKWebView.
+        <div style={{ position: 'fixed', inset: 0, zIndex: 90, background: '#0b0e13', display: 'flex', flexDirection: 'column', transform: 'translateZ(0)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid #1d2530' }}>
+            <span style={{ flex: 1, color: '#e8edf4', fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{current.title}</span>
+            <span style={S.chip}>{current.kind}</span>
+            <button style={S.iconBtn} title="Close (Esc)" onClick={() => setFull(false)}>✕</button>
+          </div>
+          <ArtifactView artifact={current} style={{ flex: 1 }} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+export default function BriefingPanel({ sessionId, projectPath, starred, artifacts, onToggleStar }: Props) {
   const [card, setCard] = useState<CardView | null>(null)
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('dd.briefingCollapsed') === '1')
   const [width, setWidth] = useState(() => loadNum('dd.briefingWidth', 252))
@@ -224,6 +282,7 @@ export default function BriefingPanel({ sessionId, projectPath, starred, onToggl
   widthRef.current = width
 
   const refresh = useCallback(() => {
+    if (!sessionId) { setCard(null); return } // a session-less new tab has no card
     invoke<CardView | null>('get_card', { sessionId }).then(setCard).catch(console.error)
   }, [sessionId])
   useEffect(() => {
@@ -261,6 +320,7 @@ export default function BriefingPanel({ sessionId, projectPath, starred, onToggl
             {TABS.map((t) => (
               <button key={t.id} onClick={() => selectTab(t.id)} style={S.tabBtn(t.id === tab)}>
                 {t.label}
+                {t.id === 'preview' && artifacts.length > 0 ? ` (${artifacts.length})` : ''}
               </button>
             ))}
           </div>
@@ -269,6 +329,7 @@ export default function BriefingPanel({ sessionId, projectPath, starred, onToggl
         {tab === 'briefing' && <BriefingTab sessionId={sessionId} card={card} starred={starred} onToggleStar={onToggleStar} />}
         {tab === 'skills' && <SkillsTab />}
         {tab === 'mcp' && <McpTab projectPath={projectPath} />}
+        {tab === 'preview' && <PreviewTab artifacts={artifacts} />}
       </div>
     </div>
   )
