@@ -26,11 +26,20 @@ pub struct Settings {
     /// configured only in `.zshrc` (which a non-interactive login shell skips)
     /// or not in the GUI environment at all.
     pub claude_env: BTreeMap<String, String>,
+    /// Whether Drydock injects its Preview-panel artifact tool into the claude
+    /// tabs it launches (a per-session `--mcp-config` pointing at the loopback
+    /// MCP server). Default on; set `false` to opt out entirely — no injection,
+    /// the server doesn't accept connections.
+    pub artifacts_enabled: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { card_model: Some("sonnet".to_string()), claude_env: BTreeMap::new() }
+        Self {
+            card_model: Some("sonnet".to_string()),
+            claude_env: BTreeMap::new(),
+            artifacts_enabled: true,
+        }
     }
 }
 
@@ -83,5 +92,15 @@ mod tests {
         // only claude_env present → card_model falls back to the struct default
         let s: Settings = serde_json::from_str(r#"{"claude_env":{}}"#).unwrap();
         assert_eq!(s.card_model.as_deref(), Some("sonnet"));
+    }
+
+    #[test]
+    fn artifacts_enabled_defaults_on_and_can_be_disabled() {
+        assert!(Settings::default().artifacts_enabled);
+        let off: Settings = serde_json::from_str(r#"{"artifacts_enabled": false}"#).unwrap();
+        assert!(!off.artifacts_enabled);
+        // absent key → struct default (on)
+        let absent: Settings = serde_json::from_str(r#"{"claude_env":{}}"#).unwrap();
+        assert!(absent.artifacts_enabled);
     }
 }

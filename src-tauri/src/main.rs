@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod artifacts;
 mod capabilities;
 mod embedder;
 mod enricher;
@@ -13,12 +14,34 @@ use base64::Engine;
 use pty::PtyManager;
 use tauri::{AppHandle, Emitter, State};
 
+/// True for the shell commands Drydock builds to launch claude (`exec claude`
+/// and `exec claude --resume '<id>'`). Drydock owns these strings, so the match
+/// is reliable and naturally excludes plain shells (which pass `["-l"]`).
+fn is_claude_exec(arg: &str) -> bool {
+    arg == "exec claude" || arg.starts_with("exec claude ")
+}
+
+/// Splice the artifact flags right after `exec claude`, preserving the rest of
+/// the command (e.g. ` --resume '<id>'`). `cfg_path` is single-quoted, so the
+/// caller must ensure it has no single quote. NUDGE is single-quote-safe by
+/// construction (asserted in artifacts.rs tests).
+fn inject_artifact_flags(cmd: &str, cfg_path: &str) -> String {
+    let rest = &cmd["exec claude".len()..];
+    format!(
+        "exec claude --mcp-config '{cfg}' --allowedTools {tool} --append-system-prompt '{nudge}'{rest}",
+        cfg = cfg_path,
+        tool = artifacts::TOOL_ID,
+        nudge = artifacts::NUDGE,
+    )
+}
+
 /// Spawn a PTY under a frontend-chosen id. program=None → login shell from $SHELL.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 fn pty_spawn(
     app: AppHandle,
     mgr: State<'_, PtyManager>,
+    artifacts: State<'_, artifacts::ArtifactServer>,
     id: u32,
     program: Option<String>,
     args: Option<Vec<String>>,
@@ -26,15 +49,52 @@ fn pty_spawn(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
+    use tauri::Manager;
     let program = program
         .or_else(|| std::env::var("SHELL").ok())
         .unwrap_or_else(|| "/bin/zsh".to_string());
-    let args = args.unwrap_or_default();
+    let mut args = args.unwrap_or_default();
     // a "+"/⌘T shell passes no cwd; start it in $HOME so it has a real,
     // nameable directory instead of the app's launch dir ("/").
     let cwd = cwd.or_else(|| std::env::var("HOME").ok());
+
+    // Give claude tabs the Preview-panel artifact tool: a per-session
+    // --mcp-config pointing at Drydock's loopback MCP server. Written to
+    // Drydock's OWN app-data dir, never ~/.claude. `--mcp-config` is additive
+    // (no --strict), so it never clobbers the user's own MCP servers.
+    let mut cleanup_cfg: Option<std::path::PathBuf> = None;
+    if artifacts.enabled {
+        if let Some(idx) = args.iter().position(|a| is_claude_exec(a)) {
+            if let Ok(dir) = app.path().app_data_dir() {
+                let mcp_dir = dir.join("mcp");
+                let _ = std::fs::create_dir_all(&mcp_dir);
+                let cfg_path = mcp_dir.join(format!("{id}.json"));
+                let cfg_str = cfg_path.to_string_lossy().to_string();
+                let token = artifacts.mint(id);
+                let mut servers = serde_json::Map::new();
+                servers.insert(
+                    artifacts::SERVER_NAME.to_string(),
+                    serde_json::json!({
+                        "type": "http",
+                        "url": format!("http://127.0.0.1:{}/mcp", artifacts.port),
+                        "headers": { "Authorization": format!("Bearer {token}") }
+                    }),
+                );
+                let cfg = serde_json::json!({ "mcpServers": serde_json::Value::Object(servers) });
+                if !cfg_str.contains('\'') && std::fs::write(&cfg_path, cfg.to_string()).is_ok() {
+                    args[idx] = inject_artifact_flags(&args[idx], &cfg_str);
+                    cleanup_cfg = Some(cfg_path);
+                } else {
+                    artifacts.release(id); // couldn't wire it; don't leak a token
+                }
+            }
+        }
+    }
+    let release_tokens = artifacts.tokens_handle();
+    let exit_cfg = cleanup_cfg.clone();
+
     let app_exit = app.clone();
-    mgr.spawn(
+    let result = mgr.spawn(
         id,
         &program,
         &args,
@@ -45,10 +105,24 @@ fn pty_spawn(
             let _ = app.emit(&format!("pty-output-{id}"), B64.encode(bytes));
         },
         move |id, code| {
+            // The session is gone: invalidate its render token and remove its
+            // injected config file.
+            release_tokens.lock().unwrap().retain(|_, v| *v != id);
+            if let Some(p) = &exit_cfg {
+                let _ = std::fs::remove_file(p);
+            }
             let _ = app_exit.emit(&format!("pty-exit-{id}"), code);
         },
-    )
-    .map_err(|e| e.to_string())
+    );
+    if result.is_err() {
+        // Spawn failed, so the reader thread never started and on_exit won't run:
+        // clean up the token + config we injected for this dead spawn ourselves.
+        artifacts.release(id);
+        if let Some(p) = &cleanup_cfg {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+    result.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -175,6 +249,11 @@ fn main() {
             // every PTY (terminal tabs) and, in the enricher, into card calls.
             let cfg = settings::Settings::load(&data);
             app.manage(PtyManager::with_env(cfg.env_pairs()));
+            // Loopback MCP server for the Preview panel; pty_spawn injects a
+            // per-session --mcp-config pointing at it into claude tabs.
+            let artifact_server =
+                artifacts::ArtifactServer::start(app.handle().clone(), cfg.artifacts_enabled)?;
+            app.manage(artifact_server);
             index::start(&app.handle().clone())?;
             {
                 let db = data.join("drydock.db");
