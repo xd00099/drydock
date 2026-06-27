@@ -130,6 +130,10 @@ fn handle_conn(
 ) -> std::io::Result<()> {
     // Idle keep-alive connections must not pin a thread forever.
     stream.set_read_timeout(Some(Duration::from_secs(120))).ok();
+    // Disable Nagle's algorithm: responses are small JSON written right after the
+    // request is read, and Nagle + the client's delayed-ACK would otherwise add a
+    // ~40ms (up to 200ms) stall to every MCP call on loopback.
+    stream.set_nodelay(true).ok();
     loop {
         let Some(req) = read_request(&mut stream)? else { return Ok(()) };
         let keep_alive = header(&req, "connection")
@@ -253,6 +257,10 @@ fn read_request<R: Read>(stream: &mut R) -> std::io::Result<Option<Req>> {
     Ok(Some(Req { method, path, headers, body }))
 }
 
+// Each response is built into ONE buffer and written with a single `write_all`,
+// so it leaves as one TCP segment. `write!`'s piecewise writes would otherwise
+// emit several tiny segments per response — extra syscalls and, with Nagle, a
+// stall (we also set TCP_NODELAY on the stream).
 fn write_status<W: Write>(w: &mut W, code: u16, keep_alive: bool) -> std::io::Result<()> {
     let reason = match code {
         204 => "No Content",
@@ -263,22 +271,21 @@ fn write_status<W: Write>(w: &mut W, code: u16, keep_alive: bool) -> std::io::Re
         _ => "OK",
     };
     let conn = if keep_alive { "keep-alive" } else { "close" };
-    write!(
-        w,
-        "HTTP/1.1 {code} {reason}\r\nContent-Length: 0\r\nConnection: {conn}\r\n\r\n"
-    )?;
+    let resp = format!("HTTP/1.1 {code} {reason}\r\nContent-Length: 0\r\nConnection: {conn}\r\n\r\n");
+    w.write_all(resp.as_bytes())?;
     w.flush()
 }
 
 fn write_json<W: Write>(w: &mut W, code: u16, body: &Value, keep_alive: bool) -> std::io::Result<()> {
     let bytes = serde_json::to_vec(body).unwrap_or_default();
     let conn = if keep_alive { "keep-alive" } else { "close" };
-    write!(
-        w,
+    let mut resp = format!(
         "HTTP/1.1 {code} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: {conn}\r\n\r\n",
         bytes.len()
-    )?;
-    w.write_all(&bytes)?;
+    )
+    .into_bytes();
+    resp.extend_from_slice(&bytes);
+    w.write_all(&resp)?;
     w.flush()
 }
 
@@ -621,6 +628,31 @@ mod tests {
     fn read_request_clean_close_returns_none() {
         let mut cur = Cursor::new(Vec::new());
         assert!(read_request(&mut cur).unwrap().is_none());
+    }
+
+    #[test]
+    fn write_json_is_one_well_formed_response() {
+        let mut buf = Vec::new();
+        let body = json!({ "ok": true });
+        write_json(&mut buf, 200, &body, true).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        let expected_body = serde_json::to_string(&body).unwrap();
+        assert!(s.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(s.contains(&format!("Content-Length: {}\r\n", expected_body.len())));
+        assert!(s.contains("Content-Type: application/json\r\n"));
+        assert!(s.contains("Connection: keep-alive\r\n"));
+        // headers and body are emitted together, body last
+        assert!(s.ends_with(&format!("\r\n\r\n{expected_body}")));
+    }
+
+    #[test]
+    fn write_status_close_is_exact() {
+        let mut buf = Vec::new();
+        write_status(&mut buf, 401, false).unwrap();
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
     }
 
     #[test]
