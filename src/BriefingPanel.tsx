@@ -346,7 +346,7 @@ function PreviewTab({ artifacts }: { artifacts: Artifact[] }) {
   const actions = (a: Artifact) => (
     <>
       {a.path && (
-        <button style={S.iconBtn} title={`Reveal source in Finder\n${a.path}`} onClick={() => reveal(a)}>Reveal</button>
+        <button style={S.iconBtn} title={`Open in Finder\n${a.path}`} onClick={() => reveal(a)}>Open</button>
       )}
       <button style={S.iconBtn} title="Download to your Downloads folder" onClick={() => download(a)}>Download</button>
     </>
