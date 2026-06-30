@@ -43,8 +43,10 @@ export type McpStatus = 'connected' | 'failed' | 'pending' | 'unknown'
 
 // A visual artifact a session rendered via the loopback MCP server, shown in the
 // right-panel "Artifacts" tab. `id` is server-assigned (stable React key).
+// `path` is the on-disk source when rendered from a file (enables "Reveal in
+// Finder"); undefined for inline content.
 export type ArtifactKind = 'html' | 'svg' | 'markdown'
-export type Artifact = { id: string; title: string; kind: ArtifactKind; content: string }
+export type Artifact = { id: string; title: string; kind: ArtifactKind; content: string; path?: string }
 
 /** Display label for a session: AI summary when present, else its raw title. */
 export function sessionLabel(s: SessionView): string {
