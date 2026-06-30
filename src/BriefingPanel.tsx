@@ -330,6 +330,27 @@ function McpTab({ projectPath }: { projectPath?: string }) {
 function PreviewTab({ artifacts }: { artifacts: Artifact[] }) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [full, setFull] = useState(false)
+  // Transient confirmation/error line under the header (download/reveal results).
+  const [msg, setMsg] = useState<{ text: string; error?: boolean } | null>(null)
+  const flash = (text: string, error?: boolean) => {
+    setMsg({ text, error })
+    window.setTimeout(() => setMsg((m) => (m && m.text === text ? null : m)), 3000)
+  }
+  // Download writes straight to ~/Downloads (backend) and reveals it; Reveal
+  // shows the model's original source file in Finder (only for file-backed ones).
+  const download = (a: Artifact) =>
+    invoke<string>('save_artifact', { id: a.id })
+      .then(() => flash('Saved to Downloads — revealed in Finder'))
+      .catch((e) => flash(String(e), true))
+  const reveal = (a: Artifact) => invoke('reveal_artifact', { id: a.id }).catch((e) => flash(String(e), true))
+  const actions = (a: Artifact) => (
+    <>
+      {a.path && (
+        <button style={S.iconBtn} title={`Reveal source in Finder\n${a.path}`} onClick={() => reveal(a)}>Reveal</button>
+      )}
+      <button style={S.iconBtn} title="Download to your Downloads folder" onClick={() => download(a)}>Download</button>
+    </>
+  )
   // Esc closes the expanded overlay.
   useEffect(() => {
     if (!full) return
@@ -348,8 +369,10 @@ function PreviewTab({ artifacts }: { artifacts: Artifact[] }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px 8px' }}>
         <span style={{ ...S.name, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={current.title}>{current.title}</span>
         <span style={S.chip}>{current.kind}</span>
+        {actions(current)}
         <button style={S.iconBtn} title="Expand to full window" onClick={() => setFull(true)}>⤢</button>
       </div>
+      {msg && <div style={{ padding: '0 12px 6px', fontSize: 10, color: msg.error ? '#cf6b6b' : '#7ec8a0', wordBreak: 'break-word' }}>{msg.text}</div>}
       {artifacts.length > 1 && (
         <select
           value={current.id}
@@ -371,6 +394,7 @@ function PreviewTab({ artifacts }: { artifacts: Artifact[] }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid #1d2530' }}>
             <span style={{ flex: 1, color: '#e8edf4', fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{current.title}</span>
             <span style={S.chip}>{current.kind}</span>
+            {actions(current)}
             <button style={S.iconBtn} title="Close (Esc)" onClick={() => setFull(false)}>✕</button>
           </div>
           <ArtifactView artifact={current} style={{ flex: 1 }} />

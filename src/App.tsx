@@ -254,10 +254,10 @@ export default function App() {
   useEffect(() => {
     let cancelled = false
     let un: UnlistenFn | null = null
-    listen<{ pty_id: number; id: string; title: string; kind: string; content: string }>('artifact', (e) => {
+    listen<{ pty_id: number; id: string; title: string; kind: string; content: string; path: string | null }>('artifact', (e) => {
       const p = e.payload
       const kind: ArtifactKind = p.kind === 'svg' || p.kind === 'markdown' ? p.kind : 'html'
-      const art: Artifact = { id: p.id, title: p.title || 'Untitled', kind, content: p.content }
+      const art: Artifact = { id: p.id, title: p.title || 'Untitled', kind, content: p.content, path: p.path ?? undefined }
       setArtifactsByTab((prev) => {
         const next = [...(prev[p.pty_id] ?? []), art]
         if (next.length > MAX_ARTIFACTS_PER_TAB) next.splice(0, next.length - MAX_ARTIFACTS_PER_TAB)

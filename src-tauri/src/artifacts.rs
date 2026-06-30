@@ -81,18 +81,23 @@ connect-src 'none'; frame-src 'none'; child-src blob:; object-src 'none'; base-u
 /// directory). The cwd resolves relative `path` arguments to render_artifact.
 type Tokens = Arc<Mutex<HashMap<String, (u32, Option<PathBuf>)>>>;
 
-/// One HTML artifact held for the webview to fetch over the `artifact://` scheme.
-/// `seq` is the monotonic id (also the map key as a string), used to evict the
-/// oldest when a session exceeds the per-pty cap.
+/// One rendered artifact, retained so the user can re-fetch (HTML over the
+/// `artifact://` scheme), download, or reveal it in Finder. `seq` is the
+/// monotonic id (also the map key as a string), used to evict the oldest when a
+/// session exceeds the per-pty cap. `path` is the on-disk source when the model
+/// rendered from a file (None for inline content).
 struct Stored {
     pty_id: u32,
     seq: u64,
-    html: String,
+    kind: String,
+    title: String,
+    content: String,
+    path: Option<PathBuf>,
 }
 
-/// Artifact id (string form of the monotonic counter) → stored HTML. Only HTML
-/// artifacts live here; SVG/Markdown ride the event payload and render in a
-/// sanitized srcdoc, so they never need a fetchable origin.
+/// Artifact id (string form of the monotonic counter) → stored artifact. Every
+/// kind is kept (download/reveal work for all); only HTML is also served over
+/// the `artifact://` scheme — SVG/Markdown render in a sanitized srcdoc.
 type Store = Arc<Mutex<HashMap<String, Stored>>>;
 
 /// Artifact pushed to the webview. Field names cross to the frontend verbatim.
@@ -103,6 +108,9 @@ struct ArtifactEvent {
     title: String,
     kind: String,
     content: String,
+    /// Absolute source path when rendered from a file (enables "Reveal in
+    /// Finder"); null for inline content.
+    path: Option<String>,
 }
 
 /// Managed Tauri state: the ephemeral port + the live token map. `pty_spawn`
@@ -131,8 +139,23 @@ impl ArtifactServer {
     }
 
     /// Stored HTML for an artifact id, for the `artifact://` scheme handler.
+    /// Only HTML is served this way; other kinds return None.
     pub fn lookup_html(&self, id: &str) -> Option<String> {
-        self.store.lock().unwrap().get(id).map(|s| s.html.clone())
+        let m = self.store.lock().unwrap();
+        m.get(id).filter(|s| s.kind == "html").map(|s| s.content.clone())
+    }
+
+    /// On-disk source path for an artifact, when it was rendered from a file
+    /// (used by "Reveal in Finder"; None for inline-content artifacts).
+    pub fn artifact_path(&self, id: &str) -> Option<PathBuf> {
+        self.store.lock().unwrap().get(id).and_then(|s| s.path.clone())
+    }
+
+    /// A suggested download filename and the bytes to write, for "Download".
+    pub fn artifact_download(&self, id: &str) -> Option<(String, Vec<u8>)> {
+        let m = self.store.lock().unwrap();
+        let s = m.get(id)?;
+        Some((download_filename(&s.title, &s.kind, s.path.as_deref()), s.content.clone().into_bytes()))
     }
 
     /// Mint a token for a tab id (call once per claude spawn). `cwd` is the
@@ -231,20 +254,18 @@ fn handle_conn(
         for e in &routed.emits {
             let seq = counter.fetch_add(1, Ordering::Relaxed);
             let id = seq.to_string();
-            // HTML artifacts run their own JS, so they are served from the
-            // isolated `artifact://` origin (see artifact_response) and pulled in
-            // by the webview via an <iframe src> — stash the bytes here and send
-            // NO content on the event. SVG/Markdown need no scripting; they ride
-            // the event payload and render through the sanitized srcdoc path.
-            let content = if e.kind == "html" {
-                store_insert(store, &id, pty_id, seq, &e.content);
-                String::new()
-            } else {
-                e.content.clone()
-            };
+            // Retain every artifact so Download / Reveal-in-Finder work for all
+            // kinds and HTML can be re-fetched over the artifact:// scheme.
+            store_insert(store, &id, pty_id, seq, &e.kind, &e.title, &e.content, e.path.clone());
+            // HTML runs its own JS, so it loads from the isolated artifact://
+            // origin via an <iframe src> — send NO inline content on the event.
+            // SVG/Markdown need no scripting; they ride the payload and render
+            // through the sanitized srcdoc path.
+            let content = if e.kind == "html" { String::new() } else { e.content.clone() };
+            let path = e.path.as_ref().map(|p| p.display().to_string());
             let _ = app.emit(
                 "artifact",
-                ArtifactEvent { pty_id, id, title: e.title.clone(), kind: e.kind.clone(), content },
+                ArtifactEvent { pty_id, id, title: e.title.clone(), kind: e.kind.clone(), content, path },
             );
         }
         match &routed.json {
@@ -394,6 +415,7 @@ struct Emit {
     title: String,
     kind: String,
     content: String,
+    path: Option<PathBuf>,
 }
 
 struct Routed {
@@ -515,7 +537,7 @@ fn kind_from_path(path: &str) -> Option<&'static str> {
 /// already has filesystem read access, and the bytes only reach the local
 /// webview — so this grants no new capability, but we still fail closed on
 /// oversize / unreadable / non-text inputs.
-fn read_artifact_file(path: &str, cwd: Option<&Path>) -> Result<String, String> {
+fn read_artifact_file(path: &str, cwd: Option<&Path>) -> Result<(String, PathBuf), String> {
     let p = Path::new(path);
     let resolved = if p.is_absolute() {
         p.to_path_buf()
@@ -531,7 +553,9 @@ fn read_artifact_file(path: &str, cwd: Option<&Path>) -> Result<String, String> 
     if meta.len() as usize > MAX_CONTENT {
         return Err("file too large (4 MB limit)".to_string());
     }
-    std::fs::read_to_string(&resolved).map_err(|_| format!("file is not UTF-8 text: {}", resolved.display()))
+    let text = std::fs::read_to_string(&resolved)
+        .map_err(|_| format!("file is not UTF-8 text: {}", resolved.display()))?;
+    Ok((text, resolved))
 }
 
 fn tools_call(id: Value, msg: &Value, cwd: Option<&Path>) -> Routed {
@@ -551,15 +575,16 @@ fn tools_call(id: Value, msg: &Value, cwd: Option<&Path>) -> Routed {
     let kind_arg = get("kind");
 
     // Resolve the source: a file `path` (preferred — no content re-sent) or
-    // inline `content`. Exactly one must be given.
-    let (content, kind_from_ext) = match (path, inline) {
+    // inline `content`. Exactly one must be given. `source` is the on-disk path
+    // for path-based renders (carried through for Reveal in Finder).
+    let (content, kind_from_ext, source) = match (path, inline) {
         (Some(_), Some(_)) => return tool_error(id, "provide either `path` or `content`, not both"),
         (None, None) => return tool_error(id, "provide `path` (preferred — a file you wrote) or inline `content`"),
         (Some(p), None) => match read_artifact_file(p, cwd) {
-            Ok(text) => (text, kind_from_path(p)),
+            Ok((text, resolved)) => (text, kind_from_path(p), Some(resolved)),
             Err(e) => return tool_error(id, &e),
         },
-        (None, Some(c)) => (c.to_string(), None),
+        (None, Some(c)) => (c.to_string(), None, None),
     };
 
     // kind: explicit arg wins, else inferred from the file extension.
@@ -584,17 +609,21 @@ fn tools_call(id: Value, msg: &Value, cwd: Option<&Path>) -> Routed {
                 "content": [{ "type": "text", "text": format!("Rendered \"{title}\"{from} in Drydock's Artifacts panel.") }]
             }
         })),
-        emits: vec![Emit { title: title.to_string(), kind: kind.to_string(), content }],
+        emits: vec![Emit { title: title.to_string(), kind: kind.to_string(), content, path: source }],
     }
 }
 
 // ---- HTML artifact store + `artifact://` rendering --------------------------
 
-/// Store one HTML artifact under `id`, then evict this pty's oldest if it now
-/// exceeds the per-session cap (oldest = smallest `seq`).
-fn store_insert(store: &Store, id: &str, pty_id: u32, seq: u64, html: &str) {
+/// Store one artifact under `id`, then evict this pty's oldest if it now exceeds
+/// the per-session cap (oldest = smallest `seq`).
+#[allow(clippy::too_many_arguments)]
+fn store_insert(store: &Store, id: &str, pty_id: u32, seq: u64, kind: &str, title: &str, content: &str, path: Option<PathBuf>) {
     let mut m = store.lock().unwrap();
-    m.insert(id.to_string(), Stored { pty_id, seq, html: html.to_string() });
+    m.insert(
+        id.to_string(),
+        Stored { pty_id, seq, kind: kind.to_string(), title: title.to_string(), content: content.to_string(), path },
+    );
     let mut mine: Vec<(String, u64)> =
         m.iter().filter(|(_, s)| s.pty_id == pty_id).map(|(k, s)| (k.clone(), s.seq)).collect();
     if mine.len() > MAX_ARTIFACTS_PER_PTY {
@@ -603,6 +632,41 @@ fn store_insert(store: &Store, id: &str, pty_id: u32, seq: u64, html: &str) {
             m.remove(k);
         }
     }
+}
+
+/// Default file extension for an artifact kind.
+fn ext_for_kind(kind: &str) -> &'static str {
+    match kind {
+        "svg" => "svg",
+        "markdown" => "md",
+        _ => "html",
+    }
+}
+
+/// Turn an artifact title into a safe single filename component: strip path
+/// separators and characters Finder/HFS dislike, trim, and bound the length.
+fn sanitize_filename(title: &str) -> String {
+    let cleaned: String = title
+        .chars()
+        .map(|c| if c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '-' } else { c })
+        .collect();
+    let trimmed = cleaned.trim().trim_matches('.').trim();
+    if trimmed.is_empty() {
+        "artifact".to_string()
+    } else {
+        trimmed.chars().take(80).collect()
+    }
+}
+
+/// Suggested download filename: keep the original file's name when rendered from
+/// a path; otherwise derive `<sanitized title>.<ext>` from the kind.
+fn download_filename(title: &str, kind: &str, path: Option<&Path>) -> String {
+    if let Some(name) = path.and_then(|p| p.file_name()).and_then(|n| n.to_str()) {
+        if !name.is_empty() {
+            return name.to_string();
+        }
+    }
+    format!("{}.{}", sanitize_filename(title), ext_for_kind(kind))
 }
 
 /// Whether `html` is already a full document (keep it verbatim) vs a bare
@@ -766,6 +830,7 @@ mod tests {
         assert_eq!(r.emits.len(), 1, "the file's content should be emitted");
         assert_eq!(r.emits[0].kind, "html");
         assert_eq!(r.emits[0].content, "<h1>hi</h1>");
+        assert_eq!(r.emits[0].path, Some(dir.join("mockup.html")), "source path is carried through");
         let ack = r.json.unwrap()["result"]["content"][0]["text"].as_str().unwrap().to_string();
         assert!(ack.contains("mockup.html"), "ack should name the file: {ack}");
         std::fs::remove_dir_all(&dir).ok();
@@ -891,7 +956,7 @@ mod tests {
         let store: Store = Arc::new(Mutex::new(HashMap::new()));
         let n = MAX_ARTIFACTS_PER_PTY as u64 + 5;
         for i in 1..=n {
-            store_insert(&store, &i.to_string(), 7, i, &format!("<p>{i}</p>"));
+            store_insert(&store, &i.to_string(), 7, i, "html", "t", &format!("<p>{i}</p>"), None);
         }
         let m = store.lock().unwrap();
         let mine = m.values().filter(|s| s.pty_id == 7).count();
@@ -905,8 +970,8 @@ mod tests {
         let store: Store = Arc::new(Mutex::new(HashMap::new()));
         // two sessions each fill to the cap; neither evicts the other's
         for i in 1..=(MAX_ARTIFACTS_PER_PTY as u64) {
-            store_insert(&store, &format!("a{i}"), 1, i, "x");
-            store_insert(&store, &format!("b{i}"), 2, 1000 + i, "y");
+            store_insert(&store, &format!("a{i}"), 1, i, "html", "t", "x", None);
+            store_insert(&store, &format!("b{i}"), 2, 1000 + i, "html", "t", "y", None);
         }
         let m = store.lock().unwrap();
         assert_eq!(m.values().filter(|s| s.pty_id == 1).count(), MAX_ARTIFACTS_PER_PTY);
@@ -946,6 +1011,40 @@ mod tests {
     fn artifact_response_unknown_id_is_404() {
         let r = artifact_response(None);
         assert_eq!(r.status(), 404);
+    }
+
+    #[test]
+    fn download_filename_keeps_source_basename_else_derives_from_title() {
+        // rendered from a file → keep the real name (and extension)
+        assert_eq!(
+            download_filename("My Dashboard", "html", Some(Path::new("/tmp/proj/dash.html"))),
+            "dash.html"
+        );
+        // inline content → sanitized title + extension by kind
+        assert_eq!(download_filename("My Dashboard", "html", None), "My Dashboard.html");
+        assert_eq!(download_filename("Notes", "markdown", None), "Notes.md");
+        assert_eq!(download_filename("Diagram", "svg", None), "Diagram.svg");
+    }
+
+    #[test]
+    fn sanitize_filename_strips_separators_and_falls_back() {
+        assert_eq!(sanitize_filename("a/b:c*?"), "a-b-c--");
+        assert_eq!(sanitize_filename("  ..hidden.. "), "hidden");
+        assert_eq!(sanitize_filename("   "), "artifact");
+        assert_eq!(sanitize_filename(""), "artifact");
+    }
+
+    #[test]
+    fn artifact_download_uses_stored_content_and_name() {
+        let store: Store = Arc::new(Mutex::new(HashMap::new()));
+        store_insert(&store, "9", 1, 9, "markdown", "Read Me", "# hi", None);
+        let srv = ArtifactServer { port: 0, tokens: Arc::new(Mutex::new(HashMap::new())), store };
+        let (name, bytes) = srv.artifact_download("9").unwrap();
+        assert_eq!(name, "Read Me.md");
+        assert_eq!(bytes, b"# hi");
+        assert!(srv.artifact_download("nope").is_none());
+        // inline artifact has no source path → no Reveal in Finder
+        assert!(srv.artifact_path("9").is_none());
     }
 
     #[test]
