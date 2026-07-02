@@ -91,10 +91,47 @@ function relPath(p: string, root?: string): string {
   return root && p.startsWith(root + '/') ? p.slice(root.length + 1) : p
 }
 
-function FilesChanged({ files, projectPath }: { files: FileTouch[]; projectPath?: string }) {
-  // Transient error line (file deleted since, editor_cmd broken, …).
+// Per-file status glyph, git-style: created / modified / gone from disk.
+function FileBadge({ f }: { f: FileTouch }) {
+  const [glyph, color, label] = !f.resolved
+    ? ['−', '#cf6b6b', 'not on disk anymore (moved or deleted since)']
+    : f.created
+      ? ['+', '#5fb98a', 'created by this session']
+      : ['•', '#d6b24a', 'modified by this session']
+  return (
+    <span
+      title={label}
+      style={{ flex: 'none', width: 13, height: 13, borderRadius: 3, border: `1px solid ${color}`, color, fontSize: 10, lineHeight: '12px', textAlign: 'center', fontFamily: 'Menlo, monospace' }}
+    >
+      {glyph}
+    </span>
+  )
+}
+
+/// +adds/−dels column; falls back to a dim call count when a session's records
+/// carried no measurable diff at all.
+function DiffStat({ f }: { f: FileTouch }) {
+  if (f.adds === 0 && f.dels === 0)
+    return <span style={{ flex: 'none', color: '#4a5462', fontSize: 10, fontFamily: 'Menlo, monospace' }}>×{f.edits + f.writes}</span>
+  return (
+    <span style={{ flex: 'none', display: 'flex', gap: 6, fontFamily: 'Menlo, monospace', fontSize: 10 }}>
+      {f.adds > 0 && <span style={{ color: '#5fb98a' }}>+{f.adds.toLocaleString('en-US')}</span>}
+      {f.dels > 0 && <span style={{ color: '#cf6b6b' }}>−{f.dels.toLocaleString('en-US')}</span>}
+    </span>
+  )
+}
+
+/// The Briefing tab's bottom section: what this session touched, grouped by
+/// directory like a review tool's file tree — status badge, basename, +/- line
+/// stats — in its own scroll region under a sticky totals header. Rows open the
+/// file's CURRENT location (the resolver's work); files that are gone render
+/// struck-through and explain themselves instead of erroring.
+function FilesChanged({ files, projectPath, sessionId }: { files: FileTouch[]; projectPath?: string; sessionId: string | null }) {
+  // Transient error line (editor_cmd broken, file vanished mid-click, …).
   const [err, setErr] = useState<string | null>(null)
   const errTimer = useRef(0)
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  useEffect(() => setCollapsed(new Set()), [sessionId]) // fresh session, fresh tree
   const flashErr = (text: string) => {
     clearTimeout(errTimer.current)
     setErr(text)
@@ -102,75 +139,171 @@ function FilesChanged({ files, projectPath }: { files: FileTouch[]; projectPath?
   }
   useEffect(() => () => clearTimeout(errTimer.current), [])
   if (files.length === 0) return null
-  const open = (path: string, reveal: boolean) =>
-    invoke('open_path', { path, reveal }).catch((e) => flashErr(String(e)))
+
+  const open = (f: FileTouch, reveal: boolean) => {
+    if (!f.resolved) {
+      flashErr('not on disk anymore — moved or deleted since this session')
+      return
+    }
+    invoke('open_path', { path: f.resolved, reveal }).catch((e) => flashErr(String(e)))
+  }
+
+  // group by the display path's directory, in first-touched order
+  const groups: { dir: string; items: { f: FileTouch; name: string }[] }[] = []
+  const byDir = new Map<string, { f: FileTouch; name: string }[]>()
+  for (const f of files) {
+    const rel = relPath(f.path, projectPath)
+    const cut = rel.lastIndexOf('/')
+    const dir = cut < 0 ? '' : rel.slice(0, cut)
+    let list = byDir.get(dir)
+    if (!list) {
+      list = []
+      byDir.set(dir, list)
+      groups.push({ dir, items: list })
+    }
+    list.push({ f, name: cut < 0 ? rel : rel.slice(cut + 1) })
+  }
+  const totAdds = files.reduce((n, f) => n + f.adds, 0)
+  const totDels = files.reduce((n, f) => n + f.dels, 0)
+  const gone = files.filter((f) => !f.resolved).length
+
+  const toggle = (dir: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      if (next.has(dir)) next.delete(dir); else next.add(dir)
+      return next
+    })
+
   return (
-    <div style={{ marginTop: 14 }}>
-      <div style={{ color: '#7d8794', fontWeight: 600, fontSize: 11, marginBottom: 4 }}>Files changed · {files.length}</div>
-      {files.slice(0, 30).map((f) => (
-        <div key={f.path} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3, minWidth: 0 }}>
-          <button
-            onClick={() => open(f.path, false)}
-            title={`${f.path}\nOpen in your editor (settings "editor_cmd", else the default app)`}
-            style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', color: '#9cc3ff', fontFamily: 'Menlo, monospace', fontSize: 11, padding: '1px 0', direction: 'rtl' }}
-          >
-            {/* rtl ellipsis keeps the filename end visible; the tooltip has the full path */}
-            <span style={{ unicodeBidi: 'plaintext' }}>{relPath(f.path, projectPath)}</span>
-          </button>
-          <span style={{ flexShrink: 0, color: '#4a5462', fontSize: 10 }} title={`${f.edits} edit(s) · ${f.writes} write(s)`}>
-            ×{f.edits + f.writes}
-          </span>
-          <button style={{ ...S.iconBtn, fontSize: 10, padding: '1px 5px' }} title="Reveal in Finder" onClick={() => open(f.path, true)}>
-            ⊙
-          </button>
-        </div>
-      ))}
-      {files.length > 30 && <div style={{ ...S.muted, fontSize: 10 }}>+{files.length - 30} more</div>}
-      {err && <div style={{ color: '#cf6b6b', fontSize: 10, marginTop: 4 }}>{err}</div>}
+    <div style={{ flex: '0 1 auto', maxHeight: '55%', display: 'flex', flexDirection: 'column', borderTop: '1px solid #232c3a', background: '#0d1117' }}>
+      <div style={{ flex: 'none', display: 'flex', alignItems: 'baseline', gap: 8, padding: '8px 12px 6px' }}>
+        <span style={{ color: '#7d8794', fontWeight: 700, fontSize: 10, letterSpacing: 0.8 }}>FILES CHANGED</span>
+        <span style={{ display: 'flex', gap: 6, fontFamily: 'Menlo, monospace', fontSize: 11 }}>
+          <span style={{ color: '#5fb98a' }}>+{totAdds.toLocaleString('en-US')}</span>
+          <span style={{ color: '#cf6b6b' }}>−{totDels.toLocaleString('en-US')}</span>
+        </span>
+        <span style={{ color: '#5b6675', fontSize: 10 }}>
+          · {files.length} file{files.length === 1 ? '' : 's'}{gone > 0 ? ` · ${gone} gone` : ''}
+        </span>
+      </div>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 10px 10px' }}>
+        {groups.map((g) => {
+          const isOpen = !collapsed.has(g.dir)
+          return (
+            <div key={g.dir || '.'} style={{ marginBottom: 2 }}>
+              <button
+                onClick={() => toggle(g.dir)}
+                title={g.dir || 'project root'}
+                style={{ ...S.groupBtn, gap: 5, color: '#5f6b7a', fontSize: 9.5, letterSpacing: 0.5, padding: '4px 0 2px', textTransform: 'uppercase', fontFamily: 'Menlo, monospace' }}
+              >
+                <span style={{ width: 9, flex: 'none', color: '#4a5462' }}>{isOpen ? '▾' : '▸'}</span>
+                <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl' }}>
+                  <span style={{ unicodeBidi: 'plaintext' }}>{g.dir || './'}</span>
+                </span>
+                {!isOpen && <span style={{ flex: 'none', fontWeight: 400 }}>{g.items.length}</span>}
+              </button>
+              {isOpen &&
+                g.items.map(({ f, name }) => {
+                  const moved = !!f.resolved && f.resolved !== f.path
+                  const hint = !f.resolved
+                    ? `${f.path}\nNot on disk anymore — moved or deleted since this session.`
+                    : moved
+                      ? `${f.path}\n→ now at: ${f.resolved}\nClick to open in your editor (settings "editor_cmd", else the default app)`
+                      : `${f.path}\nOpen in your editor (settings "editor_cmd", else the default app)`
+                  return (
+                    <div key={f.path} className="dd-filerow" style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '2px 2px 2px 14px', minWidth: 0, borderRadius: 4 }}>
+                      <FileBadge f={f} />
+                      <button
+                        onClick={() => open(f, false)}
+                        title={hint}
+                        style={{
+                          flex: 1,
+                          minWidth: 0,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                          textAlign: 'left',
+                          background: 'none',
+                          border: 'none',
+                          cursor: f.resolved ? 'pointer' : 'default',
+                          color: f.resolved ? '#c8cdd5' : '#5b6675',
+                          textDecoration: f.resolved ? 'none' : 'line-through',
+                          fontFamily: 'Menlo, monospace',
+                          fontSize: 11,
+                          padding: '1px 0',
+                        }}
+                      >
+                        {name}
+                        {moved && <span style={{ color: '#7fb0ff', marginLeft: 5 }} title={`moved — now at ${f.resolved}`}>↷</span>}
+                      </button>
+                      {f.resolved && (
+                        <button
+                          className="dd-reveal"
+                          style={{ ...S.iconBtn, border: 'none', fontSize: 10, padding: '1px 3px' }}
+                          title="Reveal in Finder"
+                          onClick={() => open(f, true)}
+                        >
+                          ⊙
+                        </button>
+                      )}
+                      <DiffStat f={f} />
+                    </div>
+                  )
+                })}
+            </div>
+          )
+        })}
+      </div>
+      {err && <div style={{ flex: 'none', color: '#cf6b6b', fontSize: 10, padding: '4px 12px 8px' }}>{err}</div>}
     </div>
   )
 }
 
+// Two clearly separated sections: the briefing card scrolls on top; "Files
+// changed" is its own visually distinct region pinned below with its own
+// scroll — a long timeline can't bury the file list and vice versa.
 function BriefingTab({ sessionId, card, starred, files, projectPath, onToggleStar }: { sessionId: string | null; card: CardView | null; starred: boolean; files: FileTouch[]; projectPath?: string; onToggleStar?: () => void }) {
   if (!sessionId)
-    return <div style={S.muted}>No indexed session yet — once this conversation is saved, its briefing card appears here.</div>
+    return <div style={{ ...S.muted, padding: 12 }}>No indexed session yet — once this conversation is saved, its briefing card appears here.</div>
   return (
-    <>
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 12 }}>
+    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+      <div style={{ flex: '1 1 auto', minHeight: 0, overflowY: 'auto', padding: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 12 }}>
+          <button
+            onClick={onToggleStar}
+            disabled={!onToggleStar}
+            title={starred ? 'Unstar this session' : 'Star this session'}
+            style={{ background: 'none', border: 'none', cursor: onToggleStar ? 'pointer' : 'default', color: starred ? '#e8c35a' : '#3a4350', fontSize: 16, padding: 0, lineHeight: 1 }}
+          >
+            ★
+          </button>
+          <div style={{ flex: 1, color: '#e8edf4', fontWeight: 600, fontSize: 13, lineHeight: 1.3 }}>{card?.summary || 'Session'}</div>
+        </div>
+        {card ? (
+          <>
+            {card.timeline.length > 0 ? (
+              <ul style={{ margin: 0, padding: 0, listStyle: 'none' }}>
+                {card.timeline.map((it, i) => (
+                  <Item key={i} it={it} />
+                ))}
+              </ul>
+            ) : (
+              <div style={S.muted}>no timeline yet</div>
+            )}
+            <div style={{ color: '#5b6675', fontSize: 10, marginTop: 12 }}>card from {relAge(card.generated_at)} ago</div>
+          </>
+        ) : (
+          <div style={S.muted}>no briefing card yet</div>
+        )}
         <button
-          onClick={onToggleStar}
-          disabled={!onToggleStar}
-          title={starred ? 'Unstar this session' : 'Star this session'}
-          style={{ background: 'none', border: 'none', cursor: onToggleStar ? 'pointer' : 'default', color: starred ? '#e8c35a' : '#3a4350', fontSize: 16, padding: 0, lineHeight: 1 }}
+          style={{ marginTop: 10, background: '#1d2530', color: '#e8edf4', border: '1px solid #2c3647', borderRadius: 5, padding: '4px 12px', cursor: 'pointer', fontSize: 12 }}
+          onClick={() => invoke('refresh_card', { sessionId }).catch(console.error)}
         >
-          ★
+          Refresh card
         </button>
-        <div style={{ flex: 1, color: '#e8edf4', fontWeight: 600, fontSize: 13, lineHeight: 1.3 }}>{card?.summary || 'Session'}</div>
       </div>
-      {card ? (
-        <>
-          {card.timeline.length > 0 ? (
-            <ul style={{ margin: 0, padding: 0, listStyle: 'none' }}>
-              {card.timeline.map((it, i) => (
-                <Item key={i} it={it} />
-              ))}
-            </ul>
-          ) : (
-            <div style={S.muted}>no timeline yet</div>
-          )}
-          <div style={{ color: '#5b6675', fontSize: 10, marginTop: 12 }}>card from {relAge(card.generated_at)} ago</div>
-        </>
-      ) : (
-        <div style={S.muted}>no briefing card yet</div>
-      )}
-      <FilesChanged files={files} projectPath={projectPath} />
-      <button
-        style={{ marginTop: 10, background: '#1d2530', color: '#e8edf4', border: '1px solid #2c3647', borderRadius: 5, padding: '4px 12px', cursor: 'pointer', fontSize: 12 }}
-        onClick={() => invoke('refresh_card', { sessionId }).catch(console.error)}
-      >
-        Refresh card
-      </button>
-    </>
+      <FilesChanged files={files} projectPath={projectPath} sessionId={sessionId} />
+    </div>
   )
 }
 
@@ -651,12 +784,14 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
           </div>
         </div>
 
-        {/* Preview fills the panel edge-to-edge; the other tabs scroll inside padding. */}
+        {/* Preview and Briefing manage their own layout (edge-to-edge / split
+            sections); Skills and MCP scroll inside padding. */}
         {tab === 'preview' ? (
           <PreviewTab artifacts={artifacts} sessionId={sessionId} />
+        ) : tab === 'briefing' ? (
+          <BriefingTab sessionId={sessionId} card={card} starred={starred} files={files} projectPath={projectPath} onToggleStar={onToggleStar} />
         ) : (
           <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 12 }}>
-            {tab === 'briefing' && <BriefingTab sessionId={sessionId} card={card} starred={starred} files={files} projectPath={projectPath} onToggleStar={onToggleStar} />}
             {tab === 'skills' && <SkillsTab projectPath={projectPath} />}
             {tab === 'mcp' && <McpTab projectPath={projectPath} />}
           </div>

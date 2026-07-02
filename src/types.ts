@@ -42,8 +42,20 @@ export type TEntry = {
 }
 export type TranscriptPage = { entries: TEntry[]; next_offset: number; reset: boolean }
 
-// One file a session changed (backend transcript::files_touched).
-export type FileTouch = { path: string; edits: number; writes: number; last_ts: number | null }
+// One file a session changed (backend files::session_files). `path` is the
+// location recorded in the transcript (stable display key); `resolved` is where
+// the file lives NOW — equal to `path` when still in place, elsewhere when the
+// project was renamed/moved since, null when it's genuinely gone.
+export type FileTouch = {
+  path: string
+  resolved: string | null
+  edits: number
+  writes: number
+  adds: number // lines added / removed, from the calls' structured diffs
+  dels: number
+  created: boolean // this session created the file
+  last_ts: number | null
+}
 
 export type TimelineItem = { text: string; detail: string[]; in_progress: boolean }
 export type CardView = { summary: string; timeline: TimelineItem[]; generated_at: number }

@@ -58,3 +58,9 @@ body,
   50% { opacity: 0.35; }
 }
 .dd-attn { animation: dd-pulse 1.2s ease-in-out infinite; }
+
+/* "Files changed" rows: quiet until hovered; the Finder-reveal button only
+   materializes on hover so the diffstat column stays clean. */
+.dd-filerow:hover { background: #141a24; }
+.dd-filerow .dd-reveal { visibility: hidden; }
+.dd-filerow:hover .dd-reveal { visibility: visible; }
