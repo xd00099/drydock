@@ -397,35 +397,75 @@ function Toggle({ on, busy, onClick, title }: { on: boolean; busy: boolean; onCl
 
 function McpTab({ projectPath }: { projectPath?: string }) {
   const [servers, setServers] = useState<McpServer[] | null>(null)
-  // null = not fetched yet (show "checking"); {} = fetched, no statuses
-  const [status, setStatus] = useState<Record<string, string> | null>(null)
+  // null = never checked (dots show "checking"); {} = checked, no statuses
+  const [status, setStatus] = useState<Record<string, { st: string; raw: string }> | null>(null)
+  const [checkedAt, setCheckedAt] = useState<number | null>(null)
+  const [checking, setChecking] = useState(false)
+  const [checkErr, setCheckErr] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [busy, setBusy] = useState<Set<string>>(new Set())
+  // Result-application guard: bumped whenever projectPath changes, so a check
+  // still in flight for the OLD project can't label the new one. Also the
+  // "one check at a time" latch (state lags; a ref doesn't).
+  const epochRef = useRef(0)
+  const inFlightRef = useRef(false)
+
+  const runCheck = useCallback((hasExternal: boolean) => {
+    const epoch = epochRef.current
+    if (!hasExternal) {
+      setStatus({})
+      setCheckedAt(Date.now())
+      return
+    }
+    if (inFlightRef.current) return
+    inFlightRef.current = true
+    setChecking(true)
+    invoke<[string, string, string][]>('mcp_status', { projectPath: projectPath ?? null })
+      .then((triples) => {
+        if (epochRef.current !== epoch) return
+        setStatus(Object.fromEntries(triples.map(([n, st, raw]) => [n, { st, raw }])))
+        setCheckedAt(Date.now())
+        setCheckErr(null)
+      })
+      .catch((e) => {
+        // keep the previous statuses on screen — but say the refresh failed
+        if (epochRef.current === epoch) setCheckErr(String(e))
+      })
+      .finally(() => {
+        inFlightRef.current = false
+        if (epochRef.current === epoch) setChecking(false)
+      })
+  }, [projectPath])
 
   useEffect(() => {
-    let live = true
+    epochRef.current++
+    const epoch = epochRef.current
     setServers(null)
     setStatus(null)
+    setCheckedAt(null)
+    setCheckErr(null)
+    setChecking(false)
     invoke<McpServer[]>('list_mcp_servers', { projectPath: projectPath ?? null })
       .then((list) => {
-        if (!live) return
+        if (epochRef.current !== epoch) return
         setServers(list)
-        // only health-check (spawns the user's servers) if there are external ones
-        if (list.some((s) => !s.builtin)) {
-          invoke<[string, string][]>('mcp_status', { projectPath: projectPath ?? null })
-            .then((pairs) => { if (live) setStatus(Object.fromEntries(pairs)) })
-            .catch(() => { if (live) setStatus({}) })
-        } else {
-          setStatus({})
-        }
+        runCheck(list.some((s) => !s.builtin))
       })
       .catch(() => {
-        if (!live) return
+        if (epochRef.current !== epoch) return
         setServers([])
         setStatus({})
       })
-    return () => { live = false }
-  }, [projectPath])
+  }, [projectPath, runCheck])
+
+  // A dot is only as honest as its age: re-check every minute while this tab
+  // stays open (a dead server otherwise kept its green from panel-mount time).
+  const hasExternal = !!servers?.some((s) => !s.builtin)
+  useEffect(() => {
+    if (!hasExternal) return
+    const t = window.setInterval(() => runCheck(true), 60_000)
+    return () => window.clearInterval(t)
+  }, [hasExternal, runCheck])
 
   const toggleExpand = (name: string) =>
     setExpanded((prev) => { const n = new Set(prev); if (n.has(name)) n.delete(name); else n.add(name); return n })
@@ -442,18 +482,27 @@ function McpTab({ projectPath }: { projectPath?: string }) {
     }
   }
 
+  const ageText = (ts: number) => {
+    const w = relAge(ts)
+    return w === 'now' ? 'just now' : `${w} ago`
+  }
+
   // Health dot: the builtin loopback server is "connected" whenever enabled;
-  // external servers reflect the live `claude mcp list` check (or "checking").
+  // external servers reflect the last `claude mcp list` check. The tooltip
+  // carries the CLI's raw words plus the check's age — the dot is a summary,
+  // never the whole truth.
   const dotFor = (s: McpServer): { status: string; title: string } => {
     if (s.builtin)
       return s.enabled
         ? { status: 'connected', title: 'Listening · renders to the Artifacts tab' }
         : { status: 'unknown', title: 'Off — new sessions won’t get the render tool' }
     if (status === null) return { status: 'checking', title: 'Checking…' }
-    const st = status[s.name] ?? 'unknown'
-    const title =
-      st === 'connected' ? 'Connected' : st === 'failed' ? 'Failed to connect' : st === 'pending' ? 'Pending approval' : 'Status unknown'
-    return { status: st, title }
+    const e = status[s.name]
+    const st = e?.st ?? 'unknown'
+    const what = e?.raw
+      ? e.raw
+      : st === 'connected' ? 'Connected' : st === 'failed' ? 'Failed to connect' : st === 'pending' ? 'Pending approval' : 'Not in the `claude mcp list` output'
+    return { status: st, title: checkedAt ? `${what}\nchecked ${ageText(checkedAt)}` : what }
   }
 
   const proj = projectPath ? baseName(projectPath) : undefined
@@ -464,7 +513,28 @@ function McpTab({ projectPath }: { projectPath?: string }) {
           for project: <span style={{ color: '#c8cdd5' }}>{proj}</span>
         </div>
       )}
-      <div style={{ color: '#5b6675', fontSize: 10, marginBottom: 8, lineHeight: 1.4 }}>● live status · toggling applies to new sessions · secrets hidden</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+        <span style={{ flex: 1, color: '#5b6675', fontSize: 10, lineHeight: 1.4 }}>
+          ● health via `claude mcp list` ·{' '}
+          {checking ? 'checking…' : checkedAt ? `checked ${ageText(checkedAt)}` : hasExternal ? 'not checked yet' : 'no external servers'}
+        </span>
+        {hasExternal && (
+          <button
+            onClick={() => runCheck(true)}
+            disabled={checking}
+            title="Re-check server health now"
+            style={{ ...S.iconBtn, fontSize: 10, padding: '1px 5px', opacity: checking ? 0.4 : 1, cursor: checking ? 'default' : 'pointer' }}
+          >
+            ↻
+          </button>
+        )}
+      </div>
+      {checkErr && (
+        <div title={checkErr} style={{ color: '#cf6b6b', fontSize: 10, marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {checkErr}
+        </div>
+      )}
+      <div style={{ color: '#5b6675', fontSize: 10, marginBottom: 8, lineHeight: 1.4 }}>toggling applies to new sessions · secrets hidden</div>
       {servers === null ? (
         <div style={S.muted}>loading…</div>
       ) : servers.length === 0 ? (

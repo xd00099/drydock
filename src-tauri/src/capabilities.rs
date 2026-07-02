@@ -292,11 +292,13 @@ fn classify_status(rest: &str) -> &'static str {
     }
 }
 
-/// Parse `claude mcp list` human output into (server name, status) pairs. Each
-/// configured line looks like `name: <detail> - ✓ Connected`; headers ("Checking
-/// MCP server health…"), blanks, and the "No MCP servers configured" notice have
-/// no leading `name:` token and are skipped. Pure (no IO) so it unit-tests.
-pub fn parse_mcp_list(output: &str) -> Vec<(String, String)> {
+/// Parse `claude mcp list` human output into (server name, status token, raw
+/// status text) triples. Each configured line looks like
+/// `name: <detail> - ✓ Connected`; headers ("Checking MCP server health…"),
+/// blanks, and the "No MCP servers configured" notice have no leading `name:`
+/// token and are skipped. The raw text rides along so the UI can show exactly
+/// what the CLI said (a stale green can't hide behind a token). Pure (no IO).
+pub fn parse_mcp_list(output: &str) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
     for line in output.lines() {
         let Some((name, rest)) = line.split_once(':') else { continue };
@@ -306,26 +308,60 @@ pub fn parse_mcp_list(output: &str) -> Vec<(String, String)> {
         if name.is_empty() || name.contains(char::is_whitespace) {
             continue;
         }
-        out.push((name.to_string(), classify_status(rest).to_string()));
+        out.push((name.to_string(), classify_status(rest).to_string(), rest.trim().to_string()));
     }
     out
+}
+
+/// How long the health check may run before it's killed. `claude mcp list`
+/// spawns/pings every configured server, so slow is normal — hung is not.
+const MCP_LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// Run a command to completion with a deadline; the child is killed on
+/// timeout (None). Stdout is drained on a thread so a chatty child can't
+/// deadlock on a full pipe.
+fn output_with_timeout(mut cmd: std::process::Command, timeout: std::time::Duration) -> Option<Vec<u8>> {
+    use std::io::Read;
+    use std::process::Stdio;
+    cmd.stdout(Stdio::piped()).stderr(Stdio::null()).stdin(Stdio::null());
+    let mut child = cmd.spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout.read_to_end(&mut buf);
+        buf
+    });
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return reader.join().ok(),
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                return None; // partial output mid-check would misreport — say "timed out"
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(120)),
+            Err(_) => return None,
+        }
+    }
 }
 
 /// Health-check the user's MCP servers via `claude mcp list`, run in `project_path`
 /// (so project-scoped `.mcp.json` servers are included) through a login shell —
 /// GUI apps lack PATH, matching the enricher's claude invocation. Read-only; it
-/// never writes config. Best-effort: any failure yields an empty map.
-pub fn mcp_status(project_path: Option<&str>) -> Vec<(String, String)> {
+/// never writes config. Errors (can't spawn, timed out) surface to the caller so
+/// the UI can say so instead of silently showing nothing.
+pub fn mcp_status(project_path: Option<&str>) -> Result<Vec<(String, String, String)>, String> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
     let mut cmd = std::process::Command::new(shell);
     cmd.args(["-l", "-c", "claude mcp list"]);
     if let Some(p) = project_path {
         cmd.current_dir(p);
     }
-    match cmd.output() {
-        Ok(o) => parse_mcp_list(&String::from_utf8_lossy(&o.stdout)),
-        Err(_) => Vec::new(),
-    }
+    let out = output_with_timeout(cmd, MCP_LIST_TIMEOUT)
+        .ok_or("health check didn't finish (claude missing from PATH, or `claude mcp list` hung past 45s)")?;
+    Ok(parse_mcp_list(&String::from_utf8_lossy(&out)))
 }
 
 // ---- tauri commands -----------------------------------------------------
@@ -416,20 +452,16 @@ mod tests {
     }
 
     #[test]
-    fn parse_mcp_list_extracts_names_and_status() {
+    fn parse_mcp_list_extracts_names_status_and_raw_text() {
         let out = "Checking MCP server health...\n\n\
             github: https://api.githubcopilot.com/mcp/ (HTTP) - ✓ Connected\n\
             sentry: npx -y @sentry/mcp-server - ✗ Failed to connect\n\
             local-fs: /usr/local/bin/fs-server (stdio) - ⏸ Pending approval\n";
         let got = parse_mcp_list(out);
-        assert_eq!(
-            got,
-            vec![
-                ("github".to_string(), "connected".to_string()),
-                ("sentry".to_string(), "failed".to_string()),
-                ("local-fs".to_string(), "pending".to_string()),
-            ]
-        );
+        let brief: Vec<(&str, &str)> = got.iter().map(|(n, s, _)| (n.as_str(), s.as_str())).collect();
+        assert_eq!(brief, vec![("github", "connected"), ("sentry", "failed"), ("local-fs", "pending")]);
+        // the raw CLI text rides along for the UI tooltip
+        assert_eq!(got[1].2, "npx -y @sentry/mcp-server - ✗ Failed to connect");
     }
 
     #[test]
@@ -438,10 +470,23 @@ mod tests {
         assert!(parse_mcp_list("No MCP servers configured. Use `claude mcp add` to add a server.").is_empty());
         assert!(parse_mcp_list("Checking MCP server health...\n\n").is_empty());
         // a url-bearing detail still yields just the leading name + a status
-        assert_eq!(
-            parse_mcp_list("x: https://h:443/mcp - ✓ Connected"),
-            vec![("x".to_string(), "connected".to_string())]
-        );
+        let got = parse_mcp_list("x: https://h:443/mcp - ✓ Connected");
+        assert_eq!(got.len(), 1);
+        assert_eq!((got[0].0.as_str(), got[0].1.as_str()), ("x", "connected"));
+    }
+
+    #[test]
+    fn output_with_timeout_kills_a_hung_child_and_reads_a_quick_one() {
+        let mut quick = std::process::Command::new("/bin/sh");
+        quick.args(["-c", "printf hello"]);
+        let out = output_with_timeout(quick, std::time::Duration::from_secs(5)).unwrap();
+        assert_eq!(out, b"hello");
+
+        let mut hung = std::process::Command::new("/bin/sh");
+        hung.args(["-c", "sleep 30"]);
+        let t0 = std::time::Instant::now();
+        assert!(output_with_timeout(hung, std::time::Duration::from_millis(300)).is_none());
+        assert!(t0.elapsed() < std::time::Duration::from_secs(5), "killed at the deadline, not at exit");
     }
 
     #[test]

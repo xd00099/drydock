@@ -267,10 +267,13 @@ fn list_mcp_servers(
     out
 }
 
-/// Live `claude mcp list` health-check for the user's configured servers, keyed
-/// by name. Best-effort and read-only (see capabilities::mcp_status).
-#[tauri::command]
-fn mcp_status(project_path: Option<String>) -> Vec<(String, String)> {
+/// Live `claude mcp list` health-check for the user's configured servers:
+/// (name, status token, raw CLI text) triples. Read-only, killed after a hard
+/// timeout; errors surface so the UI can say "check failed" rather than
+/// leaving a stale green dot (see capabilities::mcp_status). Blocking-friendly:
+/// runs on Tauri's async runtime, not the main thread.
+#[tauri::command(async)]
+fn mcp_status(project_path: Option<String>) -> Result<Vec<(String, String, String)>, String> {
     capabilities::mcp_status(project_path.as_deref())
 }
 
