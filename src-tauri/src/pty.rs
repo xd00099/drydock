@@ -54,6 +54,14 @@ impl PtyManager {
         // xterm.js renders 24-bit color; advertise it so Claude (and other TUIs)
         // emit truecolor instead of quantizing to the 256-color palette.
         cmd.env("COLORTERM", "truecolor");
+        // Claude Code's fullscreen renderer draws in the ALTERNATE screen, where
+        // the conversation never reaches the terminal's scrollback — ⌘F, wheel
+        // scrolling, and selection can't span the session (xterm.js discards
+        // lines that scroll off the alt screen). Force the classic inline
+        // renderer instead: output flows into normal scrollback like any CLI,
+        // and search/scroll behave like iTerm. Overridable via the settings
+        // claude_env (extra_env below is applied after, and last write wins).
+        cmd.env("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN", "1");
         for (k, v) in self.extra_env.iter() {
             cmd.env(k, v);
         }
@@ -237,6 +245,34 @@ mod tests {
         let err = mgr.spawn(1, "/bin/sh", &["-c".into(), "true".into()], None, 80, 24, ok, done);
         assert!(err.is_err());
         mgr.kill(1).unwrap();
+    }
+
+    #[test]
+    fn alt_screen_disable_is_default_but_user_env_overrides() {
+        // default: every PTY gets the classic-renderer var...
+        let run = |mgr: PtyManager, id: u32| {
+            let (out_tx, out_rx) = mpsc::channel::<Vec<u8>>();
+            let (exit_tx, exit_rx) = mpsc::channel::<Option<u32>>();
+            mgr.spawn(
+                id,
+                "/bin/sh",
+                &["-c".into(), "printf %s \"$CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN\"".into()],
+                None,
+                80,
+                24,
+                move |_id, bytes| { let _ = out_tx.send(bytes.to_vec()); },
+                move |_id, code| { let _ = exit_tx.send(code); },
+            )
+            .unwrap();
+            exit_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let mut all = Vec::new();
+            while let Ok(chunk) = out_rx.try_recv() { all.extend(chunk); }
+            String::from_utf8_lossy(&all).into_owned()
+        };
+        assert!(run(PtyManager::default(), 20).contains('1'));
+        // ...and a same-named key in the settings claude_env wins over it
+        let custom = PtyManager::with_env(vec![("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN".into(), "0".into())]);
+        assert!(run(custom, 21).contains('0'));
     }
 
     #[test]
