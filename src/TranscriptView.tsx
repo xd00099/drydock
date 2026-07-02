@@ -12,6 +12,9 @@ type Props = {
   sessionId: string
   session: SessionView | undefined // live row from useSessions, updates with the radar
   onResumeHere: () => void
+  // set when this session's live terminal is open in THIS window — the header
+  // then offers a jump back (the ⌘⇧T toggle's visible half)
+  onFocusLive?: (() => void) | null
   onInteract?: () => void // scrolling/clicking the transcript body
   onMatches?: (index: number, count: number) => void // ⌘F find results (active match, total)
 }
@@ -116,7 +119,7 @@ function fmtTime(ts: number, prev: number | null): string {
 }
 
 const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
-  { sessionId, session, onResumeHere, onInteract, onMatches },
+  { sessionId, session, onResumeHere, onFocusLive, onInteract, onMatches },
   ref,
 ) {
   const [entries, setEntries] = useState<TEntry[]>([])
@@ -418,9 +421,16 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
       <div style={{ padding: '6px 10px', background: '#161c25', display: 'flex', alignItems: 'center', gap: 10 }}>
         <span style={{ flexShrink: 0 }}>
           {live
-            ? `running in another terminal (${session?.live_status}) — read-only live view`
+            ? onFocusLive
+              ? `read-only transcript — live in this window (${session?.live_status})`
+              : `running in another terminal (${session?.live_status}) — read-only live view`
             : 'session ended'}
         </span>
+        {live && onFocusLive && (
+          <button style={hBtn} title="Switch to the running terminal tab (⌘⇧T)" onClick={onFocusLive}>
+            Go to live tab
+          </button>
+        )}
         {!live && (
           <button style={hBtn} onClick={onResumeHere}>
             Resume here

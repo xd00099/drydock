@@ -57,6 +57,7 @@ export default function App() {
   const closeActiveRef = useRef(() => {})
   const starActiveRef = useRef(() => {})
   const openFindRef = useRef(() => {})
+  const toggleTranscriptRef = useRef(() => {})
 
   // replaceSession: sweep up stale tabs (exited ptys, superseded transcripts) for that session
   const addTab = (t: Omit<Tab, 'id' | 'exited'> & { exited?: boolean }, replaceSession?: string) => {
@@ -175,6 +176,21 @@ export default function App() {
     setFindOpen(true)
     setFindNonce((n) => n + 1)
   }
+  // ⌘⇧T: flip the active session between its terminal and its read-only
+  // transcript. From a terminal tab → open/focus the transcript; from a
+  // transcript tab → focus the live terminal if one is open here (never
+  // resumes — that stays an explicit act).
+  toggleTranscriptRef.current = () => {
+    const t = activeTab
+    if (!t?.sessionId) return
+    if (t.kind === 'transcript') {
+      const liveTab = tabs.find((x) => x.sessionId === t.sessionId && x.kind === 'pty' && !x.exited)
+      if (liveTab) setActiveId(liveTab.id)
+      return
+    }
+    const s = sessions.find((x) => x.session_id === t.sessionId)
+    if (s) resume(s, { transcript: true })
+  }
 
   // Shell tabs are named after their live working directory. Poll the PTYs
   // (the backend reads each shell process's cwd from the OS) every 2s, and
@@ -209,18 +225,20 @@ export default function App() {
       // Window accelerator via WKWebView's unhandled-key re-dispatch.
       if (quitGuardRef.current) {
         if (e.key === 'Escape') setQuitGuard(false)
-        if (e.metaKey && ['k', 'f', 't', 'w', 'd'].includes(e.key)) e.preventDefault()
+        if (e.metaKey && ['k', 'f', 't', 'T', 'w', 'd'].includes(e.key)) e.preventDefault()
         return
       }
       // Same for the search palette (it handles its own Esc/arrows/Enter); ⌘K
       // still toggles it closed.
-      if (paletteOpenRef.current && e.metaKey && ['f', 't', 'w', 'd'].includes(e.key)) {
+      if (paletteOpenRef.current && e.metaKey && ['f', 't', 'T', 'w', 'd'].includes(e.key)) {
         e.preventDefault()
         return
       }
       if (e.metaKey && e.key === 'k') { e.preventDefault(); setPaletteOpen((v) => !v) }
       // ⌘F: find within the active pane (terminal scrollback or transcript text)
       if (e.metaKey && e.key === 'f') { e.preventDefault(); openFindRef.current() }
+      // ⌘⇧T (key is 'T' with shift held): terminal ⇄ transcript for the active session
+      if (e.metaKey && e.shiftKey && e.key === 'T') { e.preventDefault(); toggleTranscriptRef.current() }
       if (e.metaKey && e.key === 't') { e.preventDefault(); newShellRef.current() }
       if (e.metaKey && e.key === 'w') { e.preventDefault(); closeActiveRef.current() }
       if (e.metaKey && e.key === 'd') { e.preventDefault(); starActiveRef.current() }
@@ -333,6 +351,7 @@ export default function App() {
         hidden={hidden}
         activeSessionId={activeTab?.sessionId ?? null}
         onResume={resume}
+        onTranscript={(s) => resume(s, { transcript: true })}
         onNewSession={newSession}
         onToggleStar={(s) => invoke('set_starred', { sessionId: s.session_id, starred: !s.starred }).then(refresh)}
         onHide={(sessionId, hide) => invoke('set_hidden', { sessionId, hidden: hide }).then(refresh)}
@@ -369,6 +388,10 @@ export default function App() {
                   ref={(h) => { paneSearch.current[t.id] = h }}
                   sessionId={t.sessionId!}
                   session={sessions.find((x) => x.session_id === t.sessionId)}
+                  onFocusLive={(() => {
+                    const liveTab = tabs.find((x) => x.sessionId === t.sessionId && x.kind === 'pty' && !x.exited)
+                    return liveTab ? () => setActiveId(liveTab.id) : null
+                  })()}
                   onInteract={() => promote(t.id)}
                   onMatches={(index, count) => setFindMatches({ index, count })}
                   onResumeHere={() => {

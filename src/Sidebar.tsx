@@ -11,6 +11,7 @@ type Props = {
   hidden: string[] // session ids the user hid from Drydock
   activeSessionId: string | null // session shown in the active tab — highlighted in the list
   onResume: (s: SessionView) => void
+  onTranscript: (s: SessionView) => void // open the read-only transcript (never spawns claude)
   onNewSession: (projectPath: string) => void
   onToggleStar: (s: SessionView) => void
   onHide: (sessionId: string, hide: boolean) => void
@@ -106,7 +107,7 @@ type Drag =
 // session into it on commit) or renaming an existing one.
 type Naming = { kind: 'create'; sid: string | null } | { kind: 'rename'; id: string }
 
-export default function Sidebar({ sessions, folders, hidden, activeSessionId, onResume, onNewSession, onToggleStar, onHide, onDelete, onRefresh }: Props) {
+export default function Sidebar({ sessions, folders, hidden, activeSessionId, onResume, onTranscript, onNewSession, onToggleStar, onHide, onDelete, onRefresh }: Props) {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('dd.sidebarCollapsed') === '1')
   // clamp on load AND on window resize: a width persisted on a big monitor must
   // not overflow a smaller window later
@@ -341,7 +342,7 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
     return (
       <button
         key={s.session_id}
-        className={flashSid === s.session_id ? 'dd-landed' : undefined}
+        className={`dd-sessrow${flashSid === s.session_id ? ' dd-landed' : ''}`}
         style={{ ...S.row, opacity: isDragging ? 0.4 : isHidden ? 0.45 : 1, borderLeftColor: sessionColor(s.session_id), background: sessionColor(s.session_id, isActive ? 0.3 : 0.1) }}
         onClick={dragSafe(() => onResume(s))}
         onPointerDown={(e) => beginPress(e, { kind: 'session', sid: s.session_id, label: sessionLabel(s), fromFolder: s.folder_id })}
@@ -353,7 +354,20 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
           <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#e8edf4' }}>
             {sessionLabel(s)}
           </span>
-          <span style={{ flexShrink: 0, marginLeft: 6, color: '#5b6675' }}>{relAge(s.last_message_at)}</span>
+          {/* hover-only: read without resuming (a plain click SPAWNS claude for
+              ended sessions — this is the safe browse path). span, not button:
+              a button can't nest inside the row button. */}
+          <span
+            className="dd-rowbtn"
+            role="button"
+            title={'Read transcript (read-only) — never resumes\n⌘⇧T toggles it for the active session'}
+            onClick={(e) => { e.stopPropagation(); dragSafe(() => onTranscript(s))() }}
+            onPointerDown={(e) => e.stopPropagation()}
+            style={{ flexShrink: 0, color: '#8ea0b5', fontSize: 12, lineHeight: 1, padding: '0 2px' }}
+          >
+            ≣
+          </span>
+          <span style={{ flexShrink: 0, marginLeft: 2, color: '#5b6675' }}>{relAge(s.last_message_at)}</span>
         </div>
         {sub && (
           <div style={{ color: '#5b6675', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 1 }}>
@@ -568,6 +582,9 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
               <>
                 <button style={S.menuItem} {...menuHover} onClick={() => { onToggleStar(menu.s); setMenu(null) }}>
                   {menu.s.starred ? 'Unstar' : 'Star'}
+                </button>
+                <button style={S.menuItem} {...menuHover} onClick={() => { onTranscript(menu.s); setMenu(null) }}>
+                  View transcript
                 </button>
                 <button style={S.menuItem} {...menuHover} onClick={() => setMenu({ ...menu, view: 'folders' })}>
                   Move to folder&nbsp;&nbsp;▸

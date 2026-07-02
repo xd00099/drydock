@@ -68,7 +68,13 @@ export default function TabBar({ tabs, sessions, activeId, shellDirs, unread, on
       {attention && (
         <span className="dd-attn" title="waiting for your input" style={{ flexShrink: 0, width: 7, height: 7, borderRadius: '50%', background: '#e8a33d' }} />
       )}
-      <span style={{ fontStyle: t.preview ? 'italic' : undefined }}>{clip(label, 22)}{t.exited ? ' ·ended' : ''}</span>
+      {/* a transcript tab is a READER, not a dead terminal: ≣ prefix instead
+          of the (misleading) ·ended suffix */}
+      <span style={{ fontStyle: t.preview ? 'italic' : undefined }}>
+        {t.kind === 'transcript' ? '≣ ' : ''}
+        {clip(label, 22)}
+        {t.exited && t.kind !== 'transcript' ? ' ·ended' : ''}
+      </span>
       {unread[t.id] ? (
         <span title={`${unread[t.id]} new artifact${unread[t.id] > 1 ? 's' : ''}`} style={{ background: '#5a7fb0', color: '#0b0e13', borderRadius: 8, fontSize: 9, fontWeight: 700, padding: '0 5px', lineHeight: '14px' }}>{unread[t.id]}</span>
       ) : null}

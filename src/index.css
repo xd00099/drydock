@@ -72,3 +72,9 @@ body,
   100% { background: transparent; }
 }
 .dd-landed { animation: dd-land 0.7s ease-out; }
+
+/* Session rows: the read-transcript shortcut only materializes on hover,
+   keeping rows quiet (same pattern as the file rows' Finder button). */
+.dd-sessrow .dd-rowbtn { visibility: hidden; }
+.dd-sessrow:hover .dd-rowbtn { visibility: visible; }
+.dd-rowbtn:hover { color: #cfe0f5 !important; }
