@@ -80,12 +80,223 @@ fn export_markdown(title: &str, project: &str, entries: &[Entry]) -> String {
     out
 }
 
+/// One touched file plus where it lives NOW. Transcripts record absolute paths
+/// at edit time; projects get renamed or moved afterwards, so `path` (the
+/// recorded one — the stable display key) and `resolved` (open/reveal target)
+/// can differ: equal when the file is still in place, a new location when the
+/// resolver relocated it, `None` when it's genuinely gone.
+#[derive(Debug, serde::Serialize)]
+pub struct FileTouchView {
+    pub path: String,
+    pub resolved: Option<String>,
+    pub edits: i64,
+    pub writes: i64,
+    pub adds: i64,
+    pub dels: i64,
+    pub created: bool,
+    pub last_ts: Option<i64>,
+}
+
+/// `path`'s Normal components (drops the root/prefix), for suffix matching.
+fn components(path: &Path) -> Vec<&std::ffi::OsStr> {
+    path.components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => Some(s),
+            _ => None,
+        })
+        .collect()
+}
+
+/// How many trailing components two paths share (≥1 for two paths with the
+/// same file name).
+fn common_suffix_len(a: &Path, b: &Path) -> usize {
+    components(a).iter().rev().zip(components(b).iter().rev()).take_while(|(x, y)| x == y).count()
+}
+
+enum SuffixMatch {
+    Found(PathBuf, PathBuf), // (relocated file, the root it was found under)
+    Ambiguous,               // the longest matching suffix hit several roots — don't guess
+    None,
+}
+
+/// Try progressively shorter trailing-component suffixes of `recorded` under
+/// each candidate root, longest first; a unique hit wins. At least two
+/// components must match (a bare file name is too weak for this pass — the
+/// filename pass below handles that with a tiebreak).
+fn suffix_match(recorded: &Path, roots: &[PathBuf]) -> SuffixMatch {
+    let comps = components(recorded);
+    for take in (2..=comps.len().saturating_sub(1)).rev() {
+        let suffix: PathBuf = comps[comps.len() - take..].iter().collect();
+        let mut hits: Vec<(PathBuf, PathBuf)> = Vec::new();
+        for r in roots {
+            let cand = r.join(&suffix);
+            if cand.is_file() {
+                hits.push((cand, r.clone()));
+            }
+        }
+        match hits.len() {
+            0 => continue,
+            1 => {
+                let (file, root) = hits.pop().unwrap();
+                return SuffixMatch::Found(file, root);
+            }
+            _ => return SuffixMatch::Ambiguous,
+        }
+    }
+    SuffixMatch::None
+}
+
+/// file name → every file with that name under `root`. Bounded (depth, entry
+/// count) and skips hidden + dependency/build dirs, so a renamed source dir is
+/// findable without ever walking node_modules or target.
+fn filename_index(root: &Path) -> std::collections::HashMap<std::ffi::OsString, Vec<PathBuf>> {
+    const SKIP: [&str; 6] = ["node_modules", "target", "dist", "build", "out", "vendor"];
+    let mut map: std::collections::HashMap<std::ffi::OsString, Vec<PathBuf>> = std::collections::HashMap::new();
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    let mut seen = 0usize;
+    while let Some((dir, depth)) = stack.pop() {
+        if depth > 12 {
+            continue;
+        }
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            seen += 1;
+            if seen > 30_000 {
+                return map; // huge tree: serve what we indexed so far
+            }
+            let name = e.file_name();
+            if name.to_string_lossy().starts_with('.') {
+                continue;
+            }
+            let Ok(ft) = e.file_type() else { continue };
+            if ft.is_dir() {
+                if !SKIP.iter().any(|s| name == std::ffi::OsStr::new(s)) {
+                    stack.push((e.path(), depth + 1));
+                }
+            } else if ft.is_file() {
+                map.entry(name).or_default().push(e.path());
+            }
+        }
+    }
+    map
+}
+
+/// Among same-named files, the one sharing the longest trailing path with the
+/// recorded location — a strict winner only (a tie means we'd be guessing).
+fn best_by_suffix(recorded: &Path, index: &std::collections::HashMap<std::ffi::OsString, Vec<PathBuf>>) -> Option<PathBuf> {
+    let cands = index.get(recorded.file_name()?)?;
+    let mut best: Option<(usize, &PathBuf)> = None;
+    let mut tied = false;
+    for c in cands {
+        let s = common_suffix_len(recorded, c);
+        match &best {
+            None => best = Some((s, c)),
+            Some((bs, _)) if s > *bs => {
+                best = Some((s, c));
+                tied = false;
+            }
+            Some((bs, _)) if s == *bs => tied = true,
+            _ => {}
+        }
+    }
+    match (best, tied) {
+        (Some((_, p)), false) => Some(p.clone()),
+        _ => None,
+    }
+}
+
+/// Resolve every touched file to its current on-disk location. Search scope:
+/// the session's own project root while it exists; when the whole root is gone
+/// (project renamed/moved), every OTHER indexed project root becomes a
+/// candidate. Files the suffix pass can't place fall through to a filename
+/// search inside the "home" root — the root the session's other files voted
+/// for — which catches inner directory renames (crates/old-core → crates/new-core).
+pub(crate) fn resolve_touches(touches: Vec<transcript::FileTouch>, session_root: &str, alt_roots: &[String]) -> Vec<FileTouchView> {
+    let root_dir = Path::new(session_root);
+    let root_lives = !session_root.is_empty() && root_dir.is_dir();
+    let candidates: Vec<PathBuf> = if root_lives {
+        vec![root_dir.to_path_buf()]
+    } else {
+        alt_roots.iter().map(PathBuf::from).filter(|p| p.is_dir()).collect()
+    };
+
+    let mut resolved: Vec<Option<PathBuf>> = vec![None; touches.len()];
+    let mut votes: std::collections::HashMap<PathBuf, usize> = std::collections::HashMap::new();
+    let mut for_name_pass: Vec<usize> = Vec::new();
+    for (i, t) in touches.iter().enumerate() {
+        let p = Path::new(&t.path);
+        if p.is_file() {
+            resolved[i] = Some(p.to_path_buf());
+            continue;
+        }
+        match suffix_match(p, &candidates) {
+            SuffixMatch::Found(file, root) => {
+                resolved[i] = Some(file);
+                *votes.entry(root).or_insert(0) += 1;
+            }
+            SuffixMatch::Ambiguous => {} // honestly gone rather than a guess
+            SuffixMatch::None => for_name_pass.push(i),
+        }
+    }
+
+    if !for_name_pass.is_empty() {
+        // ties for home get no filename pass — no root earned our trust
+        let home: Option<PathBuf> = if root_lives {
+            Some(root_dir.to_path_buf())
+        } else {
+            let best = votes.iter().max_by_key(|(_, n)| **n);
+            best.filter(|(_, n)| votes.values().filter(|m| m == n).count() == 1).map(|(r, _)| r.clone())
+        };
+        if let Some(home) = home {
+            let index = filename_index(&home);
+            for i in for_name_pass {
+                resolved[i] = best_by_suffix(Path::new(&touches[i].path), &index);
+            }
+        }
+    }
+
+    touches
+        .into_iter()
+        .zip(resolved)
+        .map(|(t, r)| FileTouchView {
+            path: t.path,
+            resolved: r.map(|p| p.display().to_string()),
+            edits: t.edits,
+            writes: t.writes,
+            adds: t.adds,
+            dels: t.dels,
+            created: t.created,
+            last_ts: t.last_ts,
+        })
+        .collect()
+}
+
 /// Files this session changed (Edit/Write tool calls; errored calls dropped),
-/// for the Briefing panel's "Files changed" list.
+/// each resolved to where it lives now, for the Briefing panel's
+/// "Files changed" section.
 #[tauri::command]
-pub fn session_files(db: State<'_, AppDb>, session_id: String) -> Result<Vec<transcript::FileTouch>, String> {
+pub fn session_files(db: State<'_, AppDb>, session_id: String) -> Result<Vec<FileTouchView>, String> {
     let path = transcript_file(&db, &session_id)?;
-    transcript::files_touched(&path).map_err(|e| e.to_string())
+    let touches = transcript::files_touched(&path).map_err(|e| e.to_string())?;
+    let (session_root, alt_roots) = {
+        let store = db.0.lock().unwrap();
+        let root = store
+            .get_session(&session_id)
+            .map_err(|e| e.to_string())?
+            .map(|r| r.project_path)
+            .unwrap_or_default();
+        let mut alts: Vec<String> = store
+            .list_sessions()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|r| r.project_path)
+            .filter(|p| !p.is_empty() && p != &root)
+            .collect();
+        alts.sort();
+        alts.dedup();
+        (root, alts)
+    };
+    Ok(resolve_touches(touches, &session_root, &alt_roots))
 }
 
 /// Open a file in the user's editor (reveal=false) or reveal it in Finder
@@ -99,7 +310,7 @@ pub fn open_path(path: String, reveal: bool, settings: State<'_, crate::settings
         return Err("path must be absolute".into());
     }
     if !p.exists() {
-        return Err(format!("file no longer exists: {path}"));
+        return Err(format!("not found on disk (moved or deleted?): {path}"));
     }
     if reveal {
         std::process::Command::new("open")
@@ -217,5 +428,105 @@ mod tests {
         u.ts = Some(1_780_308_000_000); // 2026-06-01 UTC
         let md = export_markdown("T", "/p", &[u]);
         assert!(md.contains("**You · 2026-"), "user turn carries its date: {md}");
+    }
+
+    // ---- path relocation --------------------------------------------------
+
+    fn touch(path: &Path) -> transcript::FileTouch {
+        transcript::FileTouch {
+            path: path.display().to_string(),
+            edits: 1,
+            writes: 0,
+            adds: 0,
+            dels: 0,
+            created: false,
+            last_ts: None,
+        }
+    }
+
+    fn plant(root: &Path, rel: &str) -> PathBuf {
+        let p = root.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, b"x").unwrap();
+        p
+    }
+
+    #[test]
+    fn resolve_keeps_files_that_exist_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("proj");
+        let f = plant(&root, "src/a.rs");
+        let got = resolve_touches(vec![touch(&f)], root.to_str().unwrap(), &[]);
+        assert_eq!(got[0].resolved.as_deref(), Some(f.to_str().unwrap()));
+    }
+
+    #[test]
+    fn resolve_relocates_a_wholesale_project_move() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("old"); // never created — the project moved away
+        let new = tmp.path().join("new");
+        let moved = plant(&new, "src-tauri/src/main.rs");
+        let other = tmp.path().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        let alts = vec![new.display().to_string(), other.display().to_string()];
+
+        let got = resolve_touches(
+            vec![touch(&old.join("src-tauri/src/main.rs")), touch(&old.join("nowhere/gone.rs"))],
+            old.to_str().unwrap(),
+            &alts,
+        );
+        assert_eq!(got[0].resolved.as_deref(), Some(moved.to_str().unwrap()), "same relative path under the new root");
+        assert_eq!(got[1].resolved, None, "a file that exists nowhere stays gone");
+    }
+
+    #[test]
+    fn resolve_finds_renamed_dirs_by_filename_with_suffix_tiebreak() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("old"); // gone
+        let new = tmp.path().join("new");
+        plant(&new, "docs/plan.md"); // suffix-resolvable → votes `new` as home
+        let renamed = plant(&new, "crates/new-core/src/parser.rs");
+        plant(&new, "tools/parser.rs"); // same name, weaker trailing match
+        let alts = vec![new.display().to_string()];
+
+        let got = resolve_touches(
+            vec![touch(&old.join("docs/plan.md")), touch(&old.join("crates/old-core/src/parser.rs"))],
+            old.to_str().unwrap(),
+            &alts,
+        );
+        assert!(got[0].resolved.is_some());
+        assert_eq!(
+            got[1].resolved.as_deref(),
+            Some(renamed.to_str().unwrap()),
+            "src/parser.rs beats tools/parser.rs on common trailing components"
+        );
+    }
+
+    #[test]
+    fn resolve_gives_up_on_ambiguity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("old"); // gone
+        let r1 = tmp.path().join("r1");
+        let r2 = tmp.path().join("r2");
+        plant(&r1, "src/util.rs");
+        plant(&r2, "src/util.rs");
+        let alts = vec![r1.display().to_string(), r2.display().to_string()];
+        let got = resolve_touches(vec![touch(&old.join("src/util.rs"))], old.to_str().unwrap(), &alts);
+        assert_eq!(got[0].resolved, None, "two equally-good homes means no guess");
+    }
+
+    #[test]
+    fn resolve_never_leaves_a_live_project_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("proj");
+        plant(&root, "README.md"); // root exists
+        let elsewhere = tmp.path().join("elsewhere");
+        plant(&elsewhere, "src/x.rs"); // tempting, but out of scope
+        let got = resolve_touches(
+            vec![touch(&root.join("src/x.rs"))],
+            root.to_str().unwrap(),
+            &[elsewhere.display().to_string()],
+        );
+        assert_eq!(got[0].resolved, None, "a live root confines the search — the file was deleted");
     }
 }
