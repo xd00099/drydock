@@ -98,6 +98,14 @@ const FolderGlyph = () => (
   </svg>
 )
 
+// Same folder, with a plus: the always-visible "New folder" affordance.
+const NewFolderGlyph = () => (
+  <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden>
+    <path d="M1.5 3.5h4.2l1.6 2h7.2v7h-13z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+    <path d="M8 7.9v4.2M5.9 10h4.2" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+  </svg>
+)
+
 // A live drag: a session heading for a folder, or a folder being reordered.
 type Drag =
   | { kind: 'session'; sid: string; label: string; fromFolder: string | null }
@@ -343,7 +351,7 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
       <button
         key={s.session_id}
         className={`dd-sessrow${flashSid === s.session_id ? ' dd-landed' : ''}`}
-        style={{ ...S.row, opacity: isDragging ? 0.4 : isHidden ? 0.45 : 1, borderLeftColor: sessionColor(s.session_id), background: sessionColor(s.session_id, isActive ? 0.3 : 0.1) }}
+        style={{ ...S.row, opacity: isDragging ? 0.4 : isHidden ? 0.45 : 1, borderLeftColor: sessionColor(s.session_id, 1, s.hue), background: sessionColor(s.session_id, isActive ? 0.3 : 0.1, s.hue) }}
         onClick={dragSafe(() => onResume(s))}
         onPointerDown={(e) => beginPress(e, { kind: 'session', sid: s.session_id, label: sessionLabel(s), fromFolder: s.folder_id })}
         onContextMenu={(e) => { e.preventDefault(); if (dragRef.current) return; setMenu({ x: e.clientX, y: e.clientY, s, view: 'main' }) }}
@@ -481,6 +489,18 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
     <div ref={scrollerRef} style={{ ...S.side, width, minWidth: width, borderRight: 'none' }}>
       <div style={S.bar}>
         <span style={{ flex: 1, fontWeight: 700, color: '#e8edf4' }}>DRYDOCK</span>
+        <button
+          style={{ ...S.btn, display: 'flex', alignItems: 'center', marginRight: 8, color: '#8ea0b5' }}
+          title={'New folder…\nOrganize sessions into working groups — drag them in,\nor right-click a session → Move to folder'}
+          onClick={() => {
+            setNaming({ kind: 'create', sid: null })
+            // the name input appears at the top of the folders band — make sure
+            // it's on screen even when the list is scrolled deep
+            if (scrollerRef.current) scrollerRef.current.scrollTop = 0
+          }}
+        >
+          <NewFolderGlyph />
+        </button>
         <button style={{ ...S.btn, fontSize: 15 }} title="Collapse sidebar" onClick={toggleSidebar}>«</button>
       </div>
 

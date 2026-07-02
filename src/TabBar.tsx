@@ -48,7 +48,7 @@ export default function TabBar({ tabs, sessions, activeId, shellDirs, unread, on
     activeChipRef.current?.scrollIntoView({ inline: 'nearest', block: 'nearest' })
   }, [activeId])
 
-  const chip = (t: Tab, label: string, accent?: string, tip?: string, attention?: boolean) => (
+  const chip = (t: Tab, label: string, accent?: string, tip?: string, attention?: boolean, hue?: number | null) => (
     <div
       key={t.id}
       ref={t.id === activeId ? activeChipRef : undefined}
@@ -59,7 +59,7 @@ export default function TabBar({ tabs, sessions, activeId, shellDirs, unread, on
         // tint the chip in its session's color (like the sidebar rows): a faint
         // wash when inactive, stronger when active; the solid strip stays at left
         background: t.sessionId
-          ? sessionColor(t.sessionId, t.id === activeId ? 0.3 : 0.1)
+          ? sessionColor(t.sessionId, t.id === activeId ? 0.3 : 0.1, hue)
           : t.id === activeId ? '#1d2530' : 'transparent',
         borderLeftColor: accent ?? 'transparent',
         color: t.exited ? '#5b6675' : '#c8cdd5',
@@ -90,7 +90,8 @@ export default function TabBar({ tabs, sessions, activeId, shellDirs, unread, on
           {sessionTabs.map((t) => {
             const s = t.sessionId ? sessions.find((x) => x.session_id === t.sessionId) : undefined
             const label = s ? sessionLabel(s) : t.title
-            return chip(t, label, t.sessionId ? sessionColor(t.sessionId) : undefined, label, s?.live_status === 'needs_input')
+            const tip = t.kind === 'transcript' ? `${label} — read-only transcript` : label
+            return chip(t, label, t.sessionId ? sessionColor(t.sessionId, 1, s?.hue) : undefined, tip, s?.live_status === 'needs_input', s?.hue)
           })}
         </div>
       )}

@@ -29,8 +29,10 @@ pub mod imp {
     const EMBEDDING_VERSION: &str = "e5-small-passage-v1";
 
     /// Background loop: load the model once (downloads ~110MB on first run),
-    /// then drain unembedded chunks forever at low priority.
-    pub fn run(db_path: PathBuf, cache_dir: PathBuf) {
+    /// then drain unembedded chunks forever at low priority. Once drained, it
+    /// also refreshes the semantic session hues (see `hues`) and pokes the UI.
+    pub fn run(db_path: PathBuf, cache_dir: PathBuf, emit: tauri::AppHandle) {
+        use tauri::Emitter;
         let model = match TextEmbedding::try_new(
             InitOptions::new(EmbeddingModel::MultilingualE5Small).with_cache_dir(cache_dir),
         ) {
@@ -46,6 +48,9 @@ pub mod imp {
         SEMANTIC_STATE.store(1, Ordering::Relaxed);
 
         let mut migrated = false;
+        // hue maintenance is due at startup (catch up on earlier runs) and
+        // after any embedding work; stale-ness can't change otherwise
+        let mut recolor_due = true;
         loop {
             let Ok(mut store) = Store::open(&db_path) else {
                 std::thread::sleep(std::time::Duration::from_secs(5));
@@ -70,6 +75,12 @@ pub mod imp {
             let pending = store.chunks_without_embeddings(32).unwrap_or_default();
             if pending.is_empty() {
                 SEMANTIC_STATE.store(2, Ordering::Relaxed);
+                if recolor_due {
+                    recolor_due = false;
+                    if crate::hues::refresh(&store) > 0 {
+                        let _ = emit.emit("index-updated", ()); // recolor the sidebar/tabs now
+                    }
+                }
                 std::thread::sleep(std::time::Duration::from_secs(3));
                 continue;
             }
@@ -82,6 +93,7 @@ pub mod imp {
                     for ((chunk_id, _), v) in pending.iter().zip(vecs) {
                         let _ = store.put_embedding(*chunk_id, &v);
                     }
+                    recolor_due = true;
                 }
                 Err(e) => {
                     eprintln!("embed batch failed: {e:#}");
@@ -107,7 +119,7 @@ pub mod imp {
 #[cfg(not(feature = "semantic"))]
 pub mod imp {
     use std::path::PathBuf;
-    pub fn run(_db: PathBuf, _cache: PathBuf) {}
+    pub fn run(_db: PathBuf, _cache: PathBuf, _emit: tauri::AppHandle) {}
     pub fn embed_query(_q: &str) -> Option<Vec<f32>> {
         None
     }

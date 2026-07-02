@@ -329,6 +329,17 @@ pub fn files_touched(path: &Path) -> std::io::Result<Vec<FileTouch>> {
             continue; // a subagent's edits belong to its own transcript
         }
         let kind = v.get("type").and_then(Value::as_str).unwrap_or("");
+        // A MANUAL /compact starts a fresh chapter: "Files changed" shows what
+        // the session touched SINCE, not its whole life. Auto-compaction
+        // (context overflow mid-task) is not a user intent and doesn't clear.
+        if kind == "system" && v.get("subtype").and_then(Value::as_str) == Some("compact_boundary") {
+            let auto = v.pointer("/compactMetadata/trigger").and_then(Value::as_str) == Some("auto");
+            if !auto {
+                pending.clear();
+                by_id.clear();
+            }
+            continue;
+        }
         let Some(blocks) = v.get("message").and_then(|m| m.get("content")).and_then(Value::as_array) else { continue };
         match kind {
             "assistant" => {
@@ -588,6 +599,37 @@ mod tests {
         assert!(!by_path("/p/a.rs").created, "unattributable create flag is not applied");
         assert_eq!((by_path("/p/b.rs").adds, by_path("/p/b.rs").dels), (1, 0));
         assert_eq!((by_path("/p/c.rs").adds, by_path("/p/c.rs").dels), (2, 1), "input estimate, not the mismatched patch");
+    }
+
+    #[test]
+    fn files_touched_resets_at_manual_compact_but_not_auto() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("t.jsonl");
+        let edit = |id: &str, file: &str| {
+            format!(
+                r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"{id}","name":"Edit","input":{{"file_path":"{file}","old_string":"a","new_string":"b"}}}}]}}}}"#
+            )
+        };
+        let ok = |id: &str| {
+            format!(r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"{id}","content":"ok"}}]}}}}"#)
+        };
+        let compact = |trigger: &str| {
+            format!(r#"{{"type":"system","subtype":"compact_boundary","compactMetadata":{{"trigger":"{trigger}","preTokens":150000,"postTokens":12000}}}}"#)
+        };
+        let lines = [
+            edit("e1", "/p/before.rs"),
+            ok("e1"),
+            compact("auto"), // context overflow — keeps accumulating
+            edit("e2", "/p/kept.rs"),
+            ok("e2"),
+            compact("manual"), // the user said /compact — fresh chapter
+            edit("e3", "/p/after.rs"),
+            ok("e3"),
+        ];
+        std::fs::write(&p, lines.join("\n") + "\n").unwrap();
+        let touched = files_touched(&p).unwrap();
+        let paths: Vec<&str> = touched.iter().map(|t| t.path.as_str()).collect();
+        assert_eq!(paths, vec!["/p/after.rs"], "only work since the manual /compact remains");
     }
 
     #[test]

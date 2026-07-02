@@ -141,6 +141,15 @@ CREATE TABLE IF NOT EXISTS chunk_embeddings(
   chunk_id INTEGER PRIMARY KEY,
   embedding BLOB NOT NULL
 );
+-- Semantic hue per session (degrees 0..360): the angle of the session's mean
+-- chunk embedding projected on the persisted 2D basis (meta 'hue_basis_v1'),
+-- so sessions about similar things wear similar colors. embedded_chunks is
+-- how many vectors the mean covered — a session that grew gets re-tinted.
+CREATE TABLE IF NOT EXISTS session_hues(
+  session_id TEXT PRIMARY KEY,
+  hue REAL NOT NULL,
+  embedded_chunks INTEGER NOT NULL DEFAULT 0
+);
 -- Briefing card: a one-line summary plus a JSON timeline of milestones.
 CREATE TABLE IF NOT EXISTS cards(
   session_id TEXT PRIMARY KEY,
@@ -406,6 +415,7 @@ impl Store {
         tx.execute("DELETE FROM sync_state WHERE session_id = ?1", params![session_id])?;
         tx.execute("DELETE FROM hidden_sessions WHERE session_id = ?1", params![session_id])?;
         tx.execute("DELETE FROM folder_sessions WHERE session_id = ?1", params![session_id])?;
+        tx.execute("DELETE FROM session_hues WHERE session_id = ?1", params![session_id])?;
         tx.execute("DELETE FROM sessions WHERE session_id = ?1", params![session_id])?;
         tx.commit()?;
         Ok(())
@@ -658,6 +668,102 @@ impl Store {
     pub fn hidden_session_ids(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare("SELECT session_id FROM hidden_sessions ORDER BY hidden_at")?;
         let rows: Vec<String> = stmt.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    // ---- session hues (semantic colors) -----------------------------------
+
+    /// Sessions whose hue is missing, or computed from fewer embedded chunks
+    /// than now exist (their topic mean has moved since).
+    pub fn sessions_with_stale_hues(&self, limit: i64) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT q.sid FROM (
+               SELECT c.session_id AS sid, COUNT(e.chunk_id) AS n
+               FROM chunks c JOIN chunk_embeddings e ON e.chunk_id = c.chunk_id
+               GROUP BY c.session_id
+             ) q LEFT JOIN session_hues h ON h.session_id = q.sid
+             WHERE h.session_id IS NULL OR h.embedded_chunks != q.n
+             LIMIT ?1",
+        )?;
+        let rows: Vec<String> = stmt.query_map(params![limit], |r| r.get(0))?.collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    fn decode_embedding(blob: &[u8]) -> Vec<f32> {
+        blob.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()
+    }
+
+    /// Mean of one session's chunk embeddings, plus how many it covered.
+    pub fn session_embedding_mean(&self, session_id: &str) -> Result<Option<(Vec<f32>, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT e.embedding FROM chunks c JOIN chunk_embeddings e ON e.chunk_id = c.chunk_id
+             WHERE c.session_id = ?1",
+        )?;
+        let mut mean: Vec<f32> = Vec::new();
+        let mut n = 0i64;
+        for blob in stmt.query_map(params![session_id], |r| r.get::<_, Vec<u8>>(0))?.flatten() {
+            let v = Self::decode_embedding(&blob);
+            if mean.is_empty() {
+                mean = vec![0.0; v.len()];
+            }
+            if v.len() != mean.len() {
+                continue; // vector from an older model recipe — skip
+            }
+            for (m, x) in mean.iter_mut().zip(&v) {
+                *m += x;
+            }
+            n += 1;
+        }
+        if n == 0 {
+            return Ok(None);
+        }
+        for m in &mut mean {
+            *m /= n as f32;
+        }
+        Ok(Some((mean, n)))
+    }
+
+    /// Mean embedding for every session that has any — the basis-fitting input.
+    pub fn all_session_embedding_means(&self) -> Result<Vec<(String, Vec<f32>)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT c.session_id, e.embedding
+             FROM chunks c JOIN chunk_embeddings e ON e.chunk_id = c.chunk_id",
+        )?;
+        let mut acc: std::collections::HashMap<String, (Vec<f32>, i64)> = std::collections::HashMap::new();
+        for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?)))?.flatten() {
+            let (sid, blob) = row;
+            let v = Self::decode_embedding(&blob);
+            let entry = acc.entry(sid).or_insert_with(|| (vec![0.0; v.len()], 0));
+            if entry.0.len() != v.len() {
+                continue;
+            }
+            for (m, x) in entry.0.iter_mut().zip(&v) {
+                *m += x;
+            }
+            entry.1 += 1;
+        }
+        Ok(acc
+            .into_iter()
+            .map(|(sid, (mut sum, n))| {
+                for m in &mut sum {
+                    *m /= n as f32;
+                }
+                (sid, sum)
+            })
+            .collect())
+    }
+
+    pub fn set_session_hue(&self, session_id: &str, hue: f64, embedded_chunks: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO session_hues(session_id, hue, embedded_chunks) VALUES (?1, ?2, ?3)",
+            params![session_id, hue, embedded_chunks],
+        )?;
+        Ok(())
+    }
+
+    pub fn session_hues(&self) -> Result<Vec<(String, f64)>> {
+        let mut stmt = self.conn.prepare("SELECT session_id, hue FROM session_hues")?;
+        let rows: Vec<(String, f64)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?;
         Ok(rows)
     }
 
