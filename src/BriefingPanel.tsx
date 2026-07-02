@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { clampPanelWidth, loadNum, relAge, baseName, type Artifact, type CardView, type McpServer, type Skill, type TimelineItem } from './types'
+import { clampPanelWidth, loadNum, relAge, baseName, type Artifact, type ArtifactKind, type CardView, type FileTouch, type McpServer, type SavedArtifact, type Skill, type TimelineItem } from './types'
 import ArtifactView from './ArtifactView'
 import ResizeHandle from './ResizeHandle'
 
@@ -86,45 +86,224 @@ function Item({ it }: { it: TimelineItem }) {
   )
 }
 
-function BriefingTab({ sessionId, card, starred, onToggleStar }: { sessionId: string | null; card: CardView | null; starred: boolean; onToggleStar?: () => void }) {
-  if (!sessionId)
-    return <div style={S.muted}>No indexed session yet — once this conversation is saved, its briefing card appears here.</div>
+/// Path shown project-relative when it lives under the session's project.
+function relPath(p: string, root?: string): string {
+  return root && p.startsWith(root + '/') ? p.slice(root.length + 1) : p
+}
+
+// Per-file status glyph, git-style: created / modified / gone from disk.
+function FileBadge({ f }: { f: FileTouch }) {
+  const [glyph, color, label] = !f.resolved
+    ? ['−', '#cf6b6b', 'not on disk anymore (moved or deleted since)']
+    : f.created
+      ? ['+', '#5fb98a', 'created by this session']
+      : ['•', '#d6b24a', 'modified by this session']
   return (
-    <>
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 12 }}>
-        <button
-          onClick={onToggleStar}
-          disabled={!onToggleStar}
-          title={starred ? 'Unstar this session' : 'Star this session'}
-          style={{ background: 'none', border: 'none', cursor: onToggleStar ? 'pointer' : 'default', color: starred ? '#e8c35a' : '#3a4350', fontSize: 16, padding: 0, lineHeight: 1 }}
-        >
-          ★
-        </button>
-        <div style={{ flex: 1, color: '#e8edf4', fontWeight: 600, fontSize: 13, lineHeight: 1.3 }}>{card?.summary || 'Session'}</div>
+    <span
+      title={label}
+      style={{ flex: 'none', width: 13, height: 13, borderRadius: 3, border: `1px solid ${color}`, color, fontSize: 10, lineHeight: '12px', textAlign: 'center', fontFamily: 'Menlo, monospace' }}
+    >
+      {glyph}
+    </span>
+  )
+}
+
+/// +adds/−dels column; falls back to a dim call count when a session's records
+/// carried no measurable diff at all.
+function DiffStat({ f }: { f: FileTouch }) {
+  if (f.adds === 0 && f.dels === 0)
+    return <span style={{ flex: 'none', color: '#4a5462', fontSize: 10, fontFamily: 'Menlo, monospace' }}>×{f.edits + f.writes}</span>
+  return (
+    <span style={{ flex: 'none', display: 'flex', gap: 6, fontFamily: 'Menlo, monospace', fontSize: 10 }}>
+      {f.adds > 0 && <span style={{ color: '#5fb98a' }}>+{f.adds.toLocaleString('en-US')}</span>}
+      {f.dels > 0 && <span style={{ color: '#cf6b6b' }}>−{f.dels.toLocaleString('en-US')}</span>}
+    </span>
+  )
+}
+
+/// The Briefing tab's bottom section: what this session touched, grouped by
+/// directory like a review tool's file tree — status badge, basename, +/- line
+/// stats — in its own scroll region under a sticky totals header. Rows open the
+/// file's CURRENT location (the resolver's work); files that are gone render
+/// struck-through and explain themselves instead of erroring.
+function FilesChanged({ files, projectPath, sessionId }: { files: FileTouch[]; projectPath?: string; sessionId: string | null }) {
+  // Transient error line (editor_cmd broken, file vanished mid-click, …).
+  const [err, setErr] = useState<string | null>(null)
+  const errTimer = useRef(0)
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  useEffect(() => setCollapsed(new Set()), [sessionId]) // fresh session, fresh tree
+  const flashErr = (text: string) => {
+    clearTimeout(errTimer.current)
+    setErr(text)
+    errTimer.current = window.setTimeout(() => setErr(null), 4000)
+  }
+  useEffect(() => () => clearTimeout(errTimer.current), [])
+  if (files.length === 0) return null
+
+  const open = (f: FileTouch, reveal: boolean) => {
+    if (!f.resolved) {
+      flashErr('not on disk anymore — moved or deleted since this session')
+      return
+    }
+    invoke('open_path', { path: f.resolved, reveal }).catch((e) => flashErr(String(e)))
+  }
+
+  // group by the display path's directory, in first-touched order
+  const groups: { dir: string; items: { f: FileTouch; name: string }[] }[] = []
+  const byDir = new Map<string, { f: FileTouch; name: string }[]>()
+  for (const f of files) {
+    const rel = relPath(f.path, projectPath)
+    const cut = rel.lastIndexOf('/')
+    const dir = cut < 0 ? '' : rel.slice(0, cut)
+    let list = byDir.get(dir)
+    if (!list) {
+      list = []
+      byDir.set(dir, list)
+      groups.push({ dir, items: list })
+    }
+    list.push({ f, name: cut < 0 ? rel : rel.slice(cut + 1) })
+  }
+  const totAdds = files.reduce((n, f) => n + f.adds, 0)
+  const totDels = files.reduce((n, f) => n + f.dels, 0)
+  const gone = files.filter((f) => !f.resolved).length
+
+  const toggle = (dir: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      if (next.has(dir)) next.delete(dir); else next.add(dir)
+      return next
+    })
+
+  return (
+    <div style={{ flex: '0 1 auto', maxHeight: '55%', display: 'flex', flexDirection: 'column', borderTop: '1px solid #232c3a', background: '#0d1117' }}>
+      <div style={{ flex: 'none', display: 'flex', alignItems: 'baseline', gap: 8, padding: '8px 12px 6px' }}>
+        <span style={{ color: '#7d8794', fontWeight: 700, fontSize: 10, letterSpacing: 0.8 }}>FILES CHANGED</span>
+        <span style={{ display: 'flex', gap: 6, fontFamily: 'Menlo, monospace', fontSize: 11 }}>
+          <span style={{ color: '#5fb98a' }}>+{totAdds.toLocaleString('en-US')}</span>
+          <span style={{ color: '#cf6b6b' }}>−{totDels.toLocaleString('en-US')}</span>
+        </span>
+        <span style={{ color: '#5b6675', fontSize: 10 }}>
+          · {files.length} file{files.length === 1 ? '' : 's'}{gone > 0 ? ` · ${gone} gone` : ''}
+        </span>
       </div>
-      {card ? (
-        <>
-          {card.timeline.length > 0 ? (
-            <ul style={{ margin: 0, padding: 0, listStyle: 'none' }}>
-              {card.timeline.map((it, i) => (
-                <Item key={i} it={it} />
-              ))}
-            </ul>
-          ) : (
-            <div style={S.muted}>no timeline yet</div>
-          )}
-          <div style={{ color: '#5b6675', fontSize: 10, marginTop: 12 }}>card from {relAge(card.generated_at)} ago</div>
-        </>
-      ) : (
-        <div style={S.muted}>no briefing card yet</div>
-      )}
-      <button
-        style={{ marginTop: 10, background: '#1d2530', color: '#e8edf4', border: '1px solid #2c3647', borderRadius: 5, padding: '4px 12px', cursor: 'pointer', fontSize: 12 }}
-        onClick={() => invoke('refresh_card', { sessionId }).catch(console.error)}
-      >
-        Refresh card
-      </button>
-    </>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 10px 10px' }}>
+        {groups.map((g) => {
+          const isOpen = !collapsed.has(g.dir)
+          return (
+            <div key={g.dir || '.'} style={{ marginBottom: 2 }}>
+              <button
+                onClick={() => toggle(g.dir)}
+                title={g.dir || 'project root'}
+                style={{ ...S.groupBtn, gap: 5, color: '#5f6b7a', fontSize: 9.5, letterSpacing: 0.5, padding: '4px 0 2px', textTransform: 'uppercase', fontFamily: 'Menlo, monospace' }}
+              >
+                <span style={{ width: 9, flex: 'none', color: '#4a5462' }}>{isOpen ? '▾' : '▸'}</span>
+                <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl' }}>
+                  <span style={{ unicodeBidi: 'plaintext' }}>{g.dir || './'}</span>
+                </span>
+                {!isOpen && <span style={{ flex: 'none', fontWeight: 400 }}>{g.items.length}</span>}
+              </button>
+              {isOpen &&
+                g.items.map(({ f, name }) => {
+                  const moved = !!f.resolved && f.resolved !== f.path
+                  const hint = !f.resolved
+                    ? `${f.path}\nNot on disk anymore — moved or deleted since this session.`
+                    : moved
+                      ? `${f.path}\n→ now at: ${f.resolved}\nClick to open in your editor (settings "editor_cmd", else the default app)`
+                      : `${f.path}\nOpen in your editor (settings "editor_cmd", else the default app)`
+                  return (
+                    <div key={f.path} className="dd-filerow" style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '2px 2px 2px 14px', minWidth: 0, borderRadius: 4 }}>
+                      <FileBadge f={f} />
+                      <button
+                        onClick={() => open(f, false)}
+                        title={hint}
+                        style={{
+                          flex: 1,
+                          minWidth: 0,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                          textAlign: 'left',
+                          background: 'none',
+                          border: 'none',
+                          cursor: f.resolved ? 'pointer' : 'default',
+                          color: f.resolved ? '#c8cdd5' : '#5b6675',
+                          textDecoration: f.resolved ? 'none' : 'line-through',
+                          fontFamily: 'Menlo, monospace',
+                          fontSize: 11,
+                          padding: '1px 0',
+                        }}
+                      >
+                        {name}
+                        {moved && <span style={{ color: '#7fb0ff', marginLeft: 5 }} title={`moved — now at ${f.resolved}`}>↷</span>}
+                      </button>
+                      {f.resolved && (
+                        <button
+                          className="dd-reveal"
+                          style={{ ...S.iconBtn, border: 'none', fontSize: 10, padding: '1px 3px' }}
+                          title="Reveal in Finder"
+                          onClick={() => open(f, true)}
+                        >
+                          ⊙
+                        </button>
+                      )}
+                      <DiffStat f={f} />
+                    </div>
+                  )
+                })}
+            </div>
+          )
+        })}
+      </div>
+      {err && <div style={{ flex: 'none', color: '#cf6b6b', fontSize: 10, padding: '4px 12px 8px' }}>{err}</div>}
+    </div>
+  )
+}
+
+// Two clearly separated sections: the briefing card scrolls on top; "Files
+// changed" is its own visually distinct region pinned below with its own
+// scroll — a long timeline can't bury the file list and vice versa.
+function BriefingTab({ sessionId, card, starred, files, projectPath, onToggleStar }: { sessionId: string | null; card: CardView | null; starred: boolean; files: FileTouch[]; projectPath?: string; onToggleStar?: () => void }) {
+  if (!sessionId)
+    return <div style={{ ...S.muted, padding: 12 }}>No indexed session yet — once this conversation is saved, its briefing card appears here.</div>
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+      <div style={{ flex: '1 1 auto', minHeight: 0, overflowY: 'auto', padding: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 12 }}>
+          <button
+            onClick={onToggleStar}
+            disabled={!onToggleStar}
+            title={starred ? 'Unstar this session' : 'Star this session'}
+            style={{ background: 'none', border: 'none', cursor: onToggleStar ? 'pointer' : 'default', color: starred ? '#e8c35a' : '#3a4350', fontSize: 16, padding: 0, lineHeight: 1 }}
+          >
+            ★
+          </button>
+          <div style={{ flex: 1, color: '#e8edf4', fontWeight: 600, fontSize: 13, lineHeight: 1.3 }}>{card?.summary || 'Session'}</div>
+        </div>
+        {card ? (
+          <>
+            {card.timeline.length > 0 ? (
+              <ul style={{ margin: 0, padding: 0, listStyle: 'none' }}>
+                {card.timeline.map((it, i) => (
+                  <Item key={i} it={it} />
+                ))}
+              </ul>
+            ) : (
+              <div style={S.muted}>no timeline yet</div>
+            )}
+            <div style={{ color: '#5b6675', fontSize: 10, marginTop: 12 }}>card from {relAge(card.generated_at)} ago</div>
+          </>
+        ) : (
+          <div style={S.muted}>no briefing card yet</div>
+        )}
+        <button
+          style={{ marginTop: 10, background: '#1d2530', color: '#e8edf4', border: '1px solid #2c3647', borderRadius: 5, padding: '4px 12px', cursor: 'pointer', fontSize: 12 }}
+          onClick={() => invoke('refresh_card', { sessionId }).catch(console.error)}
+        >
+          Refresh card
+        </button>
+      </div>
+      <FilesChanged files={files} projectPath={projectPath} sessionId={sessionId} />
+    </div>
   )
 }
 
@@ -218,35 +397,79 @@ function Toggle({ on, busy, onClick, title }: { on: boolean; busy: boolean; onCl
 
 function McpTab({ projectPath }: { projectPath?: string }) {
   const [servers, setServers] = useState<McpServer[] | null>(null)
-  // null = not fetched yet (show "checking"); {} = fetched, no statuses
-  const [status, setStatus] = useState<Record<string, string> | null>(null)
+  // null = never checked (dots show "checking"); {} = checked, no statuses
+  const [status, setStatus] = useState<Record<string, { st: string; raw: string }> | null>(null)
+  const [checkedAt, setCheckedAt] = useState<number | null>(null)
+  const [checking, setChecking] = useState(false)
+  const [checkErr, setCheckErr] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [busy, setBusy] = useState<Set<string>>(new Set())
+  // Result-application guard: bumped whenever projectPath changes, so a check
+  // still in flight for the OLD project can't label the new one. Also the
+  // "one check at a time" latch (state lags; a ref doesn't).
+  const epochRef = useRef(0)
+  const inFlightRef = useRef(false)
+
+  const runCheck = useCallback((hasExternal: boolean) => {
+    const epoch = epochRef.current
+    if (!hasExternal) {
+      setStatus({})
+      setCheckedAt(Date.now())
+      return
+    }
+    if (inFlightRef.current) return
+    inFlightRef.current = true
+    setChecking(true)
+    invoke<[string, string, string][]>('mcp_status', { projectPath: projectPath ?? null })
+      .then((triples) => {
+        if (epochRef.current !== epoch) return
+        setStatus(Object.fromEntries(triples.map(([n, st, raw]) => [n, { st, raw }])))
+        setCheckedAt(Date.now())
+        setCheckErr(null)
+      })
+      .catch((e) => {
+        // keep the previous statuses on screen — but say the refresh failed
+        if (epochRef.current === epoch) setCheckErr(String(e))
+      })
+      .finally(() => {
+        inFlightRef.current = false
+        if (epochRef.current === epoch) setChecking(false)
+      })
+  }, [projectPath])
 
   useEffect(() => {
-    let live = true
+    epochRef.current++
+    const epoch = epochRef.current
+    // a check still in flight for the OLD project must not block the new
+    // project's first check for a whole interval (its result is epoch-discarded
+    // anyway, and its finally() harmlessly re-clears this)
+    inFlightRef.current = false
     setServers(null)
     setStatus(null)
+    setCheckedAt(null)
+    setCheckErr(null)
+    setChecking(false)
     invoke<McpServer[]>('list_mcp_servers', { projectPath: projectPath ?? null })
       .then((list) => {
-        if (!live) return
+        if (epochRef.current !== epoch) return
         setServers(list)
-        // only health-check (spawns the user's servers) if there are external ones
-        if (list.some((s) => !s.builtin)) {
-          invoke<[string, string][]>('mcp_status', { projectPath: projectPath ?? null })
-            .then((pairs) => { if (live) setStatus(Object.fromEntries(pairs)) })
-            .catch(() => { if (live) setStatus({}) })
-        } else {
-          setStatus({})
-        }
+        runCheck(list.some((s) => !s.builtin))
       })
       .catch(() => {
-        if (!live) return
+        if (epochRef.current !== epoch) return
         setServers([])
         setStatus({})
       })
-    return () => { live = false }
-  }, [projectPath])
+  }, [projectPath, runCheck])
+
+  // A dot is only as honest as its age: re-check every minute while this tab
+  // stays open (a dead server otherwise kept its green from panel-mount time).
+  const hasExternal = !!servers?.some((s) => !s.builtin)
+  useEffect(() => {
+    if (!hasExternal) return
+    const t = window.setInterval(() => runCheck(true), 60_000)
+    return () => window.clearInterval(t)
+  }, [hasExternal, runCheck])
 
   const toggleExpand = (name: string) =>
     setExpanded((prev) => { const n = new Set(prev); if (n.has(name)) n.delete(name); else n.add(name); return n })
@@ -263,18 +486,27 @@ function McpTab({ projectPath }: { projectPath?: string }) {
     }
   }
 
+  const ageText = (ts: number) => {
+    const w = relAge(ts)
+    return w === 'now' ? 'just now' : `${w} ago`
+  }
+
   // Health dot: the builtin loopback server is "connected" whenever enabled;
-  // external servers reflect the live `claude mcp list` check (or "checking").
+  // external servers reflect the last `claude mcp list` check. The tooltip
+  // carries the CLI's raw words plus the check's age — the dot is a summary,
+  // never the whole truth.
   const dotFor = (s: McpServer): { status: string; title: string } => {
     if (s.builtin)
       return s.enabled
         ? { status: 'connected', title: 'Listening · renders to the Artifacts tab' }
         : { status: 'unknown', title: 'Off — new sessions won’t get the render tool' }
     if (status === null) return { status: 'checking', title: 'Checking…' }
-    const st = status[s.name] ?? 'unknown'
-    const title =
-      st === 'connected' ? 'Connected' : st === 'failed' ? 'Failed to connect' : st === 'pending' ? 'Pending approval' : 'Status unknown'
-    return { status: st, title }
+    const e = status[s.name]
+    const st = e?.st ?? 'unknown'
+    const what = e?.raw
+      ? e.raw
+      : st === 'connected' ? 'Connected' : st === 'failed' ? 'Failed to connect' : st === 'pending' ? 'Pending approval' : 'Not in the `claude mcp list` output'
+    return { status: st, title: checkedAt ? `${what}\nchecked ${ageText(checkedAt)}` : what }
   }
 
   const proj = projectPath ? baseName(projectPath) : undefined
@@ -285,7 +517,28 @@ function McpTab({ projectPath }: { projectPath?: string }) {
           for project: <span style={{ color: '#c8cdd5' }}>{proj}</span>
         </div>
       )}
-      <div style={{ color: '#5b6675', fontSize: 10, marginBottom: 8, lineHeight: 1.4 }}>● live status · toggling applies to new sessions · secrets hidden</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+        <span style={{ flex: 1, color: '#5b6675', fontSize: 10, lineHeight: 1.4 }}>
+          ● health via `claude mcp list` ·{' '}
+          {!hasExternal ? 'no external servers' : checking ? 'checking…' : checkedAt ? `checked ${ageText(checkedAt)}` : 'not checked yet'}
+        </span>
+        {hasExternal && (
+          <button
+            onClick={() => runCheck(true)}
+            disabled={checking}
+            title="Re-check server health now"
+            style={{ ...S.iconBtn, fontSize: 10, padding: '1px 5px', opacity: checking ? 0.4 : 1, cursor: checking ? 'default' : 'pointer' }}
+          >
+            ↻
+          </button>
+        )}
+      </div>
+      {checkErr && (
+        <div title={checkErr} style={{ color: '#cf6b6b', fontSize: 10, marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {checkErr}
+        </div>
+      )}
+      <div style={{ color: '#5b6675', fontSize: 10, marginBottom: 8, lineHeight: 1.4 }}>toggling applies to new sessions · secrets hidden</div>
       {servers === null ? (
         <div style={S.muted}>loading…</div>
       ) : servers.length === 0 ? (
@@ -336,9 +589,16 @@ function McpTab({ projectPath }: { projectPath?: string }) {
   )
 }
 
-function PreviewTab({ artifacts }: { artifacts: Artifact[] }) {
+// One entry in the Artifacts tab: a live render from this run, or a persisted
+// one from the session's on-disk gallery.
+type GalleryItem = { id: string; title: string; kind: ArtifactKind; saved?: SavedArtifact }
+
+function PreviewTab({ artifacts, sessionId }: { artifacts: Artifact[]; sessionId: string | null }) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [full, setFull] = useState(false)
+  const [saved, setSaved] = useState<SavedArtifact[]>([])
+  // fetched content of saved svg/markdown artifacts, keyed by file name
+  const [contentCache, setContentCache] = useState<Record<string, string>>({})
   const overlayRef = useRef<HTMLDivElement>(null)
   // Transient confirmation/error line under the header (download/reveal results).
   // One timer, always restarted: two quick Downloads must not have the first
@@ -351,27 +611,59 @@ function PreviewTab({ artifacts }: { artifacts: Artifact[] }) {
     flashTimer.current = window.setTimeout(() => setMsg(null), 3000)
   }
   useEffect(() => () => clearTimeout(flashTimer.current), [])
-  // Download writes straight to ~/Downloads (backend) and reveals it; Reveal
-  // shows the model's original source file in Finder (only for file-backed ones).
-  const download = (a: Artifact) =>
-    invoke<string>('save_artifact', { id: a.id })
-      .then(() => flash('Saved to Downloads — revealed in Finder'))
-      .catch((e) => flash(String(e), true))
-  const reveal = (a: Artifact) => invoke('reveal_artifact', { id: a.id }).catch((e) => flash(String(e), true))
-  const actions = (a: Artifact) => (
-    <>
-      {a.path && (
-        <button style={S.iconBtn} title={`Open in Finder\n${a.path}`} onClick={() => reveal(a)}>Open</button>
-      )}
-      <button style={S.iconBtn} title="Download to your Downloads folder" onClick={() => download(a)}>Download</button>
-    </>
-  )
+
+  // Persisted gallery for this session; re-listed whenever a new render lands
+  // (renders persist before the artifact event fires, so this stays fresh).
+  useEffect(() => {
+    if (!sessionId) { setSaved([]); return }
+    let live = true
+    invoke<SavedArtifact[]>('list_saved_artifacts', { sessionId })
+      .then((s) => { if (live) setSaved(s) })
+      .catch(() => { if (live) setSaved([]) })
+    return () => { live = false }
+  }, [sessionId, artifacts.length])
+
+  // Gallery = persisted artifacts (older, deduped against the live list by
+  // their render-time seq) followed by this run's live artifacts — so the
+  // dropdown reads oldest → newest and the default stays "the newest".
+  const liveIds = new Set(artifacts.map((a) => a.id))
+  const items: GalleryItem[] = [
+    ...(sessionId
+      ? saved
+          .filter((s) => !liveIds.has(String(s.seq)))
+          .map((s): GalleryItem => ({
+            id: `saved/${sessionId}/${s.file}`,
+            title: s.title,
+            kind: s.kind === 'svg' || s.kind === 'markdown' ? s.kind : 'html',
+            saved: s,
+          }))
+      : []),
+    ...artifacts.map((a): GalleryItem => ({ id: a.id, title: a.title, kind: a.kind })),
+  ]
+  // Default to the newest; a manual pick sticks until that artifact is gone.
+  const current = items.find((i) => i.id === selectedId) ?? (items.length ? items[items.length - 1] : null)
+
+  // Saved svg/markdown render through the sanitized srcdoc path and need their
+  // content fetched once; saved html streams from artifact://saved/… directly.
+  useEffect(() => {
+    const s = current?.saved
+    if (!s || current?.kind === 'html' || !sessionId) return
+    if (contentCache[s.file] != null) return
+    let live = true
+    invoke<string>('read_saved_artifact', { sessionId, file: s.file })
+      .then((c) => { if (live) setContentCache((m) => ({ ...m, [s.file]: c })) })
+      .catch(() => { if (live) setContentCache((m) => ({ ...m, [s.file]: '' })) })
+    return () => { live = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [current?.id, sessionId])
+
   // Esc closes the expanded overlay — even when the artifact iframe has focus.
   // A parent keydown listener never sees keys typed into an iframe, so: html
   // artifacts get a tiny Esc-forwarder script injected by the artifact:// server
   // (postMessage 'drydock-esc', since their scripts run anyway), and static
   // svg/markdown frames (scripts disabled, nothing to type into) just have
   // focus reclaimed by the overlay whenever they steal it.
+  const currentKind = current?.kind
   useEffect(() => {
     if (!full) return
     overlayRef.current?.focus()
@@ -381,9 +673,7 @@ function PreviewTab({ artifacts }: { artifacts: Artifact[] }) {
     }
     const onBlur = () => {
       if (document.activeElement instanceof HTMLIFrameElement) {
-        // same default as `current` below: an explicit pick, else the newest
-        const kind = (artifacts.find((a) => a.id === selectedId) ?? artifacts[artifacts.length - 1])?.kind
-        if (kind !== 'html') setTimeout(() => overlayRef.current?.focus(), 0)
+        if (currentKind !== 'html') setTimeout(() => overlayRef.current?.focus(), 0)
       }
     }
     window.addEventListener('keydown', onKey)
@@ -394,17 +684,45 @@ function PreviewTab({ artifacts }: { artifacts: Artifact[] }) {
       window.removeEventListener('message', onMsg)
       window.removeEventListener('blur', onBlur)
     }
-  }, [full, artifacts, selectedId])
+  }, [full, currentKind])
 
-  if (artifacts.length === 0)
+  // Resolve the selected item to a renderable Artifact. null = saved content
+  // still fetching (a brief "loading…" shows instead of the frame).
+  const shown: Artifact | null = !current
+    ? null
+    : !current.saved
+      ? artifacts.find((a) => a.id === current.id) ?? null
+      : current.kind === 'html'
+        ? { id: current.id, title: current.title, kind: 'html', content: '', path: current.saved.path ?? undefined }
+        : contentCache[current.saved.file] != null
+          ? { id: current.id, title: current.title, kind: current.kind, content: contentCache[current.saved.file], path: current.saved.path ?? undefined }
+          : null
+
+  // Download writes straight to ~/Downloads (backend) and reveals it; Open
+  // shows the model's original source file in Finder (file-backed ones only).
+  const download = (g: GalleryItem) => {
+    const done = () => flash('Saved to Downloads — revealed in Finder')
+    const fail = (e: unknown) => flash(String(e), true)
+    if (g.saved && sessionId) invoke<string>('save_saved_artifact', { sessionId, file: g.saved.file }).then(done).catch(fail)
+    else invoke<string>('save_artifact', { id: g.id }).then(done).catch(fail)
+  }
+  const actions = (g: GalleryItem) => (
+    <>
+      {shown?.path && (
+        <button style={S.iconBtn} title={`Open in Finder\n${shown.path}`} onClick={() => invoke('open_path', { path: shown.path, reveal: true }).catch((e) => flash(String(e), true))}>Open</button>
+      )}
+      <button style={S.iconBtn} title="Download to your Downloads folder" onClick={() => download(g)}>Download</button>
+    </>
+  )
+
+  if (!current)
     return <div style={{ ...S.muted, flex: 1, minHeight: 0, padding: 12 }}>No artifacts yet. When Claude renders an artifact (HTML, SVG, or Markdown) in this session, it shows up here.</div>
 
-  // Default to the newest; a manual pick sticks until that artifact is gone.
-  const current = artifacts.find((a) => a.id === selectedId) ?? artifacts[artifacts.length - 1]
   return (
     <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px 8px' }}>
         <span style={{ ...S.name, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={current.title}>{current.title}</span>
+        {current.saved && <span style={S.chip} title="Persisted from an earlier run of this session">saved</span>}
         <span style={S.chip}>{current.kind}</span>
         {actions(current)}
         <button style={S.iconBtn} title="Expand to full window" onClick={() => setFull(true)}>⤢</button>
@@ -417,21 +735,29 @@ function PreviewTab({ artifacts }: { artifacts: Artifact[] }) {
       >
         {msg?.text ?? ''}
       </div>
-      {artifacts.length > 1 && (
+      {items.length > 1 && (
         <select
           value={current.id}
           onChange={(e) => setSelectedId(e.target.value)}
           style={{ margin: '0 12px 8px', background: '#161c25', color: '#d6dbe3', border: '1px solid #2c3647', borderRadius: 4, padding: '3px 4px', fontSize: 11 }}
         >
-          {artifacts.map((a, i) => (
-            <option key={a.id} value={a.id}>{i + 1}. {a.title} ({a.kind})</option>
+          {items.map((a, i) => (
+            <option key={a.id} value={a.id}>{i + 1}. {a.title} ({a.kind}){a.saved ? ' · saved' : ''}</option>
           ))}
         </select>
+      )}
+      {saved.length >= 50 && (
+        <div style={{ ...S.muted, fontSize: 10, padding: '0 12px 6px' }}>gallery keeps the newest 50 per session</div>
       )}
       {/* Fill the rest of the panel edge-to-edge, no frame. Hidden while the
           full-window overlay is up — two mounted copies of an html artifact
           would each run its scripts (double execution). */}
-      {!full && <ArtifactView artifact={current} style={{ flex: 1, minHeight: 0, border: 'none', borderRadius: 0 }} />}
+      {!full &&
+        (shown ? (
+          <ArtifactView artifact={shown} style={{ flex: 1, minHeight: 0, border: 'none', borderRadius: 0 }} />
+        ) : (
+          <div style={{ ...S.muted, padding: 12 }}>loading…</div>
+        ))}
       {full && (
         // Full-window overlay so UI artifacts get usable space. zIndex below the
         // quit guard (100); translateZ(0) gives it its own compositing layer so
@@ -440,11 +766,12 @@ function PreviewTab({ artifacts }: { artifacts: Artifact[] }) {
         <div ref={overlayRef} tabIndex={-1} style={{ position: 'fixed', inset: 0, zIndex: 90, background: '#0b0e13', display: 'flex', flexDirection: 'column', transform: 'translateZ(0)', outline: 'none' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid #1d2530' }}>
             <span style={{ flex: 1, color: '#e8edf4', fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{current.title}</span>
+            {current.saved && <span style={S.chip}>saved</span>}
             <span style={S.chip}>{current.kind}</span>
             {actions(current)}
             <button style={S.iconBtn} title="Close (Esc)" onClick={() => setFull(false)}>✕</button>
           </div>
-          <ArtifactView artifact={current} style={{ flex: 1 }} />
+          {shown ? <ArtifactView artifact={shown} style={{ flex: 1 }} /> : <div style={{ ...S.muted, padding: 12 }}>loading…</div>}
         </div>
       )}
     </div>
@@ -453,6 +780,7 @@ function PreviewTab({ artifacts }: { artifacts: Artifact[] }) {
 
 export default function BriefingPanel({ sessionId, projectPath, starred, artifacts, onToggleStar }: Props) {
   const [card, setCard] = useState<CardView | null>(null)
+  const [files, setFiles] = useState<FileTouch[]>([])
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('dd.briefingCollapsed') === '1')
   // clamp on load AND on window resize: a width persisted (or auto-widened) on a
   // big monitor must not overflow a smaller window later
@@ -467,8 +795,10 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
   }, [])
 
   const refresh = useCallback(() => {
-    if (!sessionId) { setCard(null); return } // a session-less new tab has no card
+    if (!sessionId) { setCard(null); setFiles([]); return } // a session-less new tab has no card
     invoke<CardView | null>('get_card', { sessionId }).then(setCard).catch(console.error)
+    // no transcript file yet (radar stub / expired) → just no files section
+    invoke<FileTouch[]>('session_files', { sessionId }).then(setFiles).catch(() => setFiles([]))
   }, [sessionId])
   useEffect(() => {
     refresh()
@@ -528,12 +858,14 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
           </div>
         </div>
 
-        {/* Preview fills the panel edge-to-edge; the other tabs scroll inside padding. */}
+        {/* Preview and Briefing manage their own layout (edge-to-edge / split
+            sections); Skills and MCP scroll inside padding. */}
         {tab === 'preview' ? (
-          <PreviewTab artifacts={artifacts} />
+          <PreviewTab artifacts={artifacts} sessionId={sessionId} />
+        ) : tab === 'briefing' ? (
+          <BriefingTab sessionId={sessionId} card={card} starred={starred} files={files} projectPath={projectPath} onToggleStar={onToggleStar} />
         ) : (
           <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 12 }}>
-            {tab === 'briefing' && <BriefingTab sessionId={sessionId} card={card} starred={starred} onToggleStar={onToggleStar} />}
             {tab === 'skills' && <SkillsTab projectPath={projectPath} />}
             {tab === 'mcp' && <McpTab projectPath={projectPath} />}
           </div>

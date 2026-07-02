@@ -7,10 +7,19 @@ export type SessionView = {
   last_message_at: number | null
   starred: boolean
   hidden: boolean
-  live_status: 'busy' | 'idle' | 'ended'
+  live_status: 'busy' | 'idle' | 'needs_input' | 'ended'
+  // what the session asked for while waiting (hook message); only set when
+  // live_status === 'needs_input'
+  attention: string | null
+  // the user sidebar folder this session is filed in (move semantics: at most
+  // one); null = unfiled, shown in its auto project group
+  folder_id: string | null
 }
 
-export type Snapshot = { sessions: SessionView[]; hidden: string[] }
+// A user-created sidebar folder ("working group"), in band order.
+export type FolderView = { id: string; name: string }
+
+export type Snapshot = { sessions: SessionView[]; hidden: string[]; folders: FolderView[] }
 
 // In-pane "find within session" (⌘F). Each pane (terminal/transcript) exposes
 // this so the FindBar can drive it. `incremental` keeps the current match when
@@ -22,6 +31,36 @@ export type PaneSearch = {
   // hand keyboard focus back to the pane (e.g. when the FindBar closes, so a
   // terminal session can be typed into immediately)
   focus?: () => void
+}
+
+// Full-fidelity transcript entry (backend transcript::read_page). 'plain' is
+// frontend-only: the fallback rendering of indexed chunks when the session's
+// .jsonl is gone (radar stubs, expired transcripts).
+export type TEntryKind = 'user' | 'assistant' | 'thinking' | 'tool_use' | 'tool_result' | 'recap' | 'compact' | 'plain'
+export type TEntry = {
+  kind: TEntryKind
+  text: string
+  tool: string | null
+  tool_use_id: string | null
+  meta: boolean // caveat/command noise — rendered dimmed
+  error: boolean // tool_result with is_error
+  ts: number | null
+}
+export type TranscriptPage = { entries: TEntry[]; next_offset: number; reset: boolean }
+
+// One file a session changed (backend files::session_files). `path` is the
+// location recorded in the transcript (stable display key); `resolved` is where
+// the file lives NOW — equal to `path` when still in place, elsewhere when the
+// project was renamed/moved since, null when it's genuinely gone.
+export type FileTouch = {
+  path: string
+  resolved: string | null
+  edits: number
+  writes: number
+  adds: number // lines added / removed, from the calls' structured diffs
+  dels: number
+  created: boolean // this session created the file
+  last_ts: number | null
 }
 
 export type TimelineItem = { text: string; detail: string[]; in_progress: boolean }
@@ -50,6 +89,11 @@ export type McpStatus = 'connected' | 'failed' | 'pending' | 'unknown'
 // Finder"); undefined for inline content.
 export type ArtifactKind = 'html' | 'svg' | 'markdown'
 export type Artifact = { id: string; title: string; kind: ArtifactKind; content: string; path?: string }
+
+// One artifact persisted to the on-disk per-session gallery (survives the
+// session and the app). `file` keys read/serve/download; `seq` was its live id
+// at render time, so the gallery dedups against the in-memory list.
+export type SavedArtifact = { file: string; title: string; kind: string; created_ms: number; seq: number; path: string | null }
 
 /** Display label for a session: AI summary when present, else its raw title. */
 export function sessionLabel(s: SessionView): string {

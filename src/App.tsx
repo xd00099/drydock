@@ -21,7 +21,7 @@ const EMPTY_ARTIFACTS: Artifact[] = [] // stable ref so an artifact-less panel d
 const MAX_ARTIFACTS_PER_TAB = 20
 
 export default function App() {
-  const { sessions, hidden, refresh } = useSessions()
+  const { sessions, hidden, folders, refresh } = useSessions()
   const [tabs, setTabs] = useState<Tab[]>([])
   const [activeId, setActiveId] = useState<number | null>(null)
   const [quitGuard, setQuitGuard] = useState(false)
@@ -46,6 +46,8 @@ export default function App() {
   tabsRef.current = tabs
   const activeIdRef = useRef(activeId) // for the once-registered artifact listener
   activeIdRef.current = activeId
+  const sessionsRef = useRef(sessions) // for once-registered attention/focus listeners
+  sessionsRef.current = sessions
   // for the once-registered keydown handler: shortcuts must respect open overlays
   const quitGuardRef = useRef(quitGuard)
   quitGuardRef.current = quitGuard
@@ -55,6 +57,7 @@ export default function App() {
   const closeActiveRef = useRef(() => {})
   const starActiveRef = useRef(() => {})
   const openFindRef = useRef(() => {})
+  const toggleTranscriptRef = useRef(() => {})
 
   // replaceSession: sweep up stale tabs (exited ptys, superseded transcripts) for that session
   const addTab = (t: Omit<Tab, 'id' | 'exited'> & { exited?: boolean }, replaceSession?: string) => {
@@ -173,6 +176,21 @@ export default function App() {
     setFindOpen(true)
     setFindNonce((n) => n + 1)
   }
+  // ⌘⇧T: flip the active session between its terminal and its read-only
+  // transcript. From a terminal tab → open/focus the transcript; from a
+  // transcript tab → focus the live terminal if one is open here (never
+  // resumes — that stays an explicit act).
+  toggleTranscriptRef.current = () => {
+    const t = activeTab
+    if (!t?.sessionId) return
+    if (t.kind === 'transcript') {
+      const liveTab = tabs.find((x) => x.sessionId === t.sessionId && x.kind === 'pty' && !x.exited)
+      if (liveTab) setActiveId(liveTab.id)
+      return
+    }
+    const s = sessions.find((x) => x.session_id === t.sessionId)
+    if (s) resume(s, { transcript: true })
+  }
 
   // Shell tabs are named after their live working directory. Poll the PTYs
   // (the backend reads each shell process's cwd from the OS) every 2s, and
@@ -207,18 +225,20 @@ export default function App() {
       // Window accelerator via WKWebView's unhandled-key re-dispatch.
       if (quitGuardRef.current) {
         if (e.key === 'Escape') setQuitGuard(false)
-        if (e.metaKey && ['k', 'f', 't', 'w', 'd'].includes(e.key)) e.preventDefault()
+        if (e.metaKey && ['k', 'f', 't', 'T', 'w', 'd'].includes(e.key)) e.preventDefault()
         return
       }
       // Same for the search palette (it handles its own Esc/arrows/Enter); ⌘K
       // still toggles it closed.
-      if (paletteOpenRef.current && e.metaKey && ['f', 't', 'w', 'd'].includes(e.key)) {
+      if (paletteOpenRef.current && e.metaKey && ['f', 't', 'T', 'w', 'd'].includes(e.key)) {
         e.preventDefault()
         return
       }
       if (e.metaKey && e.key === 'k') { e.preventDefault(); setPaletteOpen((v) => !v) }
       // ⌘F: find within the active pane (terminal scrollback or transcript text)
       if (e.metaKey && e.key === 'f') { e.preventDefault(); openFindRef.current() }
+      // ⌘⇧T (key is 'T' with shift held): terminal ⇄ transcript for the active session
+      if (e.metaKey && e.shiftKey && e.key === 'T') { e.preventDefault(); toggleTranscriptRef.current() }
       if (e.metaKey && e.key === 't') { e.preventDefault(); newShellRef.current() }
       if (e.metaKey && e.key === 'w') { e.preventDefault(); closeActiveRef.current() }
       if (e.metaKey && e.key === 'd') { e.preventDefault(); starActiveRef.current() }
@@ -260,6 +280,44 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [findOpen, findQuery, activeId])
 
+  // A session hit a permission prompt / went idle waiting (needs_input), or
+  // finished its turn (done). Turn it into an OS notification unless the user
+  // is already looking at that very tab (needs_input) / at Drydock (done) —
+  // the sidebar/tab amber dots and dock badge come via index-updated instead.
+  useEffect(() => {
+    let cancelled = false
+    let un: UnlistenFn | null = null
+    listen<{ session_id: string; pty_id: number; state: string; message: string }>('session-attention', (e) => {
+      const p = e.payload
+      const s = sessionsRef.current.find((x) => x.session_id === p.session_id)
+      const label = clip(s ? sessionLabel(s) : 'Claude session', 60)
+      if (p.state === 'needs_input') {
+        if (document.hasFocus() && activeIdRef.current === p.pty_id) return
+        invoke('notify_user', { title: label, body: p.message || 'Claude needs your input' }).catch(() => {})
+      } else if (p.state === 'done') {
+        if (document.hasFocus()) return
+        invoke('notify_user', { title: label, body: 'Finished — ready for you' }).catch(() => {})
+      }
+    }).then((u) => { if (cancelled) u(); else un = u })
+    return () => { cancelled = true; un?.() }
+  }, [])
+
+  // Menu-bar "jump to session" (attention tray): focus its tab if open here,
+  // else open it like a sidebar click.
+  const focusSessionRef = useRef((_sid: string) => {})
+  focusSessionRef.current = (sid: string) => {
+    const t = tabs.find((x) => x.sessionId === sid && !x.exited) ?? tabs.find((x) => x.sessionId === sid)
+    if (t) { setActiveId(t.id); return }
+    const s = sessions.find((x) => x.session_id === sid)
+    if (s) resume(s, { permanent: true })
+  }
+  useEffect(() => {
+    let cancelled = false
+    let un: UnlistenFn | null = null
+    listen<string>('focus-session', (e) => focusSessionRef.current(e.payload)).then((u) => { if (cancelled) u(); else un = u })
+    return () => { cancelled = true; un?.() }
+  }, [])
+
   // A session rendered an artifact (via the loopback MCP server): file it under
   // its tab id for the Preview panel, and badge the tab if it's not in focus.
   useEffect(() => {
@@ -289,13 +347,16 @@ export default function App() {
     <div style={{ display: 'flex', width: '100vw', height: '100vh', background: '#10141a' }}>
       <Sidebar
         sessions={sessions}
+        folders={folders}
         hidden={hidden}
         activeSessionId={activeTab?.sessionId ?? null}
         onResume={resume}
+        onTranscript={(s) => resume(s, { transcript: true })}
         onNewSession={newSession}
         onToggleStar={(s) => invoke('set_starred', { sessionId: s.session_id, starred: !s.starred }).then(refresh)}
         onHide={(sessionId, hide) => invoke('set_hidden', { sessionId, hidden: hide }).then(refresh)}
         onDelete={(sessionId) => invoke('delete_session_permanently', { sessionId }).then(refresh)}
+        onRefresh={refresh}
       />
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
         {/* In-flow (not fixed at a guessed sidebar offset): it always spans
@@ -316,6 +377,7 @@ export default function App() {
                   program={t.program}
                   args={t.args}
                   cwd={t.cwd}
+                  sessionId={t.sessionId}
                   visible={t.id === activeId}
                   onExit={() => markExited(t.id)}
                   onInteract={() => promote(t.id)}
@@ -326,6 +388,10 @@ export default function App() {
                   ref={(h) => { paneSearch.current[t.id] = h }}
                   sessionId={t.sessionId!}
                   session={sessions.find((x) => x.session_id === t.sessionId)}
+                  onFocusLive={(() => {
+                    const liveTab = tabs.find((x) => x.sessionId === t.sessionId && x.kind === 'pty' && !x.exited)
+                    return liveTab ? () => setActiveId(liveTab.id) : null
+                  })()}
                   onInteract={() => promote(t.id)}
                   onMatches={(index, count) => setFindMatches({ index, count })}
                   onResumeHere={() => {

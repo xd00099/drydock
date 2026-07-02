@@ -47,11 +47,13 @@ export default function ArtifactView({ artifact, style }: { artifact: Artifact; 
   const srcDoc = useMemo(() => (artifact.kind === 'html' ? '' : toSrcDoc(artifact)), [artifact])
   const baseStyle: React.CSSProperties = { width: '100%', height: '100%', border: 'none', background: '#0f1115', ...style }
   if (artifact.kind === 'html') {
+    // ids are server-generated URL-path-safe strings — live counters ("7") or
+    // gallery paths ("saved/<uuid>/<ms>-<seq>.html", whose '/' must survive)
     return (
       <iframe
         title={artifact.title}
         sandbox="allow-scripts allow-modals"
-        src={`artifact://localhost/${encodeURIComponent(artifact.id)}`}
+        src={`artifact://localhost/${artifact.id}`}
         style={baseStyle}
       />
     )

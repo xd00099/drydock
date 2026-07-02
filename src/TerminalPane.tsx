@@ -13,6 +13,7 @@ type Props = {
   program: string | null
   args: string[]
   cwd: string | null
+  sessionId?: string // the claude session id pinned at launch (hooks/artifacts key)
   visible: boolean
   onExit: () => void
   onInteract?: () => void // any user input into the terminal
@@ -128,7 +129,7 @@ function termMatchInfo(term: Terminal, q: string): TermMatchInfo {
 }
 
 const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
-  { id, program, args, cwd, visible, onExit, onInteract, onMatches },
+  { id, program, args, cwd, sessionId, visible, onExit, onInteract, onMatches },
   ref,
 ) {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -279,6 +280,23 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
       term.input(seq.repeat(n), true)
       return false
     })
+    // Self-healing scroll: xterm 5.x's viewport can desync from the buffer —
+    // the DOM scrollbar reads "bottom" while the view is stuck rows above it
+    // (streaming output racing syncScrollArea, and trims once the 10k scrollback
+    // is full, both shift the mapping mid-scroll). Typing "fixed" it only via
+    // scroll-on-input. Enforce the broken invariant directly: whenever the DOM
+    // scrollbar is at its bottom but the buffer viewport isn't, snap to bottom.
+    // Never fires while scrolled up (scrollTop below max), so reading history
+    // stays undisturbed; at true bottom viewportY === baseY and it's a no-op.
+    const viewport = host.querySelector<HTMLElement>('.xterm-viewport')
+    const healScroll = () => {
+      if (!viewport) return
+      // within half a row of the end counts as bottom (fractional scrollTop)
+      const barAtBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 8
+      const buf = term.buffer.active
+      if (barAtBottom && buf.viewportY < buf.baseY) term.scrollToBottom()
+    }
+    viewport?.addEventListener('scroll', healScroll)
     // GPU renderer. Claude repaints its whole alt-screen view on every scroll
     // tick and wraps each frame in "synchronized output" (DEC mode 2026) so a
     // terminal paints it atomically. xterm's default DOM renderer ignores 2026
@@ -312,7 +330,7 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
         onExitRef.current()
       })
       if (disposed) { unExit(); return }
-      await invoke('pty_spawn', { id, program, args, cwd, cols: term.cols, rows: term.rows })
+      await invoke('pty_spawn', { id, program, args, cwd, sessionId: sessionId ?? null, cols: term.cols, rows: term.rows })
       readyRef.current = true
       if (disposed) invoke('pty_kill', { id })
     })().catch((err) => {
@@ -335,6 +353,7 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
     return () => {
       disposed = true
       ro.disconnect()
+      viewport?.removeEventListener('scroll', healScroll)
       dataSub.dispose()
       resultsSub.dispose()
       unOut?.()

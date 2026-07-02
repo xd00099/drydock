@@ -1,9 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod artifacts;
+mod attention;
 mod capabilities;
 mod embedder;
 mod enricher;
+mod files;
 mod index;
 mod pty;
 mod search;
@@ -11,8 +13,8 @@ mod settings;
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
+use files::unique_path;
 use pty::PtyManager;
-use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, State};
 
 /// True for the shell commands Drydock builds to launch claude (`exec claude`
@@ -43,6 +45,18 @@ fn splice_claude_flags(cmd: &str, flags: &str) -> String {
     format!("exec claude {flags}{rest}")
 }
 
+/// The per-session `--settings` JSON registering Notification/Stop hooks that
+/// forward their stdin to the loopback `/hook` endpoint. Token and port are
+/// Drydock-generated (base64url / a number), so the single-quoted shell command
+/// stays quote-safe by construction.
+fn hooks_settings_json(token: &str, port: u16) -> String {
+    let curl = format!(
+        "curl -sS -m 3 -X POST -H 'Authorization: Bearer {token}' --data-binary @- 'http://127.0.0.1:{port}/hook' >/dev/null 2>&1 || true"
+    );
+    let hook = serde_json::json!([{ "hooks": [{ "type": "command", "command": curl, "timeout": 10 }] }]);
+    serde_json::json!({ "hooks": { "Notification": hook.clone(), "Stop": hook } }).to_string()
+}
+
 /// `--disallowedTools 'mcp__<name>' …` for the servers the user switched off, so
 /// their tools aren't offered to this session — without touching ~/.claude. Each
 /// token is single-quoted for the shell `-c`; a name containing a single quote is
@@ -60,7 +74,9 @@ fn disallowed_flags(disabled: &[String]) -> Option<String> {
     }
 }
 
-/// Spawn a PTY under a frontend-chosen id. program=None → login shell from $SHELL.
+/// Spawn a PTY under a frontend-chosen id. program=None → login shell from
+/// $SHELL. `session_id` is the claude session id the frontend pinned at launch
+/// (None for plain shells) — it keys hook deliveries and artifact persistence.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 fn pty_spawn(
@@ -72,6 +88,7 @@ fn pty_spawn(
     program: Option<String>,
     args: Option<Vec<String>>,
     cwd: Option<String>,
+    session_id: Option<String>,
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
@@ -84,25 +101,41 @@ fn pty_spawn(
     // nameable directory instead of the app's launch dir ("/").
     let cwd = cwd.or_else(|| std::env::var("HOME").ok());
 
-    // Drydock shapes the MCP surface of the claude tabs it launches purely with
-    // spawn flags — it NEVER edits ~/.claude. For a claude tab we:
+    // Drydock shapes the claude tabs it launches purely with spawn flags — it
+    // NEVER edits ~/.claude. For a claude tab we:
     //  1. deny the tools of any server the user switched off in the MCP panel
-    //     (`--disallowedTools`), leaving that server's config untouched; and
-    //  2. inject the Preview artifact tool when enabled (a per-session
+    //     (`--disallowedTools`), leaving that server's config untouched;
+    //  2. register per-session Notification/Stop hooks via `--settings` (the
+    //     needs-input radar; hooks from all settings sources merge, so the
+    //     user's own hooks still run); and
+    //  3. inject the Preview artifact tool when enabled (a per-session
     //     `--mcp-config` at Drydock's loopback server, additive — no --strict —
     //     so the user's own servers are untouched).
-    let mut cleanup_cfg: Option<std::path::PathBuf> = None;
+    let mut cleanup_files: Vec<std::path::PathBuf> = Vec::new();
     if let Some(idx) = args.iter().position(|a| is_claude_exec(a)) {
         if let Some(flags) = disallowed_flags(&settings.mcp_disabled()) {
             args[idx] = splice_claude_flags(&args[idx], &flags);
         }
-        if settings.artifacts_enabled() {
-            if let Ok(dir) = app.path().app_data_dir() {
+        // One bearer token per claude tab authenticates BOTH loopback surfaces:
+        // hook deliveries (/hook) and artifact renders (/mcp).
+        let token = artifacts.mint(id, cwd.clone().map(std::path::PathBuf::from), session_id.clone());
+        if let Ok(dir) = app.path().app_data_dir() {
+            let hooks_dir = dir.join("hooks");
+            let _ = std::fs::create_dir_all(&hooks_dir);
+            let hooks_path = hooks_dir.join(format!("{id}.json"));
+            let hooks_str = hooks_path.to_string_lossy().to_string();
+            // The hook forwards its stdin JSON to the loopback server; `|| true`
+            // so a dead/slow server never blocks or errors the session's hooks.
+            let hooks_cfg = hooks_settings_json(&token, artifacts.port);
+            if !hooks_str.contains('\'') && std::fs::write(&hooks_path, hooks_cfg).is_ok() {
+                args[idx] = splice_claude_flags(&args[idx], &format!("--settings '{hooks_str}'"));
+                cleanup_files.push(hooks_path);
+            }
+            if settings.artifacts_enabled() {
                 let mcp_dir = dir.join("mcp");
                 let _ = std::fs::create_dir_all(&mcp_dir);
                 let cfg_path = mcp_dir.join(format!("{id}.json"));
                 let cfg_str = cfg_path.to_string_lossy().to_string();
-                let token = artifacts.mint(id, cwd.clone().map(std::path::PathBuf::from));
                 let mut servers = serde_json::Map::new();
                 servers.insert(
                     artifacts::SERVER_NAME.to_string(),
@@ -115,15 +148,13 @@ fn pty_spawn(
                 let cfg = serde_json::json!({ "mcpServers": serde_json::Value::Object(servers) });
                 if !cfg_str.contains('\'') && std::fs::write(&cfg_path, cfg.to_string()).is_ok() {
                     args[idx] = inject_artifact_flags(&args[idx], &cfg_str);
-                    cleanup_cfg = Some(cfg_path);
-                } else {
-                    artifacts.release(id); // couldn't wire it; don't leak a token
+                    cleanup_files.push(cfg_path);
                 }
             }
         }
     }
     let release_tokens = artifacts.tokens_handle();
-    let exit_cfg = cleanup_cfg.clone();
+    let exit_cleanup = cleanup_files.clone();
 
     let app_exit = app.clone();
     let result = mgr.spawn(
@@ -137,20 +168,21 @@ fn pty_spawn(
             let _ = app.emit(&format!("pty-output-{id}"), B64.encode(bytes));
         },
         move |id, code| {
-            // The session is gone: invalidate its render token and remove its
-            // injected config file.
-            release_tokens.lock().unwrap().retain(|_, v| v.0 != id);
-            if let Some(p) = &exit_cfg {
+            // The session is gone: invalidate its token, remove its injected
+            // config files, and clear any waiting-for-input flag.
+            release_tokens.lock().unwrap().retain(|_, v| v.pty_id != id);
+            for p in &exit_cleanup {
                 let _ = std::fs::remove_file(p);
             }
+            attention::pty_exited(&app_exit, id);
             let _ = app_exit.emit(&format!("pty-exit-{id}"), code);
         },
     );
     if result.is_err() {
         // Spawn failed, so the reader thread never started and on_exit won't run:
-        // clean up the token + config we injected for this dead spawn ourselves.
+        // clean up the token + configs we injected for this dead spawn ourselves.
         artifacts.release(id);
-        if let Some(p) = &cleanup_cfg {
+        for p in &cleanup_files {
             let _ = std::fs::remove_file(p);
         }
     }
@@ -158,9 +190,23 @@ fn pty_spawn(
 }
 
 #[tauri::command]
-fn pty_write(mgr: State<'_, PtyManager>, id: u32, data: String) -> Result<(), String> {
+fn pty_write(app: AppHandle, mgr: State<'_, PtyManager>, id: u32, data: String) -> Result<(), String> {
     let bytes = B64.decode(data).map_err(|e| e.to_string())?;
+    // typing into a waiting session answers it — drop its attention flag
+    attention::pty_interacted(&app, id);
     mgr.write(id, &bytes).map_err(|e| e.to_string())
+}
+
+/// Show a macOS notification (used by the frontend when a session needs input
+/// or finishes while unfocused). Requests permission lazily on first use.
+#[tauri::command]
+fn notify_user(app: AppHandle, title: String, body: String) {
+    use tauri_plugin_notification::{NotificationExt, PermissionState};
+    let n = app.notification();
+    if !matches!(n.permission_state(), Ok(PermissionState::Granted)) {
+        let _ = n.request_permission();
+    }
+    let _ = n.builder().title(&title).body(&body).show();
 }
 
 #[tauri::command]
@@ -221,10 +267,13 @@ fn list_mcp_servers(
     out
 }
 
-/// Live `claude mcp list` health-check for the user's configured servers, keyed
-/// by name. Best-effort and read-only (see capabilities::mcp_status).
-#[tauri::command]
-fn mcp_status(project_path: Option<String>) -> Vec<(String, String)> {
+/// Live `claude mcp list` health-check for the user's configured servers:
+/// (name, status token, raw CLI text) triples. Read-only, killed after a hard
+/// timeout; errors surface so the UI can say "check failed" rather than
+/// leaving a stale green dot (see capabilities::mcp_status). Blocking-friendly:
+/// runs on Tauri's async runtime, not the main thread.
+#[tauri::command(async)]
+fn mcp_status(project_path: Option<String>) -> Result<Vec<(String, String, String)>, String> {
     capabilities::mcp_status(project_path.as_deref())
 }
 
@@ -279,27 +328,41 @@ fn save_artifact(id: String, app: AppHandle, artifacts: State<'_, artifacts::Art
     Ok(dest.display().to_string())
 }
 
-/// A non-colliding path in `dir` for `filename`: the name as-is if free, else
-/// "stem (1).ext", "stem (2).ext", … like a browser's download de-duping.
-fn unique_path(dir: &Path, filename: &str) -> PathBuf {
-    let first = dir.join(filename);
-    if !first.exists() {
-        return first;
-    }
-    let p = Path::new(filename);
-    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("artifact");
-    let ext = p.extension().and_then(|e| e.to_str());
-    for n in 1..1000 {
-        let name = match ext {
-            Some(e) => format!("{stem} ({n}).{e}"),
-            None => format!("{stem} ({n})"),
-        };
-        let candidate = dir.join(name);
-        if !candidate.exists() {
-            return candidate;
-        }
-    }
-    first // give up after 999 — fall back to overwriting the original name
+/// The persisted artifact gallery for a session (survives session + app).
+#[tauri::command]
+fn list_saved_artifacts(session_id: String, artifacts: State<'_, artifacts::ArtifactServer>) -> Vec<artifacts::SavedArtifact> {
+    artifacts.list_saved(&session_id)
+}
+
+/// Raw content of one persisted artifact (svg/markdown render through the
+/// frontend's sanitized srcdoc path; html is served over artifact:// instead).
+#[tauri::command]
+fn read_saved_artifact(session_id: String, file: String, artifacts: State<'_, artifacts::ArtifactServer>) -> Result<String, String> {
+    artifacts
+        .read_saved(&session_id, &file)
+        .ok_or_else(|| "saved artifact not found".to_string())
+}
+
+/// Write a persisted artifact to Downloads (deduped name) and reveal it.
+#[tauri::command]
+fn save_saved_artifact(
+    session_id: String,
+    file: String,
+    app: AppHandle,
+    artifacts: State<'_, artifacts::ArtifactServer>,
+) -> Result<String, String> {
+    use tauri::Manager;
+    let (filename, bytes) = artifacts
+        .saved_download(&session_id, &file)
+        .ok_or_else(|| "saved artifact not found".to_string())?;
+    let dir = app
+        .path()
+        .download_dir()
+        .map_err(|_| "couldn't find your Downloads folder".to_string())?;
+    let dest = unique_path(&dir, &filename);
+    std::fs::write(&dest, bytes).map_err(|e| format!("couldn't write the file: {e}"))?;
+    let _ = std::process::Command::new("open").arg("-R").arg(&dest).spawn();
+    Ok(dest.display().to_string())
 }
 
 /// Quit confirmed by the frontend: "Quit anyway" from the guard modal, or a
@@ -372,6 +435,7 @@ fn macos_menu(handle: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>
 
 fn main() {
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         // Serve HTML artifacts from their own isolated `artifact://` origin so
         // they run their JavaScript under a locked-down per-artifact CSP (charts,
         // animations, clicks) instead of inheriting the app's strict CSP, which
@@ -410,13 +474,17 @@ fn main() {
             let cfg = settings::Settings::load(&data);
             app.manage(PtyManager::with_env(cfg.env_pairs()));
             // Loopback MCP server for the Preview panel; pty_spawn injects a
-            // per-session --mcp-config pointing at it into claude tabs.
-            let artifact_server = artifacts::ArtifactServer::start(app.handle().clone())?;
+            // per-session --mcp-config pointing at it into claude tabs. Renders
+            // also persist into <data>/artifacts/<session>/ (the gallery).
+            let artifact_server = artifacts::ArtifactServer::start(app.handle().clone(), data.join("artifacts"))?;
             app.manage(artifact_server);
             // Live, mutable settings (artifact toggle + MCP deny-list). Read at
             // spawn time and written back by the MCP-panel toggles.
             app.manage(settings::SettingsState::new(cfg, data.clone()));
             index::start(&app.handle().clone())?;
+            // Needs-input radar surfaces: waiting map + dock badge + menu-bar
+            // item. After index::start so the tray menu can resolve titles.
+            attention::init(app.handle())?;
             {
                 let db = data.join("drydock.db");
                 let cache = data.join("models");
@@ -440,12 +508,25 @@ fn main() {
             set_mcp_enabled,
             reveal_artifact,
             save_artifact,
+            list_saved_artifacts,
+            read_saved_artifact,
+            save_saved_artifact,
+            notify_user,
             force_quit,
             index::sessions_snapshot,
             index::set_starred,
             index::set_hidden,
+            index::create_folder,
+            index::rename_folder,
+            index::delete_folder,
+            index::reorder_folders,
+            index::set_session_folder,
             index::delete_session_permanently,
             index::session_chunks,
+            files::session_transcript,
+            files::export_transcript,
+            files::session_files,
+            files::open_path,
             search::search,
             enricher::get_card,
             enricher::refresh_card,
@@ -466,17 +547,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unique_path_dedupes_existing_names() {
-        let dir = std::env::temp_dir().join(format!("drydock-dl-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        // free name → used as-is
-        assert_eq!(unique_path(&dir, "x.html"), dir.join("x.html"));
-        // taken → next free " (n)" variant, extension preserved
-        std::fs::write(dir.join("x.html"), b"").unwrap();
-        assert_eq!(unique_path(&dir, "x.html"), dir.join("x (1).html"));
-        std::fs::write(dir.join("x (1).html"), b"").unwrap();
-        assert_eq!(unique_path(&dir, "x.html"), dir.join("x (2).html"));
-        std::fs::remove_dir_all(&dir).ok();
+    fn hooks_settings_registers_notification_and_stop() {
+        let s = hooks_settings_json("tOk-123_ab", 49152);
+        let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+        for event in ["Notification", "Stop"] {
+            let cmd = v["hooks"][event][0]["hooks"][0]["command"].as_str().unwrap();
+            assert!(cmd.contains("Bearer tOk-123_ab"), "{event}: {cmd}");
+            assert!(cmd.contains("127.0.0.1:49152/hook"), "{event}: {cmd}");
+            assert!(cmd.ends_with("|| true"), "a hook failure must never block the session");
+            assert_eq!(v["hooks"][event][0]["hooks"][0]["type"], "command");
+        }
+        // spliced single-quoted into the shell -c string via its file path only,
+        // but the JSON itself must not smuggle newlines into the settings file
+        assert!(!s.contains('\n'));
     }
 
     #[test]
