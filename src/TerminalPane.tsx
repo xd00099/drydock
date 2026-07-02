@@ -1,7 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
-import { SearchAddon } from '@xterm/addon-search'
+import { SearchAddon, type ISearchOptions } from '@xterm/addon-search'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -19,6 +19,18 @@ type Props = {
   onMatches?: (index: number, count: number) => void // ⌘F results (index<0 = count-only)
 }
 
+// ⌘F match highlighting, mirroring the transcript's marks: all matches get the
+// muted slate wash, the active one bright yellow (the renderer's
+// minimumContrastRatio auto-darkens text that would be unreadable on it). The
+// *OverviewRuler colors are required by the addon's types but inert — we don't
+// enable an overview ruler.
+const SEARCH_DECORATIONS = {
+  matchBackground: '#3a4656',
+  matchOverviewRuler: '#3a4656',
+  activeMatchBackground: '#e8c35a',
+  activeMatchColorOverviewRuler: '#e8c35a',
+}
+
 function b64ToBytes(b64: string): Uint8Array {
   const bin = atob(b64)
   const out = new Uint8Array(bin.length)
@@ -32,23 +44,25 @@ function bytesToB64(bytes: Uint8Array): string {
   return btoa(bin)
 }
 
-// The search addon navigates to matches, but its "highlight all" decoration
-// path throws on wide/CJK columns — so we never enable it, which also means it
-// can't give us a match index. To still show a "n of m" counter we walk the
-// buffer ourselves: count every match and locate the one the addon just
-// selected. Everything is string-based and cell-width-aware, so CJK (the user
-// types Chinese) and wrapped rows are handled correctly.
+// FALLBACK "i of n" counter, used only when the addon's decorations are
+// unavailable (they normally report the index natively via onDidChangeResults;
+// see find()). We walk the buffer ourselves: count every match and locate the
+// one the addon just selected. Everything is string-based and cell-width-aware,
+// so CJK (the user types Chinese) and wrapped rows are handled correctly.
 type TermMatchInfo = { count: number; index: number } // index: 0-based active match, -1 if none/unknown
 function termMatchInfo(term: Terminal, q: string): TermMatchInfo {
   if (!q) return { count: 0, index: -1 }
   const needle = q.toLowerCase()
   const buf = term.buffer.active
-  // The addon leaves the active match selected. getSelectionPosition is 1-based
-  // and in absolute-buffer coords (same space as getLine) — map its start cell
-  // to an offset within the logical line so we can match it to a found index.
+  // The addon leaves the active match selected. getSelectionPosition returns
+  // 0-BASED absolute-buffer coords (same space as getLine) — the d.ts comment
+  // claims 1-based, but the runtime hands back the selection model's raw
+  // [col,row], and the search addon itself feeds end.x straight back in as a
+  // 0-based column. Map the start cell to an offset within the logical line so
+  // we can match it to a found index.
   const sel = term.getSelectionPosition()
-  const selRow = sel ? sel.start.y - 1 : -1
-  const selCol = sel ? sel.start.x - 1 : -1
+  const selRow = sel ? sel.start.y : -1
+  const selCol = sel ? sel.start.x : -1
 
   let count = 0
   let index = -1
@@ -121,6 +135,12 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
   const searchRef = useRef<SearchAddon | null>(null)
+  // latest onDidChangeResults payload (fires synchronously inside find calls
+  // when decorations are on) — the native "i of n" source
+  const resultsRef = useRef<{ index: number; count: number } | null>(null)
+  // decorations threw once (the addon's highlight-all path has wide/CJK column
+  // edge cases) — stay in plain selection-only mode from then on
+  const decorationsBrokenRef = useRef(false)
   const readyRef = useRef(false)
   const onExitRef = useRef(onExit)
   onExitRef.current = onExit
@@ -134,17 +154,45 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
       const search = searchRef.current
       const term = termRef.current
       if (!search || !term) return
-      try {
-        if (!query) { search.clearDecorations(); onMatchesRef.current?.(-1, 0); return }
-        // No `decorations`: that path highlights all matches but throws on
-        // wide-char columns. Plain find still selects + scrolls to the match;
-        // we derive the "n of m" counter ourselves from the selection.
-        const opts = { caseSensitive: false }
-        const found = dir === 'prev'
+      const attempt = (withDecorations: boolean): boolean => {
+        // Decorations highlight every match (yellow = active) and make the
+        // addon report the exact "i of n" via onDidChangeResults.
+        const opts: ISearchOptions = {
+          caseSensitive: false,
+          ...(withDecorations ? { decorations: SEARCH_DECORATIONS } : null),
+        }
+        return dir === 'prev'
           ? search.findPrevious(query, opts)
           : search.findNext(query, { ...opts, incremental: !!incremental })
-        const info = termMatchInfo(term, query)
-        onMatchesRef.current?.(found ? info.index : -1, info.count)
+      }
+      try {
+        if (!query) { search.clearDecorations(); onMatchesRef.current?.(-1, 0); return }
+        resultsRef.current = null
+        let found: boolean
+        try {
+          found = attempt(!decorationsBrokenRef.current)
+        } catch (e) {
+          if (decorationsBrokenRef.current) throw e
+          // The highlight-all path can throw on wide/CJK column mapping edge
+          // cases ("Invalid col"). Degrade to selection-only for this terminal
+          // rather than losing search entirely.
+          decorationsBrokenRef.current = true
+          console.error('search decorations failed — falling back to selection-only:', e)
+          search.clearDecorations()
+          found = attempt(false)
+        }
+        // read through a function boundary: TS's flow analysis can't see that
+        // attempt() repopulates the ref via the onDidChangeResults subscription,
+        // and would otherwise narrow the ref (nulled above) to `never` here
+        const native = ((): { index: number; count: number } | null => resultsRef.current)()
+        if (native) {
+          // native index/count (index is -1 when past the highlight limit)
+          onMatchesRef.current?.(found ? native.index : -1, native.count)
+        } else {
+          // selection-only mode: derive the counter from the buffer ourselves
+          const info = termMatchInfo(term, query)
+          onMatchesRef.current?.(found ? info.index : -1, info.count)
+        }
       } catch (e) {
         console.error('terminal find failed:', e)
         onMatchesRef.current?.(-1, 0)
@@ -204,6 +252,11 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
     const search = new SearchAddon()
     term.loadAddon(fit)
     term.loadAddon(search)
+    // Fires synchronously inside findNext/findPrevious when decorations are on;
+    // find() reads the ref right after the call returns.
+    const resultsSub = search.onDidChangeResults((e) => {
+      resultsRef.current = { index: e.resultIndex, count: e.resultCount }
+    })
     term.open(host)
     // Physical mouse wheels feel awful in the alt buffer (Claude Code's TUI):
     // there's no scrollback there, so xterm converts wheel to arrow keys at
@@ -283,6 +336,7 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
       disposed = true
       ro.disconnect()
       dataSub.dispose()
+      resultsSub.dispose()
       unOut?.()
       unExit?.()
       if (readyRef.current) invoke('pty_kill', { id })
