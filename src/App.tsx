@@ -34,8 +34,6 @@ export default function App() {
   const [unread, setUnread] = useState<Record<number, number>>({})
   // ⌘F find-in-session state; each pane registers a PaneSearch controller by id
   const paneSearch = useRef<Record<number, PaneSearch | null>>({})
-  // the in-place conversation overlay (a live Claude session's ⌘F target)
-  const overlaySearch = useRef<PaneSearch | null>(null)
   const [findOpen, setFindOpen] = useState(false)
   const [findQuery, setFindQuery] = useState('')
   const [findMatches, setFindMatches] = useState({ index: -1, count: 0 })
@@ -141,22 +139,18 @@ export default function App() {
     setActiveId((a) => (a === id ? (next.length ? next[next.length - 1].id : null) : a))
   }
 
-  // The active tab, and — while ⌘F is open over a live Claude session — the
-  // session id whose conversation the in-place overlay searches (see render).
   const activeTab = tabs.find((t) => t.id === activeId)
-  const overlaySession =
-    findOpen && activeTab?.kind === 'pty' && activeTab.sessionId ? activeTab.sessionId : null
 
-  // Find routes to that overlay for a live Claude session, else to the active
-  // pane itself (a shell's scrollback or an open transcript tab).
-  const activeSearch = () =>
-    overlaySession ? overlaySearch.current : activeId != null ? paneSearch.current[activeId] : null
+  // Find searches the active pane itself: a terminal's scrollback (live claude
+  // sessions and shells alike, via xterm's search addon) or an open transcript
+  // tab. Closing hands focus back to the pane so typing resumes immediately.
+  const activeSearch = () => (activeId != null ? paneSearch.current[activeId] : null)
   const findStep = (dir: 'next' | 'prev') => activeSearch()?.find(findQuery, { dir })
   const closeFind = () => {
     setFindOpen(false)
-    overlaySearch.current?.clear()
     Object.values(paneSearch.current).forEach((p) => p?.clear())
     setFindMatches({ index: -1, count: 0 })
+    activeSearch()?.focus?.()
   }
 
   newShellRef.current = () => newShell()
@@ -165,12 +159,10 @@ export default function App() {
     const s = activeTab?.sessionId ? sessions.find((x) => x.session_id === activeTab.sessionId) : undefined
     if (s) invoke('set_starred', { sessionId: s.session_id, starred: !s.starred }).then(refresh)
   }
-  // ⌘F: find within the active session. A Claude session runs as a fullscreen
-  // (alt-buffer) app, so its live terminal holds only the visible frame — the
-  // whole conversation lives in the indexed transcript. Rather than yank the user
-  // to a separate tab, we overlay that transcript in place over the live terminal
-  // (see the overlay in the render below); Esc returns to the live session, which
-  // never stopped running. Shell tabs and open transcript tabs search themselves.
+  // ⌘F: find within the active pane — the terminal's own scrollback for live
+  // claude sessions and shells, or an open transcript tab's text. (Searching a
+  // claude session's full indexed history is still available by opening its
+  // transcript from the sidebar or ⌘K.)
   openFindRef.current = () => {
     if (!tabs.length) return
     setFindOpen(true)
@@ -205,8 +197,7 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       if (e.isComposing) return // never act on keys mid-IME-composition
       if (e.metaKey && e.key === 'k') { e.preventDefault(); setPaletteOpen((v) => !v) }
-      // ⌘F: find within the active session (in-place conversation overlay for a
-      // live Claude session, else the terminal's own scrollback)
+      // ⌘F: find within the active pane (terminal scrollback or transcript text)
       if (e.metaKey && e.key === 'f') { e.preventDefault(); openFindRef.current() }
       if (e.metaKey && e.key === 't') { e.preventDefault(); newShellRef.current() }
       if (e.metaKey && e.key === 'w') { e.preventDefault(); closeActiveRef.current() }
@@ -327,20 +318,6 @@ export default function App() {
           {tabs.length === 0 && (
             <div style={{ color: '#5b6675', fontFamily: 'system-ui', fontSize: 13, padding: 24 }}>
               Pick a session on the left, or ＋ for a shell.
-            </div>
-          )}
-          {/* ⌘F on a live Claude session: overlay its full conversation in place
-              (terminal stays live underneath; Esc closes and returns to it). */}
-          {overlaySession && (
-            <div style={{ position: 'absolute', inset: 8, zIndex: 10, background: '#10141a' }}>
-              <TranscriptView
-                ref={(h) => { overlaySearch.current = h }}
-                overlay
-                sessionId={overlaySession}
-                session={sessions.find((x) => x.session_id === overlaySession)}
-                onMatches={(index, count) => setFindMatches({ index, count })}
-                onResumeHere={() => {}}
-              />
             </div>
           )}
           {findOpen && (

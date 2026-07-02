@@ -19,6 +19,9 @@ export type FindDir = 'next' | 'prev'
 export type PaneSearch = {
   find: (query: string, opts: { dir: FindDir; incremental?: boolean }) => void
   clear: () => void
+  // hand keyboard focus back to the pane (e.g. when the FindBar closes, so a
+  // terminal session can be typed into immediately)
+  focus?: () => void
 }
 
 export type TimelineItem = { text: string; detail: string[]; in_progress: boolean }

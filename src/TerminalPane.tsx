@@ -153,6 +153,9 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
     clear() {
       searchRef.current?.clearDecorations() // also clears the selection
     },
+    focus() {
+      termRef.current?.focus()
+    },
   }), [])
 
   useEffect(() => {
