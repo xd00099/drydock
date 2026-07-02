@@ -1,5 +1,6 @@
 pub mod records;
 pub mod parser;
+pub mod transcript;
 pub mod radar;
 pub mod accumulator;
 pub mod chunker;

@@ -1076,6 +1076,7 @@ dependencies = [
  "notify",
  "notify-debouncer-mini",
  "rusqlite",
+ "serde",
  "serde_json",
  "tempfile",
 ]
