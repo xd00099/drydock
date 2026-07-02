@@ -28,6 +28,14 @@ pub struct SessionRow {
     pub live_pid: Option<i64>,
 }
 
+/// One user-created sidebar folder, in band order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FolderRow {
+    pub folder_id: String,
+    pub name: String,
+    pub position: i64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SyncState {
     pub session_id: String,
@@ -104,6 +112,25 @@ CREATE TABLE IF NOT EXISTS hidden_sessions(
   session_id TEXT PRIMARY KEY,
   hidden_at INTEGER NOT NULL
 );
+-- User-created sidebar folders ('working groups') and their members. Own
+-- tables for the same reason as hidden_sessions: re-syncs rewrite session
+-- rows and must never clobber the user's organization. session_id is the
+-- PRIMARY KEY of folder_sessions — a session lives in at most ONE folder
+-- (move semantics, enforced by the schema). Deliberately no FK to sessions:
+-- memberships outlive transcript expiry, so a session that re-syncs later
+-- lands back in its folder.
+CREATE TABLE IF NOT EXISTS folders(
+  folder_id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS folder_sessions(
+  session_id TEXT PRIMARY KEY,
+  folder_id TEXT NOT NULL,
+  added_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_folder_sessions_folder ON folder_sessions(folder_id);
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
   text,
   chunk_id UNINDEXED,
@@ -378,6 +405,7 @@ impl Store {
         tx.execute("DELETE FROM cards WHERE session_id = ?1", params![session_id])?;
         tx.execute("DELETE FROM sync_state WHERE session_id = ?1", params![session_id])?;
         tx.execute("DELETE FROM hidden_sessions WHERE session_id = ?1", params![session_id])?;
+        tx.execute("DELETE FROM folder_sessions WHERE session_id = ?1", params![session_id])?;
         tx.execute("DELETE FROM sessions WHERE session_id = ?1", params![session_id])?;
         tx.commit()?;
         Ok(())
@@ -633,6 +661,91 @@ impl Store {
         Ok(rows)
     }
 
+    // ---- sidebar folders ------------------------------------------------
+
+    /// Create a folder at the end of the band. The id is caller-supplied (the
+    /// frontend mints a UUID, same as pinned session ids); INSERT OR IGNORE so
+    /// a backup restore can replay creations safely.
+    pub fn create_folder(&self, folder_id: &str, name: &str) -> Result<()> {
+        let now = chrono::Utc::now().timestamp_millis();
+        self.conn.execute(
+            "INSERT OR IGNORE INTO folders(folder_id, name, position, created_at)
+             VALUES (?1, ?2, (SELECT COALESCE(MAX(position) + 1, 0) FROM folders), ?3)",
+            params![folder_id, name, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn rename_folder(&self, folder_id: &str, name: &str) -> Result<()> {
+        self.conn.execute("UPDATE folders SET name = ?2 WHERE folder_id = ?1", params![folder_id, name])?;
+        Ok(())
+    }
+
+    /// Delete a folder. Non-destructive for sessions: members simply return to
+    /// their auto project groups (their membership rows go away with it).
+    pub fn delete_folder(&mut self, folder_id: &str) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM folder_sessions WHERE folder_id = ?1", params![folder_id])?;
+        tx.execute("DELETE FROM folders WHERE folder_id = ?1", params![folder_id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Rewrite the whole band's order (positions 0..n-1, in the given order).
+    /// Ids not in the list keep their old position values — harmless, they sort
+    /// after by the stable (position, created_at) order.
+    pub fn reorder_folders(&mut self, ids: &[String]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        for (i, id) in ids.iter().enumerate() {
+            tx.execute("UPDATE folders SET position = ?2 WHERE folder_id = ?1", params![id, i as i64])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// File a session into a folder (Some) or back to its project group (None).
+    /// INSERT OR REPLACE + the session_id PRIMARY KEY give move semantics: a
+    /// session lives in at most one folder.
+    pub fn set_session_folder(&self, session_id: &str, folder_id: Option<&str>) -> Result<()> {
+        match folder_id {
+            Some(f) => {
+                let now = chrono::Utc::now().timestamp_millis();
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO folder_sessions(session_id, folder_id, added_at) VALUES (?1, ?2, ?3)",
+                    params![session_id, f, now],
+                )?;
+            }
+            None => {
+                self.conn.execute("DELETE FROM folder_sessions WHERE session_id = ?1", params![session_id])?;
+            }
+        }
+        Ok(())
+    }
+
+    /// All folders in band order.
+    pub fn list_folders(&self) -> Result<Vec<FolderRow>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT folder_id, name, position FROM folders ORDER BY position, created_at")?;
+        let rows: Vec<FolderRow> = stmt
+            .query_map([], |r| {
+                Ok(FolderRow { folder_id: r.get(0)?, name: r.get(1)?, position: r.get(2)? })
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// Every (session_id, folder_id) membership. Memberships may reference
+    /// sessions the index doesn't currently know (expired transcripts) — that's
+    /// the point: they file themselves back in when the session returns.
+    pub fn folder_memberships(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare("SELECT session_id, folder_id FROM folder_sessions")?;
+        let rows: Vec<(String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
     /// The transcript file Drydock synced this session from, if any (radar-only
     /// stub sessions have none).
     pub fn transcript_path(&self, session_id: &str) -> Result<Option<String>> {
@@ -672,6 +785,67 @@ mod tests {
             user_message_count: 1,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn folders_crud_ordering_and_move_semantics() {
+        let mut s = mem();
+        s.create_folder("f1", "Reviews").unwrap();
+        s.create_folder("f2", "Experiments").unwrap();
+        s.create_folder("f2", "dup ignored").unwrap(); // replayed create is a no-op
+        let folders = s.list_folders().unwrap();
+        assert_eq!(folders.len(), 2);
+        assert_eq!((folders[0].name.as_str(), folders[0].position), ("Reviews", 0));
+        assert_eq!((folders[1].name.as_str(), folders[1].position), ("Experiments", 1));
+
+        // filing: one folder per session, last write wins (move, not tag)
+        s.set_session_folder("sid-a", Some("f1")).unwrap();
+        s.set_session_folder("sid-b", Some("f1")).unwrap();
+        s.set_session_folder("sid-a", Some("f2")).unwrap();
+        let members = s.folder_memberships().unwrap();
+        assert_eq!(members.len(), 2);
+        assert!(members.contains(&("sid-a".into(), "f2".into())));
+        assert!(members.contains(&("sid-b".into(), "f1".into())));
+
+        // unfiling
+        s.set_session_folder("sid-b", None).unwrap();
+        assert_eq!(s.folder_memberships().unwrap().len(), 1);
+
+        // reorder rewrites positions in the given order
+        s.reorder_folders(&["f2".into(), "f1".into()]).unwrap();
+        let folders = s.list_folders().unwrap();
+        assert_eq!(folders[0].folder_id, "f2");
+        assert_eq!(folders[1].folder_id, "f1");
+
+        s.rename_folder("f1", "Code Reviews").unwrap();
+        assert_eq!(s.list_folders().unwrap()[1].name, "Code Reviews");
+
+        // deleting a folder drops its memberships but not the sessions
+        s.delete_folder("f2").unwrap();
+        assert_eq!(s.list_folders().unwrap().len(), 1);
+        assert!(s.folder_memberships().unwrap().is_empty(), "f2's membership went with it");
+    }
+
+    #[test]
+    fn delete_session_prunes_folder_membership() {
+        let mut s = mem();
+        let sid = "11111111-1111-1111-1111-111111111111";
+        s.apply_delta(sid, &delta("hello"), &[]).unwrap();
+        s.create_folder("f1", "Work").unwrap();
+        s.set_session_folder(sid, Some("f1")).unwrap();
+        s.delete_session(sid).unwrap();
+        assert!(s.folder_memberships().unwrap().is_empty());
+        assert_eq!(s.list_folders().unwrap().len(), 1, "the folder itself survives");
+    }
+
+    #[test]
+    fn folder_membership_outlives_the_session_row() {
+        // the no-FK design: filing an id the index doesn't know must stick, so
+        // an expired session that re-syncs later lands back in its folder
+        let s = mem();
+        s.create_folder("f1", "Archive").unwrap();
+        s.set_session_folder("not-indexed-yet", Some("f1")).unwrap();
+        assert_eq!(s.folder_memberships().unwrap().len(), 1);
     }
 
     #[test]

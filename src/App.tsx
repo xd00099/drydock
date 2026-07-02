@@ -21,7 +21,7 @@ const EMPTY_ARTIFACTS: Artifact[] = [] // stable ref so an artifact-less panel d
 const MAX_ARTIFACTS_PER_TAB = 20
 
 export default function App() {
-  const { sessions, hidden, refresh } = useSessions()
+  const { sessions, hidden, folders, refresh } = useSessions()
   const [tabs, setTabs] = useState<Tab[]>([])
   const [activeId, setActiveId] = useState<number | null>(null)
   const [quitGuard, setQuitGuard] = useState(false)
@@ -329,6 +329,7 @@ export default function App() {
     <div style={{ display: 'flex', width: '100vw', height: '100vh', background: '#10141a' }}>
       <Sidebar
         sessions={sessions}
+        folders={folders}
         hidden={hidden}
         activeSessionId={activeTab?.sessionId ?? null}
         onResume={resume}
@@ -336,6 +337,7 @@ export default function App() {
         onToggleStar={(s) => invoke('set_starred', { sessionId: s.session_id, starred: !s.starred }).then(refresh)}
         onHide={(sessionId, hide) => invoke('set_hidden', { sessionId, hidden: hide }).then(refresh)}
         onDelete={(sessionId) => invoke('delete_session_permanently', { sessionId }).then(refresh)}
+        onRefresh={refresh}
       />
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
         {/* In-flow (not fixed at a guessed sidebar offset): it always spans

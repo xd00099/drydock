@@ -11,9 +11,15 @@ export type SessionView = {
   // what the session asked for while waiting (hook message); only set when
   // live_status === 'needs_input'
   attention: string | null
+  // the user sidebar folder this session is filed in (move semantics: at most
+  // one); null = unfiled, shown in its auto project group
+  folder_id: string | null
 }
 
-export type Snapshot = { sessions: SessionView[]; hidden: string[] }
+// A user-created sidebar folder ("working group"), in band order.
+export type FolderView = { id: string; name: string }
+
+export type Snapshot = { sessions: SessionView[]; hidden: string[]; folders: FolderView[] }
 
 // In-pane "find within session" (⌘F). Each pane (terminal/transcript) exposes
 // this so the FindBar can drive it. `incremental` keeps the current match when

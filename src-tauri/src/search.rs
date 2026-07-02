@@ -71,6 +71,8 @@ fn view(r: drydock_core::store::SessionRow, summary: Option<String>) -> SessionV
         // search results don't join the attention state; the palette's
         // LiveIndicator falls back to the radar's busy/idle
         attention: None,
+        // nor folder membership — the palette doesn't render it
+        folder_id: None,
     }
 }
 

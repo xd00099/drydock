@@ -22,12 +22,22 @@ pub struct SessionView {
     /// What the session asked for while waiting ("Claude needs your
     /// permission to use Bash"); only set with live_status == needs_input.
     pub attention: Option<String>,
+    /// The user folder this session is filed in, if any (sidebar organization).
+    pub folder_id: Option<String>,
+}
+
+/// One user-created sidebar folder, in band order.
+#[derive(serde::Serialize)]
+pub struct FolderView {
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(serde::Serialize)]
 pub struct Snapshot {
     pub sessions: Vec<SessionView>,
     pub hidden: Vec<String>, // session ids the user hid from Drydock
+    pub folders: Vec<FolderView>, // user sidebar folders, in band order
 }
 
 pub fn claude_dir() -> PathBuf {
@@ -86,6 +96,12 @@ struct FlagsBackup {
     stars: Vec<String>,
     #[serde(default)] // older backups predate this field
     hidden: Vec<String>,
+    /// (folder_id, name) in band order.
+    #[serde(default)]
+    folders: Vec<(String, String)>,
+    /// (session_id, folder_id) memberships.
+    #[serde(default)]
+    folder_sessions: Vec<(String, String)>,
 }
 
 fn backup_path(app: &AppHandle) -> PathBuf {
@@ -98,12 +114,18 @@ fn write_backup(app: &AppHandle, store: &Store) {
         .map(|v| v.into_iter().filter(|s| s.starred).map(|s| s.session_id).collect())
         .unwrap_or_default();
     let hidden = store.hidden_session_ids().unwrap_or_default();
-    if let Ok(json) = serde_json::to_string(&FlagsBackup { stars, hidden }) {
+    let folders = store
+        .list_folders()
+        .map(|v| v.into_iter().map(|f| (f.folder_id, f.name)).collect())
+        .unwrap_or_default();
+    let folder_sessions = store.folder_memberships().unwrap_or_default();
+    if let Ok(json) = serde_json::to_string(&FlagsBackup { stars, hidden, folders, folder_sessions }) {
         let _ = std::fs::write(backup_path(app), json);
     }
 }
 
-/// Re-apply starred/hidden flags from the backup (used after index rebuilds).
+/// Re-apply starred/hidden flags and folder organization from the backup
+/// (used after index rebuilds).
 fn restore_backup(app: &AppHandle, store: &mut Store) {
     let Ok(text) = std::fs::read_to_string(backup_path(app)) else { return };
     let Ok(b) = serde_json::from_str::<FlagsBackup>(&text) else { return };
@@ -118,6 +140,23 @@ fn restore_backup(app: &AppHandle, store: &mut Store) {
     for sid in &b.hidden {
         if !hidden_now.contains(sid) {
             let _ = store.set_session_hidden(sid, true);
+        }
+    }
+    // Folders: create_folder is INSERT OR IGNORE (existing ones keep their
+    // name/position); memberships restore only into folders that exist and,
+    // like hidden, WITHOUT a session-exists check — a not-yet-synced session
+    // must land back in its folder when it returns.
+    for (id, name) in &b.folders {
+        let _ = store.create_folder(id, name);
+    }
+    let have: std::collections::HashSet<String> =
+        store.list_folders().unwrap_or_default().into_iter().map(|f| f.folder_id).collect();
+    let current: std::collections::HashSet<String> =
+        store.folder_memberships().unwrap_or_default().into_iter().map(|(sid, _)| sid).collect();
+    for (sid, fid) in &b.folder_sessions {
+        // don't clobber a newer filing made since the backup was written
+        if have.contains(fid) && !current.contains(sid) {
+            let _ = store.set_session_folder(sid, Some(fid));
         }
     }
 }
@@ -214,6 +253,8 @@ pub fn sessions_snapshot(
         store.card_summaries().map_err(|e| e.to_string())?.into_iter().collect();
     // a hook-marked session that has since ENDED must not show as waiting
     let waiting = attention.snapshot();
+    let filed: std::collections::HashMap<String, String> =
+        store.folder_memberships().map_err(|e| e.to_string())?.into_iter().collect();
     let sessions = store
         .list_sessions()
         .map_err(|e| e.to_string())?
@@ -224,6 +265,7 @@ pub fn sessions_snapshot(
                 summary: summaries.get(&r.session_id).cloned(),
                 live_status: if attn.is_some() { "needs_input".to_string() } else { r.live_status },
                 attention: attn.map(|w| w.message.clone()),
+                folder_id: filed.get(&r.session_id).cloned(),
                 session_id: r.session_id,
                 project_path: r.project_path,
                 title: r.title,
@@ -235,7 +277,13 @@ pub fn sessions_snapshot(
         })
         .collect();
     let hidden = store.hidden_session_ids().map_err(|e| e.to_string())?;
-    Ok(Snapshot { sessions, hidden })
+    let folders = store
+        .list_folders()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|f| FolderView { id: f.folder_id, name: f.name })
+        .collect();
+    Ok(Snapshot { sessions, hidden, folders })
 }
 
 #[tauri::command]
@@ -251,6 +299,79 @@ pub fn set_starred(app: AppHandle, db: State<'_, AppDb>, session_id: String, sta
 pub fn set_hidden(app: AppHandle, db: State<'_, AppDb>, session_id: String, hidden: bool) -> Result<(), String> {
     let store = db.0.lock().unwrap();
     store.set_session_hidden(&session_id, hidden).map_err(|e| e.to_string())?;
+    write_backup(&app, &store);
+    Ok(())
+}
+
+// ---- sidebar folders ----------------------------------------------------
+// All five follow the set_starred shape: mutate → write_backup → the frontend
+// calls refresh. The folder id is minted by the frontend (uuidv4, the same
+// pattern as pinning a new session's id), so create can atomically file a
+// session in the same command — drag-to-"New folder" either fully happens or
+// fully doesn't.
+
+#[tauri::command]
+pub fn create_folder(
+    app: AppHandle,
+    db: State<'_, AppDb>,
+    folder_id: String,
+    name: String,
+    session_id: Option<String>,
+) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("folder name can't be empty".into());
+    }
+    let store = db.0.lock().unwrap();
+    store.create_folder(&folder_id, name).map_err(|e| e.to_string())?;
+    if let Some(sid) = session_id {
+        store.set_session_folder(&sid, Some(&folder_id)).map_err(|e| e.to_string())?;
+    }
+    write_backup(&app, &store);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn rename_folder(app: AppHandle, db: State<'_, AppDb>, folder_id: String, name: String) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("folder name can't be empty".into());
+    }
+    let store = db.0.lock().unwrap();
+    store.rename_folder(&folder_id, name).map_err(|e| e.to_string())?;
+    write_backup(&app, &store);
+    Ok(())
+}
+
+/// Delete a folder. Members return to their auto project groups — sessions are
+/// never touched.
+#[tauri::command]
+pub fn delete_folder(app: AppHandle, db: State<'_, AppDb>, folder_id: String) -> Result<(), String> {
+    let mut store = db.0.lock().unwrap();
+    store.delete_folder(&folder_id).map_err(|e| e.to_string())?;
+    write_backup(&app, &store);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn reorder_folders(app: AppHandle, db: State<'_, AppDb>, ids: Vec<String>) -> Result<(), String> {
+    let mut store = db.0.lock().unwrap();
+    store.reorder_folders(&ids).map_err(|e| e.to_string())?;
+    write_backup(&app, &store);
+    Ok(())
+}
+
+/// File a session into a folder (folder_id set) or back to its project group
+/// (folder_id null).
+#[tauri::command]
+pub fn set_session_folder(
+    app: AppHandle,
+    db: State<'_, AppDb>,
+    session_id: String,
+    folder_id: Option<String>,
+) -> Result<(), String> {
+    let store = db.0.lock().unwrap();
+    store.set_session_folder(&session_id, folder_id.as_deref()).map_err(|e| e.to_string())?;
     write_backup(&app, &store);
     Ok(())
 }
