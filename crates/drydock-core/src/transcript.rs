@@ -55,6 +55,13 @@ pub struct FileTouch {
     pub edits: i64,
     /// Write calls (file created or fully rewritten).
     pub writes: i64,
+    /// Lines added / removed across all calls — counted from each call's
+    /// `toolUseResult.structuredPatch` diff when the record carries one,
+    /// estimated from the tool input otherwise.
+    pub adds: i64,
+    pub dels: i64,
+    /// The session created this file (a Write whose result reported "create").
+    pub created: bool,
     pub last_ts: Option<i64>,
 }
 
@@ -239,33 +246,142 @@ pub fn read_page(path: &Path, from_offset: u64) -> std::io::Result<Page> {
     Ok(Page { entries, next_offset: start + consumed as u64, reset })
 }
 
+fn line_count(v: Option<&Value>) -> i64 {
+    v.and_then(Value::as_str).map(|s| s.lines().count() as i64).unwrap_or(0)
+}
+
+/// (adds, dels) estimated from a file tool's INPUT — the fallback when the
+/// result record carries no structured diff. A replacement counts every line of
+/// the new text as added and every line of the old as removed.
+fn input_stats(name: &str, input: Option<&Value>) -> (i64, i64) {
+    let Some(input) = input else { return (0, 0) };
+    match name {
+        "Edit" => (line_count(input.get("new_string")), line_count(input.get("old_string"))),
+        "MultiEdit" => input
+            .get("edits")
+            .and_then(Value::as_array)
+            .map(|edits| {
+                edits.iter().fold((0, 0), |(a, d), e| {
+                    (a + line_count(e.get("new_string")), d + line_count(e.get("old_string")))
+                })
+            })
+            .unwrap_or((0, 0)),
+        "Write" => (line_count(input.get("content")), 0),
+        "NotebookEdit" => (line_count(input.get("new_source")), 0),
+        _ => (0, 0),
+    }
+}
+
+/// (adds, dels) counted from a record's `toolUseResult.structuredPatch` — the
+/// exact diff Claude Code computed. A "create" result has an empty patch, so
+/// its whole `content` counts as added. None ⇒ no usable diff (caller falls
+/// back to the input estimate).
+fn patch_stats(tur: &Value) -> Option<(i64, i64)> {
+    let patch = tur.get("structuredPatch")?.as_array()?;
+    if patch.is_empty() {
+        return (tur.get("type").and_then(Value::as_str) == Some("create"))
+            .then(|| (line_count(tur.get("content")), 0));
+    }
+    let mut adds = 0;
+    let mut dels = 0;
+    for hunk in patch {
+        for line in hunk.get("lines").and_then(Value::as_array).into_iter().flatten() {
+            match line.as_str().and_then(|s| s.as_bytes().first()) {
+                Some(b'+') => adds += 1,
+                Some(b'-') => dels += 1,
+                _ => {}
+            }
+        }
+    }
+    Some((adds, dels))
+}
+
+/// One not-yet-finalized file tool call, waiting for its result.
+struct PendingTouch {
+    path: String,
+    is_write: bool,
+    ts: Option<i64>,
+    /// (adds, dels) from the input, used unless the result carries a diff.
+    fallback: (i64, i64),
+    stats: Option<(i64, i64)>,
+    created: bool,
+    voided: bool,
+}
+
 /// Aggregate the files this session changed, from its whole transcript.
 /// Edit/Write/MultiEdit/NotebookEdit calls count; a call whose tool_result came
 /// back is_error is dropped (the change didn't happen). First-touched order.
+/// Parses records directly (not via display entries) so paths are never
+/// truncated and the result records' `toolUseResult` diffs are reachable.
 pub fn files_touched(path: &Path) -> std::io::Result<Vec<FileTouch>> {
-    let page = read_page(path, 0)?;
-    // tool_use_id → index into pending, so errored results can void their call
-    let mut pending: Vec<(String, bool, Option<i64>, bool)> = Vec::new(); // (path, is_write, ts, voided)
+    let text = std::fs::read_to_string(path)?;
+    let mut pending: Vec<PendingTouch> = Vec::new();
     let mut by_id: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for e in &page.entries {
-        match e.kind.as_str() {
-            "tool_use" => {
-                let is_write = match e.tool.as_deref() {
-                    Some("Write") => true,
-                    Some("Edit") | Some("MultiEdit") | Some("NotebookEdit") => false,
-                    _ => continue,
-                };
-                if e.text.is_empty() {
-                    continue; // no usable path in the input
+    for line in text.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        if v.get("isSidechain").and_then(Value::as_bool).unwrap_or(false) {
+            continue; // a subagent's edits belong to its own transcript
+        }
+        let kind = v.get("type").and_then(Value::as_str).unwrap_or("");
+        let Some(blocks) = v.get("message").and_then(|m| m.get("content")).and_then(Value::as_array) else { continue };
+        match kind {
+            "assistant" => {
+                for b in blocks {
+                    if b.get("type").and_then(Value::as_str) != Some("tool_use") {
+                        continue;
+                    }
+                    let name = b.get("name").and_then(Value::as_str).unwrap_or("");
+                    let input = b.get("input");
+                    let path_key = match name {
+                        "Edit" | "MultiEdit" | "Write" => "file_path",
+                        "NotebookEdit" => "notebook_path",
+                        _ => continue,
+                    };
+                    let Some(file) = input.and_then(|i| i.get(path_key)).and_then(Value::as_str) else { continue };
+                    if file.is_empty() {
+                        continue;
+                    }
+                    if let Some(id) = b.get("id").and_then(Value::as_str) {
+                        by_id.insert(id.to_string(), pending.len());
+                    }
+                    pending.push(PendingTouch {
+                        path: file.to_string(),
+                        is_write: name == "Write",
+                        ts: ts_ms(&v),
+                        fallback: input_stats(name, input),
+                        stats: None,
+                        created: false,
+                        voided: false,
+                    });
                 }
-                if let Some(id) = &e.tool_use_id {
-                    by_id.insert(id.clone(), pending.len());
-                }
-                pending.push((e.text.clone(), is_write, e.ts, false));
             }
-            "tool_result" if e.error => {
-                if let Some(i) = e.tool_use_id.as_ref().and_then(|id| by_id.get(id)) {
-                    pending[*i].3 = true;
+            "user" => {
+                // toolUseResult sits at the record's top level, next to `message`.
+                // It describes ONE result, so it's only trusted when the record
+                // holds a single tool_result (and, when it names a file, that
+                // file matches the call being finalized).
+                let results: Vec<&Value> = blocks
+                    .iter()
+                    .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
+                    .collect();
+                let tur = (results.len() == 1).then(|| v.get("toolUseResult")).flatten();
+                for b in results {
+                    let Some(i) = b.get("tool_use_id").and_then(Value::as_str).and_then(|id| by_id.get(id)) else {
+                        continue;
+                    };
+                    let call = &mut pending[*i];
+                    if b.get("is_error").and_then(Value::as_bool).unwrap_or(false) {
+                        call.voided = true;
+                        continue;
+                    }
+                    let Some(tur) = tur else { continue };
+                    if let Some(fp) = tur.get("filePath").and_then(Value::as_str) {
+                        if fp != call.path {
+                            continue;
+                        }
+                    }
+                    call.stats = patch_stats(tur);
+                    call.created = tur.get("type").and_then(Value::as_str) == Some("create");
                 }
             }
             _ => {}
@@ -273,20 +389,24 @@ pub fn files_touched(path: &Path) -> std::io::Result<Vec<FileTouch>> {
     }
     let mut order: Vec<String> = Vec::new();
     let mut agg: std::collections::HashMap<String, FileTouch> = std::collections::HashMap::new();
-    for (p, is_write, ts, voided) in pending {
-        if voided {
+    for call in pending {
+        if call.voided {
             continue;
         }
-        let t = agg.entry(p.clone()).or_insert_with(|| {
-            order.push(p.clone());
-            FileTouch { path: p.clone(), edits: 0, writes: 0, last_ts: None }
+        let t = agg.entry(call.path.clone()).or_insert_with(|| {
+            order.push(call.path.clone());
+            FileTouch { path: call.path.clone(), edits: 0, writes: 0, adds: 0, dels: 0, created: false, last_ts: None }
         });
-        if is_write {
+        if call.is_write {
             t.writes += 1;
         } else {
             t.edits += 1;
         }
-        t.last_ts = match (t.last_ts, ts) {
+        let (adds, dels) = call.stats.unwrap_or(call.fallback);
+        t.adds += adds;
+        t.dels += dels;
+        t.created |= call.created;
+        t.last_ts = match (t.last_ts, call.ts) {
             (Some(a), Some(b)) => Some(a.max(b)),
             (a, b) => a.or(b),
         };
@@ -416,9 +536,65 @@ mod tests {
         assert_eq!(touched.len(), 2);
         assert_eq!(touched[0].path, "/Users/dev/work/src/loader.ts");
         assert_eq!((touched[0].edits, touched[0].writes), (1, 0));
+        // counted from the result's structuredPatch, not the input estimate
+        assert_eq!((touched[0].adds, touched[0].dels), (2, 1));
+        assert!(!touched[0].created);
         assert_eq!(touched[1].path, "/Users/dev/work/src/loader.test.ts");
         assert_eq!((touched[1].edits, touched[1].writes), (0, 1));
+        // a "create" has an empty patch: its whole content counts as added
+        assert_eq!((touched[1].adds, touched[1].dels), (1, 0));
+        assert!(touched[1].created);
         assert!(touched[0].last_ts.is_some());
+    }
+
+    #[test]
+    fn files_touched_estimates_stats_from_input_when_result_has_no_diff() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("t.jsonl");
+        let lines = [
+            r#"{"type":"assistant","timestamp":"2026-06-01T10:00:00.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"m1","name":"MultiEdit","input":{"file_path":"/p/a.rs","edits":[{"old_string":"a\nb","new_string":"a"},{"old_string":"","new_string":"x\ny\nz"}]}}]}}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"m1","content":"ok"}]}}"#,
+        ];
+        std::fs::write(&p, lines.join("\n") + "\n").unwrap();
+        let touched = files_touched(&p).unwrap();
+        assert_eq!(touched.len(), 1);
+        assert_eq!((touched[0].adds, touched[0].dels), (4, 2), "summed across the edits array");
+        assert_eq!(touched[0].edits, 1);
+    }
+
+    #[test]
+    fn files_touched_distrusts_ambiguous_tool_use_results() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("t.jsonl");
+        let lines = [
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"w1","name":"Write","input":{"file_path":"/p/a.rs","content":"l1\nl2"}},{"type":"tool_use","id":"w2","name":"Write","input":{"file_path":"/p/b.rs","content":"only"}}]}}"#,
+            // two results in ONE record: the single toolUseResult can't be
+            // attributed, so both calls keep their input estimates
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"w1","content":"ok"},{"type":"tool_result","tool_use_id":"w2","content":"ok"}]},"toolUseResult":{"type":"create","filePath":"/p/a.rs","content":"x\ny\nz","structuredPatch":[]}}"#,
+            // and a result whose toolUseResult names a DIFFERENT file is ignored
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"e1","name":"Edit","input":{"file_path":"/p/c.rs","old_string":"old","new_string":"new1\nnew2"}}]}}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"e1","content":"ok"}]},"toolUseResult":{"filePath":"/p/OTHER.rs","structuredPatch":[{"lines":["+a","+b","+c","-d"]}]}}"#,
+        ];
+        std::fs::write(&p, lines.join("\n") + "\n").unwrap();
+        let touched = files_touched(&p).unwrap();
+        let by_path = |q: &str| touched.iter().find(|t| t.path == q).unwrap();
+        assert_eq!((by_path("/p/a.rs").adds, by_path("/p/a.rs").dels), (2, 0));
+        assert!(!by_path("/p/a.rs").created, "unattributable create flag is not applied");
+        assert_eq!((by_path("/p/b.rs").adds, by_path("/p/b.rs").dels), (1, 0));
+        assert_eq!((by_path("/p/c.rs").adds, by_path("/p/c.rs").dels), (2, 1), "input estimate, not the mismatched patch");
+    }
+
+    #[test]
+    fn files_touched_keeps_long_paths_untruncated() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("t.jsonl");
+        let long = format!("/p/{}/f.rs", "d".repeat(300));
+        let line = format!(
+            r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"e1","name":"Edit","input":{{"file_path":"{long}"}}}}]}}}}"#
+        );
+        std::fs::write(&p, line + "\n").unwrap();
+        let touched = files_touched(&p).unwrap();
+        assert_eq!(touched[0].path, long, "paths must never pass through the display truncation");
     }
 
     #[test]
