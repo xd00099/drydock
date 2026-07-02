@@ -18,6 +18,7 @@ export default function SearchPalette({ open, onClose, onPick }: Props) {
   const [resp, setResp] = useState<SearchResponse>({ results: [], semantic: 'unavailable' })
   const [sel, setSel] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
   const seq = useRef(0)
 
   useEffect(() => {
@@ -52,8 +53,20 @@ export default function SearchPalette({ open, onClose, onPick }: Props) {
           onKeyDown={(e) => {
             if (e.nativeEvent.isComposing) return // IME composition (pinyin): Enter/Esc/arrows belong to the IME
             if (e.key === 'Escape') onClose()
-            if (e.key === 'ArrowDown') { e.preventDefault(); setSel((s) => Math.min(s + 1, results.length - 1)) }
-            if (e.key === 'ArrowUp') { e.preventDefault(); setSel((s) => Math.max(s - 1, 0)) }
+            // keep the keyboard selection visible: the list scrolls, the rows
+            // map 1:1 to children, and 'nearest' no-ops when already in view
+            if (e.key === 'ArrowDown') {
+              e.preventDefault()
+              const n = Math.min(sel + 1, results.length - 1)
+              setSel(n)
+              listRef.current?.children[n]?.scrollIntoView({ block: 'nearest' })
+            }
+            if (e.key === 'ArrowUp') {
+              e.preventDefault()
+              const n = Math.max(sel - 1, 0)
+              setSel(n)
+              listRef.current?.children[n]?.scrollIntoView({ block: 'nearest' })
+            }
             if (e.key === 'Enter' && results[sel]) { onPick(results[sel].session, e.metaKey); onClose() }
           }}
           placeholder="search all sessions…  (proj:x  starred:  live:  ·  Enter resume · ⌘Enter transcript)"
@@ -64,7 +77,7 @@ export default function SearchPalette({ open, onClose, onPick }: Props) {
             {resp.semantic === 'indexing' ? 'semantic index catching up — keyword results' : 'keyword search'}
           </div>
         )}
-        <div style={{ overflowY: 'auto' }}>
+        <div ref={listRef} style={{ overflowY: 'auto' }}>
           {results.map((r, i) => (
             <div
               key={r.session.session_id}
@@ -72,15 +85,17 @@ export default function SearchPalette({ open, onClose, onPick }: Props) {
               onMouseEnter={() => setSel(i)}
               style={{ padding: '8px 14px', background: i === sel ? '#1d2530' : 'transparent', cursor: 'pointer' }}
             >
-              <div>
+              {/* flex, not float: a float that doesn't fit drops BELOW the title
+                  line; here the title ellipsizes and the metadata stays put */}
+              <div style={{ display: 'flex', alignItems: 'center' }}>
                 {r.session.live_status !== 'ended' && (
-                  <span style={{ marginRight: 6 }}>
+                  <span style={{ marginRight: 6, flexShrink: 0 }}>
                     <LiveIndicator status={r.session.live_status} />
                   </span>
                 )}
-                <span style={{ color: '#e8edf4' }}>{clip(sessionLabel(r.session), 52)}</span>
-                {r.session.starred && <span style={{ color: '#e8c35a' }}> ★</span>}
-                <span style={{ float: 'right', color: '#5b6675' }}>{shortPath(r.session.project_path)} · {relAge(r.session.last_message_at)}</span>
+                <span style={{ color: '#e8edf4', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{clip(sessionLabel(r.session), 52)}</span>
+                {r.session.starred && <span style={{ color: '#e8c35a', flexShrink: 0 }}> ★</span>}
+                <span style={{ marginLeft: 'auto', paddingLeft: 8, flexShrink: 0, whiteSpace: 'nowrap', color: '#5b6675' }}>{clip(shortPath(r.session.project_path), 40)} · {relAge(r.session.last_message_at)}</span>
               </div>
               {r.snippet && <div style={{ color: '#7d8794', fontSize: 12, marginTop: 2 }}>{clip(r.snippet, 90)}</div>}
             </div>

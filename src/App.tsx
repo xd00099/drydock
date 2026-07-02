@@ -46,6 +46,11 @@ export default function App() {
   tabsRef.current = tabs
   const activeIdRef = useRef(activeId) // for the once-registered artifact listener
   activeIdRef.current = activeId
+  // for the once-registered keydown handler: shortcuts must respect open overlays
+  const quitGuardRef = useRef(quitGuard)
+  quitGuardRef.current = quitGuard
+  const paletteOpenRef = useRef(paletteOpen)
+  paletteOpenRef.current = paletteOpen
   const newShellRef = useRef(() => {})
   const closeActiveRef = useRef(() => {})
   const starActiveRef = useRef(() => {})
@@ -196,6 +201,21 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.isComposing) return // never act on keys mid-IME-composition
+      // While the quit-guard modal is up, keyboard shortcuts must not act on the
+      // tabs behind it (⌘W closing a hidden tab, ⌘T opening one). Esc cancels.
+      // preventDefault also keeps ⌘W from reaching the native File > Close
+      // Window accelerator via WKWebView's unhandled-key re-dispatch.
+      if (quitGuardRef.current) {
+        if (e.key === 'Escape') setQuitGuard(false)
+        if (e.metaKey && ['k', 'f', 't', 'w', 'd'].includes(e.key)) e.preventDefault()
+        return
+      }
+      // Same for the search palette (it handles its own Esc/arrows/Enter); ⌘K
+      // still toggles it closed.
+      if (paletteOpenRef.current && e.metaKey && ['f', 't', 'w', 'd'].includes(e.key)) {
+        e.preventDefault()
+        return
+      }
       if (e.metaKey && e.key === 'k') { e.preventDefault(); setPaletteOpen((v) => !v) }
       // ⌘F: find within the active pane (terminal scrollback or transcript text)
       if (e.metaKey && e.key === 'f') { e.preventDefault(); openFindRef.current() }
@@ -267,11 +287,6 @@ export default function App() {
 
   return (
     <div style={{ display: 'flex', width: '100vw', height: '100vh', background: '#10141a' }}>
-      {claudeVersion === null && (
-        <div style={{ position: 'fixed', top: 0, left: 300, right: 0, background: '#5a3030', color: '#f0d0d0', padding: '4px 12px', fontFamily: 'system-ui', fontSize: 12, zIndex: 40 }}>
-          claude CLI not found in your login shell — resume/new sessions won't start. Install Claude Code or fix your PATH, then restart Drydock. Shell tabs still work.
-        </div>
-      )}
       <Sidebar
         sessions={sessions}
         hidden={hidden}
@@ -283,6 +298,13 @@ export default function App() {
         onDelete={(sessionId) => invoke('delete_session_permanently', { sessionId }).then(refresh)}
       />
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+        {/* In-flow (not fixed at a guessed sidebar offset): it always spans
+            exactly the main column at any sidebar width or collapse state. */}
+        {claudeVersion === null && (
+          <div style={{ background: '#5a3030', color: '#f0d0d0', padding: '4px 12px', fontFamily: 'system-ui', fontSize: 12 }}>
+            claude CLI not found in your login shell — resume/new sessions won't start. Install Claude Code or fix your PATH, then restart Drydock. Shell tabs still work.
+          </div>
+        )}
         <TabBar tabs={tabs} sessions={sessions} activeId={activeId} shellDirs={shellDirs} unread={unread} onSelect={setActiveId} onClose={closeTab} onNewShell={newShell} />
         <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
           {tabs.map((t) => (
@@ -363,8 +385,18 @@ export default function App() {
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, transform: 'translateZ(0)' }}>
           <div style={{ background: '#161c25', color: '#e8edf4', padding: 20, borderRadius: 8, fontFamily: 'system-ui', fontSize: 13 }}>
             <div style={{ marginBottom: 12 }}>Sessions are still running in tabs. Quit anyway?</div>
-            <button onClick={() => invoke('force_quit')} style={{ marginRight: 8 }}>Quit anyway</button>
-            <button onClick={() => setQuitGuard(false)}>Cancel</button>
+            <button
+              style={{ background: '#7a2e2e', color: '#fff', border: 'none', padding: '5px 12px', borderRadius: 5, cursor: 'pointer', fontSize: 12, marginRight: 8 }}
+              onClick={() => invoke('force_quit')}
+            >
+              Quit anyway
+            </button>
+            <button
+              style={{ background: '#1d2530', color: '#e8edf4', border: '1px solid #2c3647', borderRadius: 5, padding: '4px 12px', cursor: 'pointer', fontSize: 12 }}
+              onClick={() => setQuitGuard(false)}
+            >
+              Cancel
+            </button>
           </div>
         </div>
       )}

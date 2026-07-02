@@ -166,13 +166,66 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
       fontSize: 13,
       cursorBlink: true,
       scrollback: 10000, // keep more history searchable (⌘F) in shell tabs
-      theme: { background: '#10141a' },
+      // Auto-boost only ILLEGIBLE pairs (Claude's TUI draws its status bar and
+      // hints in dim/grey text that vanishes on our dark background); legible
+      // colors pass through untouched. Dim cells need only half this ratio, so
+      // "faint" still reads as faint — just visibly.
+      minimumContrastRatio: 4.5,
+      // Full Drydock palette, not just the background: xterm's default is the
+      // saturated Tango set with pure-white text and a 30%-alpha white selection
+      // — which reads as a foreign app embedded in ours, and makes the ⌘F match
+      // a faint wash. Opaque selection keeps the found text obvious.
+      theme: {
+        background: '#10141a',
+        foreground: '#c8cdd5',
+        cursor: '#7fb0ff',
+        cursorAccent: '#10141a',
+        selectionBackground: '#3d5878',
+        selectionInactiveBackground: '#2c3647',
+        black: '#1d2530',
+        red: '#cf6b6b',
+        green: '#7ec8a0',
+        yellow: '#e8c35a',
+        blue: '#7fb0ff',
+        magenta: '#c792ea',
+        cyan: '#7ecfc0',
+        white: '#c8cdd5',
+        brightBlack: '#7d8794',
+        brightRed: '#e8907a',
+        brightGreen: '#a3dcbd',
+        brightYellow: '#f0d38a',
+        brightBlue: '#9cc3ff',
+        brightMagenta: '#dab6f4',
+        brightCyan: '#a2e0d5',
+        brightWhite: '#e8edf4',
+      },
     })
     const fit = new FitAddon()
     const search = new SearchAddon()
     term.loadAddon(fit)
     term.loadAddon(search)
     term.open(host)
+    // Physical mouse wheels feel awful in the alt buffer (Claude Code's TUI):
+    // there's no scrollback there, so xterm converts wheel to arrow keys at
+    // amount = deltaY / cell-height — one WKWebView mouse notch (~120px) becomes
+    // 5-25 up/down keys and the conversation leaps. Touchpads are fine (small
+    // pixel deltas). For big pixel deltas in the alt buffer, send a gentle 1-3
+    // arrows per notch instead. Everything else falls through to xterm: normal
+    // buffer (real scrollback), touchpads, and TUIs that track the mouse
+    // themselves (vim mouse=a, htop — they want real SGR wheel reports).
+    term.attachCustomWheelEventHandler((ev) => {
+      if (
+        term.buffer.active.type !== 'alternate' ||
+        term.modes.mouseTrackingMode !== 'none' ||
+        ev.deltaMode !== WheelEvent.DOM_DELTA_PIXEL ||
+        Math.abs(ev.deltaY) < 40
+      ) return true
+      ev.preventDefault()
+      const seq = '\x1b' + (term.modes.applicationCursorKeysMode ? 'O' : '[') + (ev.deltaY < 0 ? 'A' : 'B')
+      const n = Math.max(1, Math.min(3, Math.round(Math.abs(ev.deltaY) / 40)))
+      term.input(seq.repeat(n), true)
+      return false
+    })
     // GPU renderer. Claude repaints its whole alt-screen view on every scroll
     // tick and wraps each frame in "synchronized output" (DEC mode 2026) so a
     // terminal paints it atomically. xterm's default DOM renderer ignores 2026

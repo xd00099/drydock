@@ -35,6 +35,12 @@ const S = {
   tabBtn: (active: boolean) =>
     ({
       flex: 1,
+      // flex items default to min-width:auto — without minWidth: 0 the labels
+      // set a floor and the strip overflows/clips at narrow panel widths
+      minWidth: 0,
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+      whiteSpace: 'nowrap',
       background: active ? '#161c25' : 'transparent',
       border: 'none',
       borderBottom: active ? '2px solid #5a7fb0' : '2px solid #1d2530',
@@ -112,7 +118,10 @@ function BriefingTab({ sessionId, card, starred, onToggleStar }: { sessionId: st
       ) : (
         <div style={S.muted}>no briefing card yet</div>
       )}
-      <button style={{ marginTop: 10 }} onClick={() => invoke('refresh_card', { sessionId }).catch(console.error)}>
+      <button
+        style={{ marginTop: 10, background: '#1d2530', color: '#e8edf4', border: '1px solid #2c3647', borderRadius: 5, padding: '4px 12px', cursor: 'pointer', fontSize: 12 }}
+        onClick={() => invoke('refresh_card', { sessionId }).catch(console.error)}
+      >
         Refresh card
       </button>
     </>
@@ -330,12 +339,18 @@ function McpTab({ projectPath }: { projectPath?: string }) {
 function PreviewTab({ artifacts }: { artifacts: Artifact[] }) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [full, setFull] = useState(false)
+  const overlayRef = useRef<HTMLDivElement>(null)
   // Transient confirmation/error line under the header (download/reveal results).
+  // One timer, always restarted: two quick Downloads must not have the first
+  // timer clear the second message early.
   const [msg, setMsg] = useState<{ text: string; error?: boolean } | null>(null)
+  const flashTimer = useRef(0)
   const flash = (text: string, error?: boolean) => {
+    clearTimeout(flashTimer.current)
     setMsg({ text, error })
-    window.setTimeout(() => setMsg((m) => (m && m.text === text ? null : m)), 3000)
+    flashTimer.current = window.setTimeout(() => setMsg(null), 3000)
   }
+  useEffect(() => () => clearTimeout(flashTimer.current), [])
   // Download writes straight to ~/Downloads (backend) and reveals it; Reveal
   // shows the model's original source file in Finder (only for file-backed ones).
   const download = (a: Artifact) =>
@@ -351,13 +366,35 @@ function PreviewTab({ artifacts }: { artifacts: Artifact[] }) {
       <button style={S.iconBtn} title="Download to your Downloads folder" onClick={() => download(a)}>Download</button>
     </>
   )
-  // Esc closes the expanded overlay.
+  // Esc closes the expanded overlay — even when the artifact iframe has focus.
+  // A parent keydown listener never sees keys typed into an iframe, so: html
+  // artifacts get a tiny Esc-forwarder script injected by the artifact:// server
+  // (postMessage 'drydock-esc', since their scripts run anyway), and static
+  // svg/markdown frames (scripts disabled, nothing to type into) just have
+  // focus reclaimed by the overlay whenever they steal it.
   useEffect(() => {
     if (!full) return
+    overlayRef.current?.focus()
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setFull(false) }
+    const onMsg = (e: MessageEvent) => {
+      if (e.data && (e.data as { type?: string }).type === 'drydock-esc') setFull(false)
+    }
+    const onBlur = () => {
+      if (document.activeElement instanceof HTMLIFrameElement) {
+        // same default as `current` below: an explicit pick, else the newest
+        const kind = (artifacts.find((a) => a.id === selectedId) ?? artifacts[artifacts.length - 1])?.kind
+        if (kind !== 'html') setTimeout(() => overlayRef.current?.focus(), 0)
+      }
+    }
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [full])
+    window.addEventListener('message', onMsg)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('message', onMsg)
+      window.removeEventListener('blur', onBlur)
+    }
+  }, [full, artifacts, selectedId])
 
   if (artifacts.length === 0)
     return <div style={{ ...S.muted, flex: 1, minHeight: 0, padding: 12 }}>No artifacts yet. When Claude renders an artifact (HTML, SVG, or Markdown) in this session, it shows up here.</div>
@@ -372,7 +409,14 @@ function PreviewTab({ artifacts }: { artifacts: Artifact[] }) {
         {actions(current)}
         <button style={S.iconBtn} title="Expand to full window" onClick={() => setFull(true)}>⤢</button>
       </div>
-      {msg && <div style={{ padding: '0 12px 6px', fontSize: 10, color: msg.error ? '#cf6b6b' : '#7ec8a0', wordBreak: 'break-word' }}>{msg.text}</div>}
+      {/* always rendered at a constant height: the iframe below must not jump
+          when a message appears/expires; long errors ellipsize (full text in title) */}
+      <div
+        title={msg?.text}
+        style={{ padding: '0 12px 6px', fontSize: 10, lineHeight: '12px', height: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: msg?.error ? '#cf6b6b' : '#7ec8a0' }}
+      >
+        {msg?.text ?? ''}
+      </div>
       {artifacts.length > 1 && (
         <select
           value={current.id}
@@ -384,13 +428,16 @@ function PreviewTab({ artifacts }: { artifacts: Artifact[] }) {
           ))}
         </select>
       )}
-      {/* Fill the rest of the panel edge-to-edge, no frame. */}
-      <ArtifactView artifact={current} style={{ flex: 1, minHeight: 0, border: 'none', borderRadius: 0 }} />
+      {/* Fill the rest of the panel edge-to-edge, no frame. Hidden while the
+          full-window overlay is up — two mounted copies of an html artifact
+          would each run its scripts (double execution). */}
+      {!full && <ArtifactView artifact={current} style={{ flex: 1, minHeight: 0, border: 'none', borderRadius: 0 }} />}
       {full && (
         // Full-window overlay so UI artifacts get usable space. zIndex below the
         // quit guard (100); translateZ(0) gives it its own compositing layer so
-        // it's clickable over a terminal's WebGL canvas in WKWebView.
-        <div style={{ position: 'fixed', inset: 0, zIndex: 90, background: '#0b0e13', display: 'flex', flexDirection: 'column', transform: 'translateZ(0)' }}>
+        // it's clickable over a terminal's WebGL canvas in WKWebView. tabIndex
+        // lets it hold focus so Esc lands here, not in a just-clicked iframe.
+        <div ref={overlayRef} tabIndex={-1} style={{ position: 'fixed', inset: 0, zIndex: 90, background: '#0b0e13', display: 'flex', flexDirection: 'column', transform: 'translateZ(0)', outline: 'none' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid #1d2530' }}>
             <span style={{ flex: 1, color: '#e8edf4', fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{current.title}</span>
             <span style={S.chip}>{current.kind}</span>
@@ -407,10 +454,17 @@ function PreviewTab({ artifacts }: { artifacts: Artifact[] }) {
 export default function BriefingPanel({ sessionId, projectPath, starred, artifacts, onToggleStar }: Props) {
   const [card, setCard] = useState<CardView | null>(null)
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('dd.briefingCollapsed') === '1')
-  const [width, setWidth] = useState(() => loadNum('dd.briefingWidth', 252))
+  // clamp on load AND on window resize: a width persisted (or auto-widened) on a
+  // big monitor must not overflow a smaller window later
+  const [width, setWidth] = useState(() => clampPanelWidth(loadNum('dd.briefingWidth', 252)))
   const [tab, setTab] = useState<RightTab>(() => (localStorage.getItem('dd.rightTab') as RightTab) || 'briefing')
   const widthRef = useRef(width)
   widthRef.current = width
+  useEffect(() => {
+    const reclamp = () => setWidth((w) => clampPanelWidth(w))
+    window.addEventListener('resize', reclamp)
+    return () => window.removeEventListener('resize', reclamp)
+  }, [])
 
   const refresh = useCallback(() => {
     if (!sessionId) { setCard(null); return } // a session-less new tab has no card
@@ -464,7 +518,7 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
       <div style={{ width, minWidth: width, boxSizing: 'border-box', background: '#0b0e13', fontFamily: 'system-ui', fontSize: 12, display: 'flex', flexDirection: 'column', height: '100%' }}>
         <div style={{ display: 'flex', alignItems: 'stretch', gap: 6, padding: '12px 12px 0', flex: 'none' }}>
           <button onClick={toggleCollapsed} title="Collapse panel" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#7d8794', fontSize: 15, padding: 0, lineHeight: 1, alignSelf: 'flex-end', marginBottom: 4 }}>»</button>
-          <div style={{ display: 'flex', flex: 1, gap: 2 }}>
+          <div style={{ display: 'flex', flex: 1, gap: 2, minWidth: 0 }}>
             {TABS.map((t) => (
               <button key={t.id} onClick={() => selectTab(t.id)} style={S.tabBtn(t.id === tab)}>
                 {t.label}

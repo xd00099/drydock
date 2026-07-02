@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import type { SessionView, Tab } from './types'
 import { baseName, clip, sessionColor, sessionLabel } from './types'
 
@@ -39,6 +40,14 @@ export default function TabBar({ tabs, sessions, activeId, shellDirs, unread, on
   const termTabs = tabs.filter((t) => t.terminal)
   const termNames = terminalLabels(termTabs, shellDirs)
 
+  // When a lane overflows, a newly activated chip can sit fully off-screen with
+  // no affordance. Reveal it whenever the active tab changes (only then — other
+  // re-renders must not touch scroll position); 'nearest' no-ops when visible.
+  const activeChipRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    activeChipRef.current?.scrollIntoView({ inline: 'nearest', block: 'nearest' })
+  }, [activeId])
+
   // Prefer the session's live label from the index (so a new "claude" tab takes
   // on its real name once the session is picked up); fall back to the title we
   // baked at creation while it isn't indexed yet.
@@ -50,6 +59,7 @@ export default function TabBar({ tabs, sessions, activeId, shellDirs, unread, on
   const chip = (t: Tab, label: string, accent?: string, tip?: string) => (
     <div
       key={t.id}
+      ref={t.id === activeId ? activeChipRef : undefined}
       onClick={() => onSelect(t.id)}
       title={tip}
       style={{
