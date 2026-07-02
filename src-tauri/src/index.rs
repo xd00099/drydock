@@ -24,6 +24,10 @@ pub struct SessionView {
     pub attention: Option<String>,
     /// The user folder this session is filed in, if any (sidebar organization).
     pub folder_id: Option<String>,
+    /// Semantic hue (degrees) — similar sessions wear similar colors. None
+    /// until the session's chunks are embedded (frontend falls back to the
+    /// id-hash color).
+    pub hue: Option<f64>,
 }
 
 /// One user-created sidebar folder, in band order.
@@ -255,6 +259,8 @@ pub fn sessions_snapshot(
     let waiting = attention.snapshot();
     let filed: std::collections::HashMap<String, String> =
         store.folder_memberships().map_err(|e| e.to_string())?.into_iter().collect();
+    let hues: std::collections::HashMap<String, f64> =
+        store.session_hues().map_err(|e| e.to_string())?.into_iter().collect();
     let sessions = store
         .list_sessions()
         .map_err(|e| e.to_string())?
@@ -266,6 +272,7 @@ pub fn sessions_snapshot(
                 live_status: if attn.is_some() { "needs_input".to_string() } else { r.live_status },
                 attention: attn.map(|w| w.message.clone()),
                 folder_id: filed.get(&r.session_id).cloned(),
+                hue: hues.get(&r.session_id).copied(),
                 session_id: r.session_id,
                 project_path: r.project_path,
                 title: r.title,

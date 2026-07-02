@@ -351,7 +351,7 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
       <button
         key={s.session_id}
         className={`dd-sessrow${flashSid === s.session_id ? ' dd-landed' : ''}`}
-        style={{ ...S.row, opacity: isDragging ? 0.4 : isHidden ? 0.45 : 1, borderLeftColor: sessionColor(s.session_id), background: sessionColor(s.session_id, isActive ? 0.3 : 0.1) }}
+        style={{ ...S.row, opacity: isDragging ? 0.4 : isHidden ? 0.45 : 1, borderLeftColor: sessionColor(s.session_id, 1, s.hue), background: sessionColor(s.session_id, isActive ? 0.3 : 0.1, s.hue) }}
         onClick={dragSafe(() => onResume(s))}
         onPointerDown={(e) => beginPress(e, { kind: 'session', sid: s.session_id, label: sessionLabel(s), fromFolder: s.folder_id })}
         onContextMenu={(e) => { e.preventDefault(); if (dragRef.current) return; setMenu({ x: e.clientX, y: e.clientY, s, view: 'main' }) }}

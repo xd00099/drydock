@@ -6,6 +6,7 @@ mod capabilities;
 mod embedder;
 mod enricher;
 mod files;
+mod hues;
 mod index;
 mod pty;
 mod search;
@@ -488,7 +489,8 @@ fn main() {
             {
                 let db = data.join("drydock.db");
                 let cache = data.join("models");
-                std::thread::spawn(move || embedder::imp::run(db, cache));
+                let emit = app.handle().clone();
+                std::thread::spawn(move || embedder::imp::run(db, cache, emit));
             }
             {
                 let db = data.join("drydock.db");

@@ -14,6 +14,9 @@ export type SessionView = {
   // the user sidebar folder this session is filed in (move semantics: at most
   // one); null = unfiled, shown in its auto project group
   folder_id: string | null
+  // semantic hue in degrees — sessions about similar things wear similar
+  // colors; null until embeddings exist (sessionColor falls back to the hash)
+  hue: number | null
 }
 
 // A user-created sidebar folder ("working group"), in band order.
@@ -176,15 +179,21 @@ export function baseName(p: string): string {
   return parts.length ? parts[parts.length - 1] : p
 }
 
-/** Stable per-session accent color (FNV-1a hash of the id → hue), so the same
- *  session reads as the same color in the sidebar and its tab. Pass an `alpha`
- *  below 1 for a translucent tint (e.g. a row background). */
-export function sessionColor(sessionId: string, alpha = 1): string {
-  let h = 0x811c9dc5
-  for (let i = 0; i < sessionId.length; i++) {
-    h ^= sessionId.charCodeAt(i)
-    h = Math.imul(h, 0x01000193)
+/** Per-session accent color. Prefer the SEMANTIC hue when given (backend:
+ *  sessions about similar things wear similar colors); otherwise a stable
+ *  FNV-1a hash of the id, so the same session reads as the same color in the
+ *  sidebar and its tab either way. Pass an `alpha` below 1 for a translucent
+ *  tint (e.g. a row background). */
+export function sessionColor(sessionId: string, alpha = 1, hue?: number | null): string {
+  let h = hue ?? null
+  if (h == null) {
+    let x = 0x811c9dc5
+    for (let i = 0; i < sessionId.length; i++) {
+      x ^= sessionId.charCodeAt(i)
+      x = Math.imul(x, 0x01000193)
+    }
+    h = (x >>> 0) % 360
   }
-  const hue = (h >>> 0) % 360
-  return alpha >= 1 ? `hsl(${hue}, 60%, 62%)` : `hsla(${hue}, 60%, 62%, ${alpha})`
+  const deg = Math.round(h)
+  return alpha >= 1 ? `hsl(${deg}, 60%, 62%)` : `hsla(${deg}, 60%, 62%, ${alpha})`
 }
