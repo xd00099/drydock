@@ -91,9 +91,12 @@ jobs:
             ]
 
             caveats <<~EOS
-              Drydock is not signed with an Apple Developer ID yet. If macOS
-              refuses to open it, install with --no-quarantine, or approve it
-              under System Settings → Privacy & Security → Open Anyway.
+              Drydock is not signed with an Apple Developer ID yet, so macOS
+              reports the quarantined app as "damaged". Clear the flag with:
+
+                xattr -dr com.apple.quarantine "#{appdir}/Drydock.app"
+
+              or install with:  brew install --cask drydock --no-quarantine
             EOS
           end
           EOF

@@ -82,7 +82,13 @@ brew install --cask drydock
 
 **Direct download** — grab the `.dmg` from the [latest release](https://github.com/xd00099/drydock/releases/latest).
 
-Drydock isn't signed with an Apple Developer ID yet, so macOS may refuse the first launch: approve it under **System Settings → Privacy & Security → Open Anyway** (or install with `brew install --cask drydock --no-quarantine`). Once installed, Drydock checks GitHub Releases daily and shows an **Update** button in the sidebar footer when a new version ships.
+Drydock isn't signed with an Apple Developer ID yet, so macOS quarantines the download and reports the app as **"damaged"** on first launch. It isn't — clear the quarantine flag and it opens normally:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Drydock.app
+```
+
+(or install with `brew install --cask drydock --no-quarantine`). Once running, Drydock checks GitHub Releases daily and shows an **Update** button in the sidebar footer when a new version ships.
 
 **Build from source** — needs Rust (stable) and Node 18+:
 
