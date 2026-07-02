@@ -676,14 +676,21 @@ fn is_full_document(html: &str) -> bool {
     head.contains("<!doctype") || head.contains("<html")
 }
 
-/// The exact HTML document served for an artifact: a full page passes through;
-/// a fragment gets the minimal dark-theme wrapper.
+/// Appended to every served HTML artifact. Drydock's full-window overlay closes
+/// on Esc, but a parent keydown listener never sees keys typed into the iframe —
+/// so the artifact itself forwards Esc via postMessage (its scripts run anyway
+/// under ARTIFACT_CSP). Capture-phase, so artifact code can't swallow it first;
+/// appended at the end so it can't disturb the document's own parsing.
+const ESC_FORWARDER: &str = "<script>addEventListener('keydown',function(e){if(e.key==='Escape')parent.postMessage({type:'drydock-esc'},'*')},true)</script>";
+
+/// The exact HTML document served for an artifact: a full page passes through
+/// (plus the Esc forwarder); a fragment gets the minimal dark-theme wrapper.
 fn build_artifact_document(html: &str) -> String {
     if is_full_document(html) {
-        html.to_string()
+        format!("{html}{ESC_FORWARDER}")
     } else {
         format!(
-            "<!doctype html><html><head><meta charset=\"utf-8\"><style>{ARTIFACT_FRAME_CSS}</style></head><body>{html}</body></html>"
+            "<!doctype html><html><head><meta charset=\"utf-8\"><style>{ARTIFACT_FRAME_CSS}</style></head><body>{html}{ESC_FORWARDER}</body></html>"
         )
     }
 }
@@ -1004,7 +1011,19 @@ mod tests {
         let doc = "<!doctype html><html><head></head><body><script>1</script></body></html>";
         let r = artifact_response(Some(doc.to_string()));
         let body = String::from_utf8(r.body().clone()).unwrap();
-        assert_eq!(body, doc, "a full page is served verbatim, not double-wrapped");
+        assert_eq!(
+            body,
+            format!("{doc}{ESC_FORWARDER}"),
+            "a full page is served unwrapped, with only the Esc forwarder appended"
+        );
+    }
+
+    #[test]
+    fn artifact_documents_carry_the_esc_forwarder() {
+        // fragment path: forwarder inside the wrapper's body
+        let frag = build_artifact_document("<div>x</div>");
+        assert!(frag.contains(ESC_FORWARDER));
+        assert!(frag.contains("drydock-esc"));
     }
 
     #[test]

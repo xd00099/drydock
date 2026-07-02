@@ -60,6 +60,12 @@ function loadSet(key: string): Set<string> {
   try { return new Set(JSON.parse(localStorage.getItem(key) || '[]') as string[]) } catch { return new Set() }
 }
 
+// Hover highlight for context-menu items (inline styles can't express :hover).
+const menuHover = {
+  onMouseEnter: (e: React.MouseEvent<HTMLButtonElement>) => { e.currentTarget.style.background = '#2c3647' },
+  onMouseLeave: (e: React.MouseEvent<HTMLButtonElement>) => { e.currentTarget.style.background = 'none' },
+}
+
 // The strongest live status across a (collapsed) group's sessions.
 function groupStatus(list: SessionView[]): SessionView['live_status'] | null {
   if (list.some((s) => s.live_status === 'busy')) return 'busy'
@@ -69,9 +75,16 @@ function groupStatus(list: SessionView[]): SessionView['live_status'] | null {
 
 export default function Sidebar({ sessions, hidden, activeSessionId, onResume, onNewSession, onToggleStar, onHide, onDelete }: Props) {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('dd.sidebarCollapsed') === '1')
-  const [width, setWidth] = useState(() => loadNum('dd.sidebarWidth', 300))
+  // clamp on load AND on window resize: a width persisted on a big monitor must
+  // not overflow a smaller window later
+  const [width, setWidth] = useState(() => clampPanelWidth(loadNum('dd.sidebarWidth', 300)))
   const widthRef = useRef(width)
   widthRef.current = width
+  useEffect(() => {
+    const reclamp = () => setWidth((w) => clampPanelWidth(w))
+    window.addEventListener('resize', reclamp)
+    return () => window.removeEventListener('resize', reclamp)
+  }, [])
   const [closed, setClosed] = useState<Set<string>>(() => loadSet('dd.closedGroups'))
   const [showHidden, setShowHidden] = useState(false)
   const [menu, setMenu] = useState<{ x: number; y: number; s: SessionView } | null>(null)
@@ -83,7 +96,14 @@ export default function Sidebar({ sessions, hidden, activeSessionId, onResume, o
     const onEsc = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenu(null) }
     window.addEventListener('keydown', onEsc)
     window.addEventListener('resize', close)
-    return () => { window.removeEventListener('keydown', onEsc); window.removeEventListener('resize', close) }
+    // capture-phase: the menu is position:fixed, so any scroll underneath (the
+    // sidebar list is an inner scroller) would visually detach it from its row
+    window.addEventListener('scroll', close, true)
+    return () => {
+      window.removeEventListener('keydown', onEsc)
+      window.removeEventListener('resize', close)
+      window.removeEventListener('scroll', close, true)
+    }
   }, [menu])
 
   const toggleSidebar = () =>
@@ -200,15 +220,15 @@ export default function Sidebar({ sessions, hidden, activeSessionId, onResume, o
         <>
           <div style={{ position: 'fixed', inset: 0, zIndex: 59 }} onClick={() => setMenu(null)} onContextMenu={(e) => { e.preventDefault(); setMenu(null) }} />
           <div style={{ ...S.menu, left: Math.min(menu.x, window.innerWidth - 200), top: Math.min(menu.y, window.innerHeight - 140) }}>
-            <button style={S.menuItem} onClick={() => { onToggleStar(menu.s); setMenu(null) }}>
+            <button style={S.menuItem} {...menuHover} onClick={() => { onToggleStar(menu.s); setMenu(null) }}>
               {menu.s.starred ? 'Unstar' : 'Star'}
             </button>
             {hiddenSet.has(menu.s.session_id) ? (
-              <button style={S.menuItem} onClick={() => { onHide(menu.s.session_id, false); setMenu(null) }}>Unhide</button>
+              <button style={S.menuItem} {...menuHover} onClick={() => { onHide(menu.s.session_id, false); setMenu(null) }}>Unhide</button>
             ) : (
-              <button style={S.menuItem} onClick={() => { onHide(menu.s.session_id, true); setMenu(null) }}>Hide from Drydock</button>
+              <button style={S.menuItem} {...menuHover} onClick={() => { onHide(menu.s.session_id, true); setMenu(null) }}>Hide from Drydock</button>
             )}
-            <button style={{ ...S.menuItem, color: '#e8907a' }} onClick={() => { setConfirmDel(menu.s); setMenu(null) }}>
+            <button style={{ ...S.menuItem, color: '#e8907a' }} {...menuHover} onClick={() => { setConfirmDel(menu.s); setMenu(null) }}>
               Delete permanently…
             </button>
           </div>
@@ -223,7 +243,12 @@ export default function Sidebar({ sessions, hidden, activeSessionId, onResume, o
               “{clip(sessionLabel(confirmDel), 48)}” — this deletes the transcript from <code>~/.claude</code>. It will no longer be resumable in Claude Code, and this can’t be undone.
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-              <button onClick={() => setConfirmDel(null)}>Cancel</button>
+              <button
+                style={{ background: '#1d2530', color: '#e8edf4', border: '1px solid #2c3647', borderRadius: 5, padding: '4px 12px', cursor: 'pointer', fontSize: 12 }}
+                onClick={() => setConfirmDel(null)}
+              >
+                Cancel
+              </button>
               <button
                 style={{ background: '#7a2e2e', color: '#fff', border: 'none', padding: '5px 12px', borderRadius: 5, cursor: 'pointer' }}
                 onClick={() => { onDelete(confirmDel.session_id); setConfirmDel(null) }}

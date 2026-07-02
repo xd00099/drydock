@@ -4,6 +4,14 @@
    in style-src voids 'unsafe-inline' — which would block React's runtime inline
    styles and xterm's dynamically-injected <style>. No inline <style> → no style
    nonce → 'unsafe-inline' (which the all-inline-styled UI needs) stays effective. */
+/* color-scheme drives everything the OS draws for us — scrollbars, native
+   buttons, <select> popup menus. Without it WKWebView assumes a LIGHT page and
+   paints white scrollbar tracks / Aqua controls over the dark UI (glaring with
+   "Show scroll bars: Always" or a plugged-in mouse). */
+:root {
+  color-scheme: dark;
+}
+
 html,
 body,
 #root {
@@ -11,4 +19,14 @@ body,
   padding: 0;
   height: 100%;
   background: #10141a;
+  /* the app is a fixed viewport-filling shell: any accidental overflow (e.g. a
+     panel wider than the window) must clip, not pan/rubber-band the document */
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* Breathing room inside terminals, matching the transcript's inset. FitAddon
+   subtracts computed padding when sizing cols/rows, so the PTY stays correct. */
+.xterm {
+  padding: 4px 6px;
 }

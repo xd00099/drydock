@@ -19,6 +19,9 @@ export type FindDir = 'next' | 'prev'
 export type PaneSearch = {
   find: (query: string, opts: { dir: FindDir; incremental?: boolean }) => void
   clear: () => void
+  // hand keyboard focus back to the pane (e.g. when the FindBar closes, so a
+  // terminal session can be typed into immediately)
+  focus?: () => void
 }
 
 export type TimelineItem = { text: string; detail: string[]; in_progress: boolean }
@@ -110,10 +113,17 @@ export function loadNum(key: string, fallback: number): number {
   return Number.isFinite(v) && v > 0 ? v : fallback
 }
 
-/** Clamp a side-panel width to sensible drag bounds. Upper bound is roomy so the
- *  Preview panel can auto-size to ~1/3 of the window for rendered artifacts. */
+/** Clamp a side-panel width to drag bounds that respect the live window: the cap
+ *  is roomy (≥900px, and ~1/3 of the window on very wide monitors so the
+ *  Artifacts panel's auto-size keeps its promise) but never lets the two side
+ *  panels jointly starve the main column below ~240px — persisted widths from a
+ *  big monitor would otherwise overflow a smaller window (the main column is the
+ *  only flex child that can shrink, so it collapses to 0 and the chrome spills
+ *  past the viewport). Callers re-clamp on window resize. */
 export function clampPanelWidth(w: number): number {
-  return Math.max(180, Math.min(900, w))
+  const iw = window.innerWidth
+  const cap = Math.max(180, Math.min(Math.max(900, Math.round(iw / 3)), Math.floor((iw - 240) / 2)))
+  return Math.max(180, Math.min(cap, w))
 }
 
 /** Last path segment ("/Users/x/Desktop" → "Desktop", "~" → "~", "/" → "/"). */

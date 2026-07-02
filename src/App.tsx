@@ -34,8 +34,6 @@ export default function App() {
   const [unread, setUnread] = useState<Record<number, number>>({})
   // ⌘F find-in-session state; each pane registers a PaneSearch controller by id
   const paneSearch = useRef<Record<number, PaneSearch | null>>({})
-  // the in-place conversation overlay (a live Claude session's ⌘F target)
-  const overlaySearch = useRef<PaneSearch | null>(null)
   const [findOpen, setFindOpen] = useState(false)
   const [findQuery, setFindQuery] = useState('')
   const [findMatches, setFindMatches] = useState({ index: -1, count: 0 })
@@ -48,6 +46,11 @@ export default function App() {
   tabsRef.current = tabs
   const activeIdRef = useRef(activeId) // for the once-registered artifact listener
   activeIdRef.current = activeId
+  // for the once-registered keydown handler: shortcuts must respect open overlays
+  const quitGuardRef = useRef(quitGuard)
+  quitGuardRef.current = quitGuard
+  const paletteOpenRef = useRef(paletteOpen)
+  paletteOpenRef.current = paletteOpen
   const newShellRef = useRef(() => {})
   const closeActiveRef = useRef(() => {})
   const starActiveRef = useRef(() => {})
@@ -141,22 +144,18 @@ export default function App() {
     setActiveId((a) => (a === id ? (next.length ? next[next.length - 1].id : null) : a))
   }
 
-  // The active tab, and — while ⌘F is open over a live Claude session — the
-  // session id whose conversation the in-place overlay searches (see render).
   const activeTab = tabs.find((t) => t.id === activeId)
-  const overlaySession =
-    findOpen && activeTab?.kind === 'pty' && activeTab.sessionId ? activeTab.sessionId : null
 
-  // Find routes to that overlay for a live Claude session, else to the active
-  // pane itself (a shell's scrollback or an open transcript tab).
-  const activeSearch = () =>
-    overlaySession ? overlaySearch.current : activeId != null ? paneSearch.current[activeId] : null
+  // Find searches the active pane itself: a terminal's scrollback (live claude
+  // sessions and shells alike, via xterm's search addon) or an open transcript
+  // tab. Closing hands focus back to the pane so typing resumes immediately.
+  const activeSearch = () => (activeId != null ? paneSearch.current[activeId] : null)
   const findStep = (dir: 'next' | 'prev') => activeSearch()?.find(findQuery, { dir })
   const closeFind = () => {
     setFindOpen(false)
-    overlaySearch.current?.clear()
     Object.values(paneSearch.current).forEach((p) => p?.clear())
     setFindMatches({ index: -1, count: 0 })
+    activeSearch()?.focus?.()
   }
 
   newShellRef.current = () => newShell()
@@ -165,12 +164,10 @@ export default function App() {
     const s = activeTab?.sessionId ? sessions.find((x) => x.session_id === activeTab.sessionId) : undefined
     if (s) invoke('set_starred', { sessionId: s.session_id, starred: !s.starred }).then(refresh)
   }
-  // ⌘F: find within the active session. A Claude session runs as a fullscreen
-  // (alt-buffer) app, so its live terminal holds only the visible frame — the
-  // whole conversation lives in the indexed transcript. Rather than yank the user
-  // to a separate tab, we overlay that transcript in place over the live terminal
-  // (see the overlay in the render below); Esc returns to the live session, which
-  // never stopped running. Shell tabs and open transcript tabs search themselves.
+  // ⌘F: find within the active pane — the terminal's own scrollback for live
+  // claude sessions and shells, or an open transcript tab's text. (Searching a
+  // claude session's full indexed history is still available by opening its
+  // transcript from the sidebar or ⌘K.)
   openFindRef.current = () => {
     if (!tabs.length) return
     setFindOpen(true)
@@ -204,9 +201,23 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.isComposing) return // never act on keys mid-IME-composition
+      // While the quit-guard modal is up, keyboard shortcuts must not act on the
+      // tabs behind it (⌘W closing a hidden tab, ⌘T opening one). Esc cancels.
+      // preventDefault also keeps ⌘W from reaching the native File > Close
+      // Window accelerator via WKWebView's unhandled-key re-dispatch.
+      if (quitGuardRef.current) {
+        if (e.key === 'Escape') setQuitGuard(false)
+        if (e.metaKey && ['k', 'f', 't', 'w', 'd'].includes(e.key)) e.preventDefault()
+        return
+      }
+      // Same for the search palette (it handles its own Esc/arrows/Enter); ⌘K
+      // still toggles it closed.
+      if (paletteOpenRef.current && e.metaKey && ['f', 't', 'w', 'd'].includes(e.key)) {
+        e.preventDefault()
+        return
+      }
       if (e.metaKey && e.key === 'k') { e.preventDefault(); setPaletteOpen((v) => !v) }
-      // ⌘F: find within the active session (in-place conversation overlay for a
-      // live Claude session, else the terminal's own scrollback)
+      // ⌘F: find within the active pane (terminal scrollback or transcript text)
       if (e.metaKey && e.key === 'f') { e.preventDefault(); openFindRef.current() }
       if (e.metaKey && e.key === 't') { e.preventDefault(); newShellRef.current() }
       if (e.metaKey && e.key === 'w') { e.preventDefault(); closeActiveRef.current() }
@@ -276,11 +287,6 @@ export default function App() {
 
   return (
     <div style={{ display: 'flex', width: '100vw', height: '100vh', background: '#10141a' }}>
-      {claudeVersion === null && (
-        <div style={{ position: 'fixed', top: 0, left: 300, right: 0, background: '#5a3030', color: '#f0d0d0', padding: '4px 12px', fontFamily: 'system-ui', fontSize: 12, zIndex: 40 }}>
-          claude CLI not found in your login shell — resume/new sessions won't start. Install Claude Code or fix your PATH, then restart Drydock. Shell tabs still work.
-        </div>
-      )}
       <Sidebar
         sessions={sessions}
         hidden={hidden}
@@ -292,6 +298,13 @@ export default function App() {
         onDelete={(sessionId) => invoke('delete_session_permanently', { sessionId }).then(refresh)}
       />
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+        {/* In-flow (not fixed at a guessed sidebar offset): it always spans
+            exactly the main column at any sidebar width or collapse state. */}
+        {claudeVersion === null && (
+          <div style={{ background: '#5a3030', color: '#f0d0d0', padding: '4px 12px', fontFamily: 'system-ui', fontSize: 12 }}>
+            claude CLI not found in your login shell — resume/new sessions won't start. Install Claude Code or fix your PATH, then restart Drydock. Shell tabs still work.
+          </div>
+        )}
         <TabBar tabs={tabs} sessions={sessions} activeId={activeId} shellDirs={shellDirs} unread={unread} onSelect={setActiveId} onClose={closeTab} onNewShell={newShell} />
         <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
           {tabs.map((t) => (
@@ -327,20 +340,6 @@ export default function App() {
           {tabs.length === 0 && (
             <div style={{ color: '#5b6675', fontFamily: 'system-ui', fontSize: 13, padding: 24 }}>
               Pick a session on the left, or ＋ for a shell.
-            </div>
-          )}
-          {/* ⌘F on a live Claude session: overlay its full conversation in place
-              (terminal stays live underneath; Esc closes and returns to it). */}
-          {overlaySession && (
-            <div style={{ position: 'absolute', inset: 8, zIndex: 10, background: '#10141a' }}>
-              <TranscriptView
-                ref={(h) => { overlaySearch.current = h }}
-                overlay
-                sessionId={overlaySession}
-                session={sessions.find((x) => x.session_id === overlaySession)}
-                onMatches={(index, count) => setFindMatches({ index, count })}
-                onResumeHere={() => {}}
-              />
             </div>
           )}
           {findOpen && (
@@ -386,8 +385,18 @@ export default function App() {
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, transform: 'translateZ(0)' }}>
           <div style={{ background: '#161c25', color: '#e8edf4', padding: 20, borderRadius: 8, fontFamily: 'system-ui', fontSize: 13 }}>
             <div style={{ marginBottom: 12 }}>Sessions are still running in tabs. Quit anyway?</div>
-            <button onClick={() => invoke('force_quit')} style={{ marginRight: 8 }}>Quit anyway</button>
-            <button onClick={() => setQuitGuard(false)}>Cancel</button>
+            <button
+              style={{ background: '#7a2e2e', color: '#fff', border: 'none', padding: '5px 12px', borderRadius: 5, cursor: 'pointer', fontSize: 12, marginRight: 8 }}
+              onClick={() => invoke('force_quit')}
+            >
+              Quit anyway
+            </button>
+            <button
+              style={{ background: '#1d2530', color: '#e8edf4', border: '1px solid #2c3647', borderRadius: 5, padding: '4px 12px', cursor: 'pointer', fontSize: 12 }}
+              onClick={() => setQuitGuard(false)}
+            >
+              Cancel
+            </button>
           </div>
         </div>
       )}

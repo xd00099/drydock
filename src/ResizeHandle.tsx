@@ -12,6 +12,9 @@ type Props = {
 export default function ResizeHandle({ onDelta, onEnd }: Props) {
   const [hover, setHover] = useState(false)
   const start = (e: React.MouseEvent) => {
+    // Only a left-button drag: a right/middle press never delivers the matching
+    // left-button mouseup, which would leave the shield up and freeze the UI.
+    if (e.button !== 0) return
     e.preventDefault()
     let lastX = e.clientX
     let pending = 0
@@ -37,6 +40,7 @@ export default function ResizeHandle({ onDelta, onEnd }: Props) {
     const up = () => {
       window.removeEventListener('mousemove', move)
       window.removeEventListener('mouseup', up)
+      window.removeEventListener('blur', up)
       if (raf) cancelAnimationFrame(raf)
       if (pending !== 0) { onDelta(pending); pending = 0 } // apply the final delta
       shield.remove()
@@ -47,6 +51,9 @@ export default function ResizeHandle({ onDelta, onEnd }: Props) {
     }
     window.addEventListener('mousemove', move)
     window.addEventListener('mouseup', up)
+    // losing the window mid-drag (⌘Tab, screenshot) swallows the mouseup — end
+    // the drag on blur so the shield can never stick
+    window.addEventListener('blur', up)
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
   }

@@ -11,7 +11,6 @@ type Props = {
   onResumeHere: () => void
   onInteract?: () => void // scrolling/clicking the transcript body
   onMatches?: (index: number, count: number) => void // ⌘F find results (active match, total)
-  overlay?: boolean // rendered as an in-place ⌘F overlay over a live session (no resume affordance)
 }
 
 type Match = { ci: number; start: number; len: number }
@@ -35,12 +34,18 @@ function computeMatches(chunks: ChunkView[], q: string): Match[] {
 }
 
 const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
-  { sessionId, session, onResumeHere, onInteract, onMatches, overlay },
+  { sessionId, session, onResumeHere, onInteract, onMatches },
   ref,
 ) {
   const [chunks, setChunks] = useState<ChunkView[]>([])
   const [hl, setHl] = useState<{ q: string; active: number }>({ q: '', active: -1 })
   const bottomRef = useRef<HTMLDivElement>(null)
+  const scrollerRef = useRef<HTMLDivElement>(null)
+  // Follow the tail only while the user is AT the tail. Chunks refresh on every
+  // index-updated tick (a live session emits them constantly), and an
+  // unconditional scroll-to-bottom would yank the reader away mid-scroll.
+  // Starts true so the first load lands at the latest message.
+  const pinnedRef = useRef(true)
   const activeMarkRef = useRef<HTMLElement | null>(null)
   const chunksRef = useRef(chunks)
   chunksRef.current = chunks
@@ -61,7 +66,7 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
     return () => { cancelled = true; un?.() }
   }, [refresh])
 
-  useEffect(() => { bottomRef.current?.scrollIntoView() }, [chunks])
+  useEffect(() => { if (pinnedRef.current) bottomRef.current?.scrollIntoView() }, [chunks])
 
   useImperativeHandle(ref, (): PaneSearch => ({
     find(query, { dir, incremental }) {
@@ -136,21 +141,34 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
   const live = session && session.live_status !== 'ended'
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', color: '#c8cdd5', fontFamily: 'system-ui', fontSize: 13 }}>
-      {overlay ? (
-        <div style={{ padding: '6px 10px', background: '#161c25', display: 'flex', alignItems: 'center', gap: 10, fontSize: 12 }}>
-          <span style={{ color: '#7d8794' }}>⌕ Searching this conversation — press Esc to return to the live session</span>
-        </div>
-      ) : (
-        <div style={{ padding: '6px 10px', background: '#161c25', display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span>
-            {live
-              ? `running in another terminal (${session?.live_status}) — read-only live view`
-              : 'session ended'}
-          </span>
-          {!live && <button onClick={onResumeHere}>Resume here</button>}
-        </div>
-      )}
-      <div onWheel={onInteract} onMouseDown={onInteract} style={{ flex: 1, overflowY: 'auto', padding: 12, whiteSpace: 'pre-wrap', fontFamily: 'Menlo, monospace', fontSize: 12 }}>
+      <div style={{ padding: '6px 10px', background: '#161c25', display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span>
+          {live
+            ? `running in another terminal (${session?.live_status}) — read-only live view`
+            : 'session ended'}
+        </span>
+        {!live && (
+          <button
+            style={{ background: '#1d2530', color: '#e8edf4', border: '1px solid #2c3647', borderRadius: 5, padding: '4px 12px', cursor: 'pointer', fontSize: 12 }}
+            onClick={onResumeHere}
+          >
+            Resume here
+          </button>
+        )}
+      </div>
+      <div
+        ref={scrollerRef}
+        onWheel={onInteract}
+        onMouseDown={onInteract}
+        onScroll={() => {
+          const el = scrollerRef.current
+          if (el) pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+        }}
+        // overflowWrap: pre-wrap alone can't break unbroken runs (URLs, hashes,
+        // minified code — common in transcripts), which would force a horizontal
+        // scrollbar on the whole view
+        style={{ flex: 1, overflowY: 'auto', padding: 12, whiteSpace: 'pre-wrap', overflowWrap: 'break-word', fontFamily: 'Menlo, monospace', fontSize: 12 }}
+      >
         {chunks.map((c, i) => (
           <div key={i} style={{ marginBottom: 10, color: c.role === 'recap' ? '#e8c35a' : c.role === 'user' ? '#8ab4f8' : '#c8cdd5' }}>
             {renderText(c.text, byChunk.get(i))}
