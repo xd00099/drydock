@@ -16,9 +16,18 @@ function Spinner({ size = 11, color = '#8ab4f8' }: { size?: number; color?: stri
   )
 }
 
-// Status glyph for a session: spinner when busy, a steady green dot when idle
-// (open in a terminal but not actively working), nothing once ended.
+// Status glyph for a session: pulsing amber when it's waiting on the user,
+// spinner when busy, a steady green dot when idle (open in a terminal but not
+// actively working), nothing once ended.
 export default function LiveIndicator({ status }: { status: SessionView['live_status'] | null }) {
+  if (status === 'needs_input')
+    return (
+      <span
+        className="dd-attn"
+        title="waiting for your input"
+        style={{ flexShrink: 0, width: 8, height: 8, borderRadius: '50%', background: '#e8a33d', display: 'inline-block', verticalAlign: 'middle' }}
+      />
+    )
   if (status === 'busy') return <Spinner />
   if (status === 'idle')
     return (

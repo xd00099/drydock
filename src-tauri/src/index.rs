@@ -16,7 +16,12 @@ pub struct SessionView {
     pub last_message_at: Option<i64>,
     pub starred: bool,
     pub hidden: bool,
+    /// busy | idle | needs_input | ended (needs_input joined from the
+    /// attention state over the radar's busy/idle).
     pub live_status: String,
+    /// What the session asked for while waiting ("Claude needs your
+    /// permission to use Bash"); only set with live_status == needs_input.
+    pub attention: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -200,24 +205,33 @@ pub fn session_chunks(db: State<'_, AppDb>, session_id: String) -> Result<Vec<Ch
 }
 
 #[tauri::command]
-pub fn sessions_snapshot(db: State<'_, AppDb>) -> Result<Snapshot, String> {
+pub fn sessions_snapshot(
+    db: State<'_, AppDb>,
+    attention: State<'_, crate::attention::AttentionState>,
+) -> Result<Snapshot, String> {
     let store = db.0.lock().unwrap();
     let summaries: std::collections::HashMap<String, String> =
         store.card_summaries().map_err(|e| e.to_string())?.into_iter().collect();
+    // a hook-marked session that has since ENDED must not show as waiting
+    let waiting = attention.snapshot();
     let sessions = store
         .list_sessions()
         .map_err(|e| e.to_string())?
         .into_iter()
-        .map(|r| SessionView {
-            summary: summaries.get(&r.session_id).cloned(),
-            session_id: r.session_id,
-            project_path: r.project_path,
-            title: r.title,
-            latest_recap: r.latest_recap,
-            last_message_at: r.last_message_at,
-            starred: r.starred,
-            hidden: r.hidden,
-            live_status: r.live_status,
+        .map(|r| {
+            let attn = waiting.get(&r.session_id).filter(|_| r.live_status != "ended");
+            SessionView {
+                summary: summaries.get(&r.session_id).cloned(),
+                live_status: if attn.is_some() { "needs_input".to_string() } else { r.live_status },
+                attention: attn.map(|w| w.message.clone()),
+                session_id: r.session_id,
+                project_path: r.project_path,
+                title: r.title,
+                latest_recap: r.latest_recap,
+                last_message_at: r.last_message_at,
+                starred: r.starred,
+                hidden: r.hidden,
+            }
         })
         .collect();
     let hidden = store.hidden_session_ids().map_err(|e| e.to_string())?;

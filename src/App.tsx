@@ -46,6 +46,8 @@ export default function App() {
   tabsRef.current = tabs
   const activeIdRef = useRef(activeId) // for the once-registered artifact listener
   activeIdRef.current = activeId
+  const sessionsRef = useRef(sessions) // for once-registered attention/focus listeners
+  sessionsRef.current = sessions
   // for the once-registered keydown handler: shortcuts must respect open overlays
   const quitGuardRef = useRef(quitGuard)
   quitGuardRef.current = quitGuard
@@ -260,6 +262,44 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [findOpen, findQuery, activeId])
 
+  // A session hit a permission prompt / went idle waiting (needs_input), or
+  // finished its turn (done). Turn it into an OS notification unless the user
+  // is already looking at that very tab (needs_input) / at Drydock (done) —
+  // the sidebar/tab amber dots and dock badge come via index-updated instead.
+  useEffect(() => {
+    let cancelled = false
+    let un: UnlistenFn | null = null
+    listen<{ session_id: string; pty_id: number; state: string; message: string }>('session-attention', (e) => {
+      const p = e.payload
+      const s = sessionsRef.current.find((x) => x.session_id === p.session_id)
+      const label = clip(s ? sessionLabel(s) : 'Claude session', 60)
+      if (p.state === 'needs_input') {
+        if (document.hasFocus() && activeIdRef.current === p.pty_id) return
+        invoke('notify_user', { title: label, body: p.message || 'Claude needs your input' }).catch(() => {})
+      } else if (p.state === 'done') {
+        if (document.hasFocus()) return
+        invoke('notify_user', { title: label, body: 'Finished — ready for you' }).catch(() => {})
+      }
+    }).then((u) => { if (cancelled) u(); else un = u })
+    return () => { cancelled = true; un?.() }
+  }, [])
+
+  // Menu-bar "jump to session" (attention tray): focus its tab if open here,
+  // else open it like a sidebar click.
+  const focusSessionRef = useRef((_sid: string) => {})
+  focusSessionRef.current = (sid: string) => {
+    const t = tabs.find((x) => x.sessionId === sid && !x.exited) ?? tabs.find((x) => x.sessionId === sid)
+    if (t) { setActiveId(t.id); return }
+    const s = sessions.find((x) => x.session_id === sid)
+    if (s) resume(s, { permanent: true })
+  }
+  useEffect(() => {
+    let cancelled = false
+    let un: UnlistenFn | null = null
+    listen<string>('focus-session', (e) => focusSessionRef.current(e.payload)).then((u) => { if (cancelled) u(); else un = u })
+    return () => { cancelled = true; un?.() }
+  }, [])
+
   // A session rendered an artifact (via the loopback MCP server): file it under
   // its tab id for the Preview panel, and badge the tab if it's not in focus.
   useEffect(() => {
@@ -316,6 +356,7 @@ export default function App() {
                   program={t.program}
                   args={t.args}
                   cwd={t.cwd}
+                  sessionId={t.sessionId}
                   visible={t.id === activeId}
                   onExit={() => markExited(t.id)}
                   onInteract={() => promote(t.id)}

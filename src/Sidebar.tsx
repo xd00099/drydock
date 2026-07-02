@@ -68,6 +68,7 @@ const menuHover = {
 
 // The strongest live status across a (collapsed) group's sessions.
 function groupStatus(list: SessionView[]): SessionView['live_status'] | null {
+  if (list.some((s) => s.live_status === 'needs_input')) return 'needs_input'
   if (list.some((s) => s.live_status === 'busy')) return 'busy'
   if (list.some((s) => s.live_status === 'idle')) return 'idle'
   return null
@@ -142,7 +143,7 @@ export default function Sidebar({ sessions, hidden, activeSessionId, onResume, o
         style={{ ...S.row, opacity: isHidden ? 0.45 : 1, borderLeftColor: sessionColor(s.session_id), background: sessionColor(s.session_id, isActive ? 0.3 : 0.1) }}
         onClick={() => onResume(s)}
         onContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, s }) }}
-        title={`${s.title}\n${s.session_id}\n(right-click for options)`}
+        title={`${s.attention ? `⚠ ${s.attention}\n` : ''}${s.title}\n${s.session_id}\n(right-click for options)`}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
           <LiveIndicator status={s.live_status} />

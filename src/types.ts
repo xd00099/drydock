@@ -7,7 +7,10 @@ export type SessionView = {
   last_message_at: number | null
   starred: boolean
   hidden: boolean
-  live_status: 'busy' | 'idle' | 'ended'
+  live_status: 'busy' | 'idle' | 'needs_input' | 'ended'
+  // what the session asked for while waiting (hook message); only set when
+  // live_status === 'needs_input'
+  attention: string | null
 }
 
 export type Snapshot = { sessions: SessionView[]; hidden: string[] }

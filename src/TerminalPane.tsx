@@ -13,6 +13,7 @@ type Props = {
   program: string | null
   args: string[]
   cwd: string | null
+  sessionId?: string // the claude session id pinned at launch (hooks/artifacts key)
   visible: boolean
   onExit: () => void
   onInteract?: () => void // any user input into the terminal
@@ -128,7 +129,7 @@ function termMatchInfo(term: Terminal, q: string): TermMatchInfo {
 }
 
 const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
-  { id, program, args, cwd, visible, onExit, onInteract, onMatches },
+  { id, program, args, cwd, sessionId, visible, onExit, onInteract, onMatches },
   ref,
 ) {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -312,7 +313,7 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
         onExitRef.current()
       })
       if (disposed) { unExit(); return }
-      await invoke('pty_spawn', { id, program, args, cwd, cols: term.cols, rows: term.rows })
+      await invoke('pty_spawn', { id, program, args, cwd, sessionId: sessionId ?? null, cols: term.cols, rows: term.rows })
       readyRef.current = true
       if (disposed) invoke('pty_kill', { id })
     })().catch((err) => {

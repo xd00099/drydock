@@ -77,9 +77,19 @@ font-src data: https://fonts.gstatic.com https://cdn.jsdelivr.net https://cdnjs.
 worker-src blob:; \
 connect-src 'none'; frame-src 'none'; child-src blob:; object-src 'none'; base-uri 'none'; form-action 'none'";
 
-/// Per-session render token → (owning pty tab id, that session's working
-/// directory). The cwd resolves relative `path` arguments to render_artifact.
-type Tokens = Arc<Mutex<HashMap<String, (u32, Option<PathBuf>)>>>;
+/// What a per-session bearer token resolves to: the owning pty tab, that
+/// session's working directory (resolves relative `path` args to
+/// render_artifact), and the session id pinned at spawn (a fallback for hook
+/// deliveries whose body carries none).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TokenInfo {
+    pub pty_id: u32,
+    pub cwd: Option<PathBuf>,
+    pub session_id: Option<String>,
+}
+
+/// Per-session render/hook token → its resolution.
+type Tokens = Arc<Mutex<HashMap<String, TokenInfo>>>;
 
 /// One rendered artifact, retained so the user can re-fetch (HTML over the
 /// `artifact://` scheme), download, or reveal it in Finder. `seq` is the
@@ -159,18 +169,19 @@ impl ArtifactServer {
     }
 
     /// Mint a token for a tab id (call once per claude spawn). `cwd` is the
-    /// session's working directory, used to resolve relative artifact paths. The
-    /// token goes in the injected --mcp-config Authorization header; never a cmdline.
-    pub fn mint(&self, pty_id: u32, cwd: Option<PathBuf>) -> String {
+    /// session's working directory, used to resolve relative artifact paths;
+    /// `session_id` is the id pinned at spawn. The token travels in the injected
+    /// --mcp-config / hook-command Authorization header; never a cmdline arg.
+    pub fn mint(&self, pty_id: u32, cwd: Option<PathBuf>, session_id: Option<String>) -> String {
         let token = random_token();
-        self.tokens.lock().unwrap().insert(token.clone(), (pty_id, cwd));
+        self.tokens.lock().unwrap().insert(token.clone(), TokenInfo { pty_id, cwd, session_id });
         token
     }
 
     /// Drop every token AND stored artifact for a tab id (on pty exit) — an
     /// ended session keeps nothing in memory.
     pub fn release(&self, pty_id: u32) {
-        self.tokens.lock().unwrap().retain(|_, v| v.0 != pty_id);
+        self.tokens.lock().unwrap().retain(|_, v| v.pty_id != pty_id);
         self.store.lock().unwrap().retain(|_, s| s.pty_id != pty_id);
     }
 
@@ -232,7 +243,7 @@ fn handle_conn(
             "OPTIONS" => Some(204),
             "DELETE" => Some(204),               // session teardown (we are stateless)
             "GET" => Some(405),                  // no server-initiated SSE stream
-            "POST" if req.path.starts_with("/mcp") => None,
+            "POST" if req.path.starts_with("/mcp") || req.path.starts_with("/hook") => None,
             _ => Some(404),
         };
         if let Some(code) = status_only {
@@ -240,15 +251,23 @@ fn handle_conn(
             if keep_alive { continue } else { return Ok(()) }
         }
 
-        // Auth: resolve the bearer token to the owning tab id (+ its cwd).
+        // Auth: resolve the bearer token to its session info.
         let resolved = {
             let map = tokens.lock().unwrap();
             resolve_token(header(&req, "authorization"), &map)
         };
-        let Some((pty_id, cwd)) = resolved else {
+        let Some(TokenInfo { pty_id, cwd, session_id }) = resolved else {
             write_status(&mut stream, 401, keep_alive)?;
             if keep_alive { continue } else { return Ok(()) }
         };
+
+        // Hook delivery (Notification/Stop stdin JSON forwarded by the injected
+        // hook command): update the attention state, no body in the response.
+        if req.path.starts_with("/hook") {
+            crate::attention::handle_hook(app, pty_id, session_id.as_deref(), &req.body);
+            write_status(&mut stream, 204, keep_alive)?;
+            if keep_alive { continue } else { return Ok(()) }
+        }
 
         let routed = route(&req.body, cwd.as_deref());
         for e in &routed.emits {
@@ -383,7 +402,7 @@ fn parse_bearer(h: &str) -> Option<&str> {
         .map(str::trim)
 }
 
-fn resolve_token(auth: Option<&str>, tokens: &HashMap<String, (u32, Option<PathBuf>)>) -> Option<(u32, Option<PathBuf>)> {
+fn resolve_token(auth: Option<&str>, tokens: &HashMap<String, TokenInfo>) -> Option<TokenInfo> {
     let token = parse_bearer(auth?)?;
     tokens.get(token).cloned()
 }
@@ -737,8 +756,11 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
-    fn tokens(pairs: &[(&str, u32)]) -> HashMap<String, (u32, Option<PathBuf>)> {
-        pairs.iter().map(|(t, id)| (t.to_string(), (*id, None))).collect()
+    fn tokens(pairs: &[(&str, u32)]) -> HashMap<String, TokenInfo> {
+        pairs
+            .iter()
+            .map(|(t, id)| (t.to_string(), TokenInfo { pty_id: *id, cwd: None, session_id: None }))
+            .collect()
     }
 
     #[test]
@@ -751,7 +773,7 @@ mod tests {
     #[test]
     fn resolve_token_matches_only_known_tokens() {
         let map = tokens(&[("good", 5)]);
-        assert_eq!(resolve_token(Some("Bearer good"), &map), Some((5, None)));
+        assert_eq!(resolve_token(Some("Bearer good"), &map).map(|i| i.pty_id), Some(5));
         assert_eq!(resolve_token(Some("Bearer bad"), &map), None);
         assert_eq!(resolve_token(None, &map), None);
     }
