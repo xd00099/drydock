@@ -72,6 +72,11 @@ export type McpStatus = 'connected' | 'failed' | 'pending' | 'unknown'
 export type ArtifactKind = 'html' | 'svg' | 'markdown'
 export type Artifact = { id: string; title: string; kind: ArtifactKind; content: string; path?: string }
 
+// One artifact persisted to the on-disk per-session gallery (survives the
+// session and the app). `file` keys read/serve/download; `seq` was its live id
+// at render time, so the gallery dedups against the in-memory list.
+export type SavedArtifact = { file: string; title: string; kind: string; created_ms: number; seq: number; path: string | null }
+
 /** Display label for a session: AI summary when present, else its raw title. */
 export function sessionLabel(s: SessionView): string {
   return s.summary && s.summary.trim() ? s.summary : s.title

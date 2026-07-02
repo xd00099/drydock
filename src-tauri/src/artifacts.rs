@@ -56,6 +56,10 @@ const MAX_CONTENT: usize = 4 * 1024 * 1024;
 /// the frontend's per-tab cap). Older ones are evicted by arrival order.
 const MAX_ARTIFACTS_PER_PTY: usize = 20;
 
+/// Artifacts persisted to disk per session (the Artifacts tab's gallery).
+/// Oldest content+meta pairs are pruned past this.
+const MAX_SAVED_PER_SESSION: usize = 50;
+
 /// Minimal dark-theme wrapper for an HTML *fragment* (a full document keeps its
 /// own head/styles). Kept small and inline so a fragment still reads on the dark
 /// panel; full pages style themselves.
@@ -123,12 +127,16 @@ struct ArtifactEvent {
     path: Option<String>,
 }
 
-/// Managed Tauri state: the ephemeral port + the live token map. `pty_spawn`
-/// mints a token per claude tab; the serve thread resolves tokens to tab ids.
+/// Managed Tauri state: the ephemeral port, the live token map, and the disk
+/// gallery root. `pty_spawn` mints a token per claude tab; the serve thread
+/// resolves tokens to tab ids.
 pub struct ArtifactServer {
     pub port: u16,
     tokens: Tokens,
     store: Store,
+    /// Root of the persisted gallery: `<dir>/<session_id>/<ms>-<seq>.<ext>`
+    /// plus a `.meta.json` sidecar per artifact.
+    dir: PathBuf,
 }
 
 impl ArtifactServer {
@@ -137,22 +145,57 @@ impl ArtifactServer {
     /// tokens are minted (every request 401s). Whether new sessions get the tool
     /// is decided at spawn time from settings (`artifacts_enabled`), which lets
     /// the user toggle it at runtime without restarting the listener.
-    pub fn start(app: AppHandle) -> std::io::Result<Self> {
+    pub fn start(app: AppHandle, dir: PathBuf) -> std::io::Result<Self> {
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         let port = listener.local_addr()?.port();
         let tokens: Tokens = Arc::new(Mutex::new(HashMap::new()));
         let store: Store = Arc::new(Mutex::new(HashMap::new()));
         let t = Arc::clone(&tokens);
         let s = Arc::clone(&store);
-        std::thread::spawn(move || serve(listener, t, s, app));
-        Ok(Self { port, tokens, store })
+        let d = dir.clone();
+        std::thread::spawn(move || serve(listener, t, s, app, d));
+        Ok(Self { port, tokens, store, dir })
     }
 
-    /// Stored HTML for an artifact id, for the `artifact://` scheme handler.
-    /// Only HTML is served this way; other kinds return None.
+    /// HTML for an artifact id, for the `artifact://` scheme handler. Live ids
+    /// are the in-memory counter; `saved/<session>/<file>` ids read the disk
+    /// gallery (components strictly validated — no traversal). Only HTML is
+    /// served this way; other kinds return None.
     pub fn lookup_html(&self, id: &str) -> Option<String> {
+        if let Some(rest) = id.strip_prefix("saved/") {
+            let (sid, file) = rest.split_once('/')?;
+            if !valid_session_component(sid) || !valid_saved_file(file) || !file.ends_with(".html") {
+                return None;
+            }
+            return std::fs::read_to_string(self.dir.join(sid).join(file)).ok();
+        }
         let m = self.store.lock().unwrap();
         m.get(id).filter(|s| s.kind == "html").map(|s| s.content.clone())
+    }
+
+    /// The persisted gallery for a session, oldest first.
+    pub fn list_saved(&self, session_id: &str) -> Vec<SavedArtifact> {
+        list_saved_in(&self.dir, session_id)
+    }
+
+    /// Raw content of one persisted artifact (frontend renders svg/markdown
+    /// through the sanitized srcdoc path).
+    pub fn read_saved(&self, session_id: &str, file: &str) -> Option<String> {
+        if !valid_session_component(session_id) || !valid_saved_file(file) {
+            return None;
+        }
+        std::fs::read_to_string(self.dir.join(session_id).join(file)).ok()
+    }
+
+    /// Download name + bytes for a persisted artifact (mirrors artifact_download).
+    pub fn saved_download(&self, session_id: &str, file: &str) -> Option<(String, Vec<u8>)> {
+        let content = self.read_saved(session_id, file)?;
+        let meta = self
+            .list_saved(session_id)
+            .into_iter()
+            .find(|s| s.file == file)?;
+        let source = meta.path.as_deref().map(Path::new);
+        Some((download_filename(&meta.title, &meta.kind, source), content.into_bytes()))
     }
 
     /// On-disk source path for an artifact, when it was rendered from a file
@@ -199,7 +242,7 @@ fn random_token() -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
 }
 
-fn serve(listener: TcpListener, tokens: Tokens, store: Store, app: AppHandle) {
+fn serve(listener: TcpListener, tokens: Tokens, store: Store, app: AppHandle, dir: PathBuf) {
     let counter = Arc::new(AtomicU64::new(1));
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
@@ -207,8 +250,9 @@ fn serve(listener: TcpListener, tokens: Tokens, store: Store, app: AppHandle) {
         let store = Arc::clone(&store);
         let app = app.clone();
         let counter = Arc::clone(&counter);
+        let dir = dir.clone();
         std::thread::spawn(move || {
-            let _ = handle_conn(stream, &tokens, &store, &app, &counter);
+            let _ = handle_conn(stream, &tokens, &store, &app, &counter, &dir);
         });
     }
 }
@@ -219,6 +263,7 @@ fn handle_conn(
     store: &Store,
     app: &AppHandle,
     counter: &AtomicU64,
+    dir: &Path,
 ) -> std::io::Result<()> {
     // Idle keep-alive connections must not pin a thread forever.
     stream.set_read_timeout(Some(Duration::from_secs(120))).ok();
@@ -276,6 +321,11 @@ fn handle_conn(
             // Retain every artifact so Download / Reveal-in-Finder work for all
             // kinds and HTML can be re-fetched over the artifact:// scheme.
             store_insert(store, &id, pty_id, seq, &e.kind, &e.title, &e.content, e.path.clone());
+            // ...and persist it to the session's on-disk gallery, so it survives
+            // the session and the app (the Artifacts tab lists these as "saved").
+            if let Some(sid) = &session_id {
+                persist_artifact(dir, sid, seq, &e.kind, &e.title, &e.content, e.path.as_deref());
+            }
             // HTML runs its own JS, so it loads from the isolated artifact://
             // origin via an <iframe src> — send NO inline content on the event.
             // SVG/Markdown need no scripting; they ride the payload and render
@@ -651,6 +701,132 @@ fn store_insert(store: &Store, id: &str, pty_id: u32, seq: u64, kind: &str, titl
             m.remove(k);
         }
     }
+}
+
+// ---- on-disk gallery ----------------------------------------------------------
+
+/// One persisted artifact, as listed to the frontend gallery. `file` is the
+/// content file name (the key for read/serve/download); `seq` was the artifact's
+/// in-memory id at render time, so the gallery can dedup against the live list.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SavedArtifact {
+    pub file: String,
+    pub title: String,
+    pub kind: String,
+    pub created_ms: i64,
+    pub seq: u64,
+    /// Original on-disk source when rendered from a `path` (enables Reveal).
+    pub path: Option<String>,
+}
+
+/// A session id is used as a directory component: require uuid-ish characters
+/// only, so a hostile value can't traverse ("../", absolute paths, hidden dirs).
+fn valid_session_component(sid: &str) -> bool {
+    !sid.is_empty()
+        && sid.len() <= 64
+        && !sid.starts_with('.')
+        && sid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// A gallery content file is strictly `<ms>-<seq>.<html|svg|md>` — anything
+/// else (paths, dotfiles, meta sidecars) is refused.
+fn valid_saved_file(name: &str) -> bool {
+    let Some((stem, ext)) = name.rsplit_once('.') else { return false };
+    if !matches!(ext, "html" | "svg" | "md") {
+        return false;
+    }
+    let Some((ms, seq)) = stem.split_once('-') else { return false };
+    !ms.is_empty()
+        && !seq.is_empty()
+        && ms.chars().all(|c| c.is_ascii_digit())
+        && seq.chars().all(|c| c.is_ascii_digit())
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Write one artifact (content + meta sidecar) into the session's gallery dir,
+/// then prune the oldest past the per-session cap. Best-effort: a failed write
+/// only loses persistence, never the render.
+fn persist_artifact(dir: &Path, session_id: &str, seq: u64, kind: &str, title: &str, content: &str, source: Option<&Path>) {
+    if !valid_session_component(session_id) {
+        return;
+    }
+    let d = dir.join(session_id);
+    if std::fs::create_dir_all(&d).is_err() {
+        return;
+    }
+    let stem = format!("{}-{seq}", now_ms());
+    let file = format!("{stem}.{}", ext_for_kind(kind));
+    if std::fs::write(d.join(&file), content).is_err() {
+        return;
+    }
+    let meta = serde_json::json!({
+        "title": title,
+        "kind": kind,
+        "created_ms": now_ms(),
+        "seq": seq,
+        "path": source.map(|p| p.display().to_string()),
+    });
+    let _ = std::fs::write(d.join(format!("{stem}.meta.json")), meta.to_string());
+    prune_saved(&d);
+}
+
+/// Keep only the newest MAX_SAVED_PER_SESSION artifacts (stems sort by their
+/// millisecond prefix, zero-padding not needed at 13 digits until year 2286).
+fn prune_saved(session_dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(session_dir) else { return };
+    let mut stems: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            name.strip_suffix(".meta.json").map(String::from)
+        })
+        .collect();
+    if stems.len() <= MAX_SAVED_PER_SESSION {
+        return;
+    }
+    stems.sort();
+    for stem in stems.iter().take(stems.len() - MAX_SAVED_PER_SESSION) {
+        for ext in ["meta.json", "html", "svg", "md"] {
+            let _ = std::fs::remove_file(session_dir.join(format!("{stem}.{ext}")));
+        }
+    }
+}
+
+fn list_saved_in(dir: &Path, session_id: &str) -> Vec<SavedArtifact> {
+    if !valid_session_component(session_id) {
+        return Vec::new();
+    }
+    let d = dir.join(session_id);
+    let Ok(entries) = std::fs::read_dir(&d) else { return Vec::new() };
+    let mut out: Vec<SavedArtifact> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            let stem = name.strip_suffix(".meta.json")?;
+            let meta: Value = serde_json::from_str(&std::fs::read_to_string(e.path()).ok()?).ok()?;
+            let kind = meta.get("kind").and_then(Value::as_str)?.to_string();
+            let file = format!("{stem}.{}", ext_for_kind(&kind));
+            if !d.join(&file).is_file() {
+                return None; // meta without content (partial prune/write)
+            }
+            Some(SavedArtifact {
+                file,
+                title: meta.get("title").and_then(Value::as_str).unwrap_or("Untitled").to_string(),
+                kind,
+                created_ms: meta.get("created_ms").and_then(Value::as_i64).unwrap_or(0),
+                seq: meta.get("seq").and_then(Value::as_u64).unwrap_or(0),
+                path: meta.get("path").and_then(Value::as_str).map(String::from),
+            })
+        })
+        .collect();
+    out.sort_by_key(|s| (s.created_ms, s.seq));
+    out
 }
 
 /// Default file extension for an artifact kind.
@@ -1075,17 +1251,98 @@ mod tests {
         assert_eq!(sanitize_filename(""), "artifact");
     }
 
+    fn test_server(dir: PathBuf) -> ArtifactServer {
+        ArtifactServer { port: 0, tokens: Arc::new(Mutex::new(HashMap::new())), store: Arc::new(Mutex::new(HashMap::new())), dir }
+    }
+
     #[test]
     fn artifact_download_uses_stored_content_and_name() {
-        let store: Store = Arc::new(Mutex::new(HashMap::new()));
-        store_insert(&store, "9", 1, 9, "markdown", "Read Me", "# hi", None);
-        let srv = ArtifactServer { port: 0, tokens: Arc::new(Mutex::new(HashMap::new())), store };
+        let srv = test_server(std::env::temp_dir());
+        store_insert(&srv.store, "9", 1, 9, "markdown", "Read Me", "# hi", None);
         let (name, bytes) = srv.artifact_download("9").unwrap();
         assert_eq!(name, "Read Me.md");
         assert_eq!(bytes, b"# hi");
         assert!(srv.artifact_download("nope").is_none());
         // inline artifact has no source path → no Reveal in Finder
         assert!(srv.artifact_path("9").is_none());
+    }
+
+    #[test]
+    fn saved_component_validators_block_traversal() {
+        assert!(valid_session_component("44444444-4444-4444-4444-444444444444"));
+        assert!(!valid_session_component(".."));
+        assert!(!valid_session_component("a/b"));
+        assert!(!valid_session_component(".hidden"));
+        assert!(!valid_session_component(""));
+
+        assert!(valid_saved_file("1751300000000-3.html"));
+        assert!(valid_saved_file("1-1.svg"));
+        assert!(valid_saved_file("2-9.md"));
+        assert!(!valid_saved_file("1-1.meta.json"), "sidecars are not content");
+        assert!(!valid_saved_file("../../etc/passwd"));
+        assert!(!valid_saved_file("x-1.html"));
+        assert!(!valid_saved_file("1-1.js"));
+    }
+
+    #[test]
+    fn persist_list_read_and_serve_roundtrip() {
+        let tmp = std::env::temp_dir().join(format!("drydock-gallery-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let sid = "44444444-4444-4444-4444-444444444444";
+        persist_artifact(&tmp, sid, 3, "html", "Dash", "<h1>hi</h1>", Some(Path::new("/tmp/src/dash.html")));
+        persist_artifact(&tmp, sid, 4, "markdown", "Notes", "# n", None);
+
+        let listed = list_saved_in(&tmp, sid);
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].title, "Dash");
+        assert_eq!(listed[0].seq, 3);
+        assert_eq!(listed[0].path.as_deref(), Some("/tmp/src/dash.html"));
+        assert!(listed[0].file.ends_with(".html"));
+        assert_eq!(listed[1].kind, "markdown");
+        assert_eq!(listed[1].path, None);
+
+        let srv = test_server(tmp.clone());
+        // read + download go through validation
+        assert_eq!(srv.read_saved(sid, &listed[1].file).as_deref(), Some("# n"));
+        let (name, bytes) = srv.saved_download(sid, &listed[1].file).unwrap();
+        assert_eq!(name, "Notes.md");
+        assert_eq!(bytes, b"# n");
+        // html serves over artifact://saved/<sid>/<file>; markdown does not
+        assert_eq!(srv.lookup_html(&format!("saved/{sid}/{}", listed[0].file)).as_deref(), Some("<h1>hi</h1>"));
+        assert!(srv.lookup_html(&format!("saved/{sid}/{}", listed[1].file)).is_none());
+        // traversal / bogus components refused
+        assert!(srv.lookup_html("saved/../x.html").is_none());
+        assert!(srv.read_saved(sid, "../../secrets.html").is_none());
+        // unknown session → empty, not error
+        assert!(list_saved_in(&tmp, "55555555-5555-5555-5555-555555555555").is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn gallery_prunes_oldest_past_cap() {
+        let tmp = std::env::temp_dir().join(format!("drydock-prune-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let sid = "44444444-4444-4444-4444-444444444444";
+        // fabricate stems directly (persist_artifact uses wall-clock ms, which
+        // won't produce >cap distinct stems fast enough to matter here)
+        let d = tmp.join(sid);
+        std::fs::create_dir_all(&d).unwrap();
+        for i in 0..(MAX_SAVED_PER_SESSION + 5) {
+            let stem = format!("{:013}-{i}", 1_000_000_000_000u64 + i as u64);
+            std::fs::write(d.join(format!("{stem}.html")), "x").unwrap();
+            std::fs::write(
+                d.join(format!("{stem}.meta.json")),
+                format!(r#"{{"title":"t","kind":"html","created_ms":{},"seq":{i}}}"#, 1_000_000_000_000u64 + i as u64),
+            )
+            .unwrap();
+        }
+        prune_saved(&d);
+        let listed = list_saved_in(&tmp, sid);
+        assert_eq!(listed.len(), MAX_SAVED_PER_SESSION);
+        // the oldest 5 are gone, the newest survive
+        assert_eq!(listed[0].seq, 5);
+        assert_eq!(listed.last().unwrap().seq as usize, MAX_SAVED_PER_SESSION + 4);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

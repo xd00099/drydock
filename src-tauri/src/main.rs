@@ -318,6 +318,43 @@ fn save_artifact(id: String, app: AppHandle, artifacts: State<'_, artifacts::Art
     Ok(dest.display().to_string())
 }
 
+/// The persisted artifact gallery for a session (survives session + app).
+#[tauri::command]
+fn list_saved_artifacts(session_id: String, artifacts: State<'_, artifacts::ArtifactServer>) -> Vec<artifacts::SavedArtifact> {
+    artifacts.list_saved(&session_id)
+}
+
+/// Raw content of one persisted artifact (svg/markdown render through the
+/// frontend's sanitized srcdoc path; html is served over artifact:// instead).
+#[tauri::command]
+fn read_saved_artifact(session_id: String, file: String, artifacts: State<'_, artifacts::ArtifactServer>) -> Result<String, String> {
+    artifacts
+        .read_saved(&session_id, &file)
+        .ok_or_else(|| "saved artifact not found".to_string())
+}
+
+/// Write a persisted artifact to Downloads (deduped name) and reveal it.
+#[tauri::command]
+fn save_saved_artifact(
+    session_id: String,
+    file: String,
+    app: AppHandle,
+    artifacts: State<'_, artifacts::ArtifactServer>,
+) -> Result<String, String> {
+    use tauri::Manager;
+    let (filename, bytes) = artifacts
+        .saved_download(&session_id, &file)
+        .ok_or_else(|| "saved artifact not found".to_string())?;
+    let dir = app
+        .path()
+        .download_dir()
+        .map_err(|_| "couldn't find your Downloads folder".to_string())?;
+    let dest = unique_path(&dir, &filename);
+    std::fs::write(&dest, bytes).map_err(|e| format!("couldn't write the file: {e}"))?;
+    let _ = std::process::Command::new("open").arg("-R").arg(&dest).spawn();
+    Ok(dest.display().to_string())
+}
+
 /// Quit confirmed by the frontend: "Quit anyway" from the guard modal, or a
 /// ⌘Q that the frontend found no live tabs for. Terminate every running session
 /// first so quitting Drydock doesn't leave orphaned claude processes behind.
@@ -427,8 +464,9 @@ fn main() {
             let cfg = settings::Settings::load(&data);
             app.manage(PtyManager::with_env(cfg.env_pairs()));
             // Loopback MCP server for the Preview panel; pty_spawn injects a
-            // per-session --mcp-config pointing at it into claude tabs.
-            let artifact_server = artifacts::ArtifactServer::start(app.handle().clone())?;
+            // per-session --mcp-config pointing at it into claude tabs. Renders
+            // also persist into <data>/artifacts/<session>/ (the gallery).
+            let artifact_server = artifacts::ArtifactServer::start(app.handle().clone(), data.join("artifacts"))?;
             app.manage(artifact_server);
             // Live, mutable settings (artifact toggle + MCP deny-list). Read at
             // spawn time and written back by the MCP-panel toggles.
@@ -460,6 +498,9 @@ fn main() {
             set_mcp_enabled,
             reveal_artifact,
             save_artifact,
+            list_saved_artifacts,
+            read_saved_artifact,
+            save_saved_artifact,
             notify_user,
             force_quit,
             index::sessions_snapshot,
