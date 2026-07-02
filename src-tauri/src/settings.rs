@@ -39,6 +39,11 @@ pub struct Settings {
     /// tools simply aren't offered to NEW Drydock sessions (its config is left
     /// untouched — re-enable any time).
     pub mcp_disabled: Vec<String>,
+    /// Command that opens a file from the "Files changed" list, run via a login
+    /// shell (`<editor_cmd> '<path>'`) so PATH-installed CLIs resolve — e.g.
+    /// "code", "cursor", "subl". `None`/empty uses macOS `open`, which honors
+    /// the default app for that file type.
+    pub editor_cmd: Option<String>,
 }
 
 impl Default for Settings {
@@ -48,6 +53,7 @@ impl Default for Settings {
             claude_env: BTreeMap::new(),
             artifacts_enabled: true,
             mcp_disabled: Vec::new(),
+            editor_cmd: None,
         }
     }
 }
@@ -96,6 +102,10 @@ impl SettingsState {
 
     pub fn mcp_disabled(&self) -> Vec<String> {
         self.inner.lock().unwrap().mcp_disabled.clone()
+    }
+
+    pub fn editor_cmd(&self) -> Option<String> {
+        self.inner.lock().unwrap().editor_cmd.clone()
     }
 
     pub fn set_artifacts_enabled(&self, on: bool) -> std::io::Result<()> {
@@ -170,6 +180,16 @@ mod tests {
         assert!(Settings::default().mcp_disabled.is_empty());
         let s: Settings = serde_json::from_str(r#"{"mcp_disabled":["github","sentry"]}"#).unwrap();
         assert_eq!(s.mcp_disabled, vec!["github".to_string(), "sentry".to_string()]);
+    }
+
+    #[test]
+    fn editor_cmd_defaults_none_and_parses() {
+        assert_eq!(Settings::default().editor_cmd, None);
+        let s: Settings = serde_json::from_str(r#"{"editor_cmd":"code"}"#).unwrap();
+        assert_eq!(s.editor_cmd.as_deref(), Some("code"));
+        // absent key → None (open via the OS default app)
+        let absent: Settings = serde_json::from_str(r#"{"claude_env":{}}"#).unwrap();
+        assert_eq!(absent.editor_cmd, None);
     }
 
     #[test]

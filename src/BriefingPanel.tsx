@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { clampPanelWidth, loadNum, relAge, baseName, type Artifact, type CardView, type McpServer, type Skill, type TimelineItem } from './types'
+import { clampPanelWidth, loadNum, relAge, baseName, type Artifact, type CardView, type FileTouch, type McpServer, type Skill, type TimelineItem } from './types'
 import ArtifactView from './ArtifactView'
 import ResizeHandle from './ResizeHandle'
 
@@ -86,7 +86,52 @@ function Item({ it }: { it: TimelineItem }) {
   )
 }
 
-function BriefingTab({ sessionId, card, starred, onToggleStar }: { sessionId: string | null; card: CardView | null; starred: boolean; onToggleStar?: () => void }) {
+/// Path shown project-relative when it lives under the session's project.
+function relPath(p: string, root?: string): string {
+  return root && p.startsWith(root + '/') ? p.slice(root.length + 1) : p
+}
+
+function FilesChanged({ files, projectPath }: { files: FileTouch[]; projectPath?: string }) {
+  // Transient error line (file deleted since, editor_cmd broken, …).
+  const [err, setErr] = useState<string | null>(null)
+  const errTimer = useRef(0)
+  const flashErr = (text: string) => {
+    clearTimeout(errTimer.current)
+    setErr(text)
+    errTimer.current = window.setTimeout(() => setErr(null), 4000)
+  }
+  useEffect(() => () => clearTimeout(errTimer.current), [])
+  if (files.length === 0) return null
+  const open = (path: string, reveal: boolean) =>
+    invoke('open_path', { path, reveal }).catch((e) => flashErr(String(e)))
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div style={{ color: '#7d8794', fontWeight: 600, fontSize: 11, marginBottom: 4 }}>Files changed · {files.length}</div>
+      {files.slice(0, 30).map((f) => (
+        <div key={f.path} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3, minWidth: 0 }}>
+          <button
+            onClick={() => open(f.path, false)}
+            title={`${f.path}\nOpen in your editor (settings "editor_cmd", else the default app)`}
+            style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', color: '#9cc3ff', fontFamily: 'Menlo, monospace', fontSize: 11, padding: '1px 0', direction: 'rtl' }}
+          >
+            {/* rtl ellipsis keeps the filename end visible; the tooltip has the full path */}
+            <span style={{ unicodeBidi: 'plaintext' }}>{relPath(f.path, projectPath)}</span>
+          </button>
+          <span style={{ flexShrink: 0, color: '#4a5462', fontSize: 10 }} title={`${f.edits} edit(s) · ${f.writes} write(s)`}>
+            ×{f.edits + f.writes}
+          </span>
+          <button style={{ ...S.iconBtn, fontSize: 10, padding: '1px 5px' }} title="Reveal in Finder" onClick={() => open(f.path, true)}>
+            ⊙
+          </button>
+        </div>
+      ))}
+      {files.length > 30 && <div style={{ ...S.muted, fontSize: 10 }}>+{files.length - 30} more</div>}
+      {err && <div style={{ color: '#cf6b6b', fontSize: 10, marginTop: 4 }}>{err}</div>}
+    </div>
+  )
+}
+
+function BriefingTab({ sessionId, card, starred, files, projectPath, onToggleStar }: { sessionId: string | null; card: CardView | null; starred: boolean; files: FileTouch[]; projectPath?: string; onToggleStar?: () => void }) {
   if (!sessionId)
     return <div style={S.muted}>No indexed session yet — once this conversation is saved, its briefing card appears here.</div>
   return (
@@ -118,6 +163,7 @@ function BriefingTab({ sessionId, card, starred, onToggleStar }: { sessionId: st
       ) : (
         <div style={S.muted}>no briefing card yet</div>
       )}
+      <FilesChanged files={files} projectPath={projectPath} />
       <button
         style={{ marginTop: 10, background: '#1d2530', color: '#e8edf4', border: '1px solid #2c3647', borderRadius: 5, padding: '4px 12px', cursor: 'pointer', fontSize: 12 }}
         onClick={() => invoke('refresh_card', { sessionId }).catch(console.error)}
@@ -453,6 +499,7 @@ function PreviewTab({ artifacts }: { artifacts: Artifact[] }) {
 
 export default function BriefingPanel({ sessionId, projectPath, starred, artifacts, onToggleStar }: Props) {
   const [card, setCard] = useState<CardView | null>(null)
+  const [files, setFiles] = useState<FileTouch[]>([])
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('dd.briefingCollapsed') === '1')
   // clamp on load AND on window resize: a width persisted (or auto-widened) on a
   // big monitor must not overflow a smaller window later
@@ -467,8 +514,10 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
   }, [])
 
   const refresh = useCallback(() => {
-    if (!sessionId) { setCard(null); return } // a session-less new tab has no card
+    if (!sessionId) { setCard(null); setFiles([]); return } // a session-less new tab has no card
     invoke<CardView | null>('get_card', { sessionId }).then(setCard).catch(console.error)
+    // no transcript file yet (radar stub / expired) → just no files section
+    invoke<FileTouch[]>('session_files', { sessionId }).then(setFiles).catch(() => setFiles([]))
   }, [sessionId])
   useEffect(() => {
     refresh()
@@ -533,7 +582,7 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
           <PreviewTab artifacts={artifacts} />
         ) : (
           <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 12 }}>
-            {tab === 'briefing' && <BriefingTab sessionId={sessionId} card={card} starred={starred} onToggleStar={onToggleStar} />}
+            {tab === 'briefing' && <BriefingTab sessionId={sessionId} card={card} starred={starred} files={files} projectPath={projectPath} onToggleStar={onToggleStar} />}
             {tab === 'skills' && <SkillsTab projectPath={projectPath} />}
             {tab === 'mcp' && <McpTab projectPath={projectPath} />}
           </div>

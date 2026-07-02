@@ -80,6 +80,54 @@ fn export_markdown(title: &str, project: &str, entries: &[Entry]) -> String {
     out
 }
 
+/// Files this session changed (Edit/Write tool calls; errored calls dropped),
+/// for the Briefing panel's "Files changed" list.
+#[tauri::command]
+pub fn session_files(db: State<'_, AppDb>, session_id: String) -> Result<Vec<transcript::FileTouch>, String> {
+    let path = transcript_file(&db, &session_id)?;
+    transcript::files_touched(&path).map_err(|e| e.to_string())
+}
+
+/// Open a file in the user's editor (reveal=false) or reveal it in Finder
+/// (reveal=true). Editor resolution: the settings `editor_cmd` when set (run
+/// via a login shell so PATH-installed CLIs like `code` resolve), else macOS
+/// `open`, which honors the user's default app for that file type.
+#[tauri::command]
+pub fn open_path(path: String, reveal: bool, settings: State<'_, crate::settings::SettingsState>) -> Result<(), String> {
+    let p = Path::new(&path);
+    if !p.is_absolute() {
+        return Err("path must be absolute".into());
+    }
+    if !p.exists() {
+        return Err(format!("file no longer exists: {path}"));
+    }
+    if reveal {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("couldn't open Finder: {e}"))?;
+        return Ok(());
+    }
+    match settings.editor_cmd() {
+        Some(cmd) if !cmd.trim().is_empty() => {
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+            let line = format!("{cmd} {}", crate::enricher::sh_single_quote(&path));
+            std::process::Command::new(shell)
+                .args(["-l", "-c", &line])
+                .spawn()
+                .map_err(|e| format!("couldn't run editor_cmd: {e}"))?;
+        }
+        _ => {
+            std::process::Command::new("open")
+                .arg(&path)
+                .spawn()
+                .map_err(|e| format!("couldn't open the file: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
 /// Export the whole transcript as Markdown into Downloads (deduped name), then
 /// reveal it in Finder. Returns the written path.
 #[tauri::command]

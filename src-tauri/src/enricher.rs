@@ -79,7 +79,7 @@ fn backfill_card_search_chunks(store: &mut Store) {
 
 /// Wrap a string in single quotes for safe `sh -c` interpolation, escaping any
 /// embedded single quotes (`'\''`). Works in sh/bash/zsh.
-fn sh_single_quote(s: &str) -> String {
+pub(crate) fn sh_single_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 

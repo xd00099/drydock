@@ -426,6 +426,8 @@ fn main() {
             index::session_chunks,
             files::session_transcript,
             files::export_transcript,
+            files::session_files,
+            files::open_path,
             search::search,
             enricher::get_card,
             enricher::refresh_card,
