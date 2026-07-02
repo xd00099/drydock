@@ -45,6 +45,18 @@ fn splice_claude_flags(cmd: &str, flags: &str) -> String {
     format!("exec claude {flags}{rest}")
 }
 
+/// The per-session `--settings` JSON registering Notification/Stop hooks that
+/// forward their stdin to the loopback `/hook` endpoint. Token and port are
+/// Drydock-generated (base64url / a number), so the single-quoted shell command
+/// stays quote-safe by construction.
+fn hooks_settings_json(token: &str, port: u16) -> String {
+    let curl = format!(
+        "curl -sS -m 3 -X POST -H 'Authorization: Bearer {token}' --data-binary @- 'http://127.0.0.1:{port}/hook' >/dev/null 2>&1 || true"
+    );
+    let hook = serde_json::json!([{ "hooks": [{ "type": "command", "command": curl, "timeout": 10 }] }]);
+    serde_json::json!({ "hooks": { "Notification": hook.clone(), "Stop": hook } }).to_string()
+}
+
 /// `--disallowedTools 'mcp__<name>' …` for the servers the user switched off, so
 /// their tools aren't offered to this session — without touching ~/.claude. Each
 /// token is single-quoted for the shell `-c`; a name containing a single quote is
@@ -114,13 +126,8 @@ fn pty_spawn(
             let hooks_str = hooks_path.to_string_lossy().to_string();
             // The hook forwards its stdin JSON to the loopback server; `|| true`
             // so a dead/slow server never blocks or errors the session's hooks.
-            let curl = format!(
-                "curl -sS -m 3 -X POST -H 'Authorization: Bearer {token}' --data-binary @- 'http://127.0.0.1:{port}/hook' >/dev/null 2>&1 || true",
-                port = artifacts.port
-            );
-            let hook = serde_json::json!([{ "hooks": [{ "type": "command", "command": curl, "timeout": 10 }] }]);
-            let hooks_cfg = serde_json::json!({ "hooks": { "Notification": hook.clone(), "Stop": hook } });
-            if !hooks_str.contains('\'') && std::fs::write(&hooks_path, hooks_cfg.to_string()).is_ok() {
+            let hooks_cfg = hooks_settings_json(&token, artifacts.port);
+            if !hooks_str.contains('\'') && std::fs::write(&hooks_path, hooks_cfg).is_ok() {
                 args[idx] = splice_claude_flags(&args[idx], &format!("--settings '{hooks_str}'"));
                 cleanup_files.push(hooks_path);
             }
@@ -530,6 +537,22 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hooks_settings_registers_notification_and_stop() {
+        let s = hooks_settings_json("tOk-123_ab", 49152);
+        let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+        for event in ["Notification", "Stop"] {
+            let cmd = v["hooks"][event][0]["hooks"][0]["command"].as_str().unwrap();
+            assert!(cmd.contains("Bearer tOk-123_ab"), "{event}: {cmd}");
+            assert!(cmd.contains("127.0.0.1:49152/hook"), "{event}: {cmd}");
+            assert!(cmd.ends_with("|| true"), "a hook failure must never block the session");
+            assert_eq!(v["hooks"][event][0]["hooks"][0]["type"], "command");
+        }
+        // spliced single-quoted into the shell -c string via its file path only,
+        // but the JSON itself must not smuggle newlines into the settings file
+        assert!(!s.contains('\n'));
+    }
 
     #[test]
     fn is_claude_exec_matches_new_resume_and_session_id_forms() {
