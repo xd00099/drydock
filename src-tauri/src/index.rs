@@ -404,9 +404,13 @@ fn remove_session(store: &mut Store, claude: &std::path::Path, session_id: &str)
 }
 
 #[tauri::command]
-pub fn delete_session_permanently(db: State<'_, AppDb>, session_id: String) -> Result<(), String> {
+pub fn delete_session_permanently(app: AppHandle, db: State<'_, AppDb>, session_id: String) -> Result<(), String> {
     let mut store = db.0.lock().unwrap();
-    remove_session(&mut store, &claude_dir(), &session_id)
+    remove_session(&mut store, &claude_dir(), &session_id)?;
+    // refresh the backup too, or the deleted session's star/folder membership
+    // would resurrect as a dangling row on the next restore
+    write_backup(&app, &store);
+    Ok(())
 }
 
 #[cfg(test)]

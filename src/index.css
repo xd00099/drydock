@@ -64,3 +64,11 @@ body,
 .dd-filerow:hover { background: #141a24; }
 .dd-filerow .dd-reveal { visibility: hidden; }
 .dd-filerow:hover .dd-reveal { visibility: visible; }
+
+/* A just-filed session row flashes once where it landed (the animation
+   momentarily overrides the row's inline tint, then hands back). */
+@keyframes dd-land {
+  0% { background: rgba(79, 127, 217, 0.4); }
+  100% { background: transparent; }
+}
+.dd-landed { animation: dd-land 0.7s ease-out; }

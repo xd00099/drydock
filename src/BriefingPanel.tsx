@@ -440,6 +440,10 @@ function McpTab({ projectPath }: { projectPath?: string }) {
   useEffect(() => {
     epochRef.current++
     const epoch = epochRef.current
+    // a check still in flight for the OLD project must not block the new
+    // project's first check for a whole interval (its result is epoch-discarded
+    // anyway, and its finally() harmlessly re-clears this)
+    inFlightRef.current = false
     setServers(null)
     setStatus(null)
     setCheckedAt(null)
@@ -516,7 +520,7 @@ function McpTab({ projectPath }: { projectPath?: string }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
         <span style={{ flex: 1, color: '#5b6675', fontSize: 10, lineHeight: 1.4 }}>
           ● health via `claude mcp list` ·{' '}
-          {checking ? 'checking…' : checkedAt ? `checked ${ageText(checkedAt)}` : hasExternal ? 'not checked yet' : 'no external servers'}
+          {!hasExternal ? 'no external servers' : checking ? 'checking…' : checkedAt ? `checked ${ageText(checkedAt)}` : 'not checked yet'}
         </span>
         {hasExternal && (
           <button

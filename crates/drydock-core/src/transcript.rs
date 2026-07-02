@@ -279,8 +279,14 @@ fn input_stats(name: &str, input: Option<&Value>) -> (i64, i64) {
 fn patch_stats(tur: &Value) -> Option<(i64, i64)> {
     let patch = tur.get("structuredPatch")?.as_array()?;
     if patch.is_empty() {
-        return (tur.get("type").and_then(Value::as_str) == Some("create"))
-            .then(|| (line_count(tur.get("content")), 0));
+        // create: the whole content is new. Anything else with an empty patch
+        // (e.g. a Write of identical content) genuinely changed 0 lines — do
+        // NOT fall back to the input estimate, which would report +N.
+        return Some(if tur.get("type").and_then(Value::as_str) == Some("create") {
+            (line_count(tur.get("content")), 0)
+        } else {
+            (0, 0)
+        });
     }
     let mut adds = 0;
     let mut dels = 0;
@@ -582,6 +588,22 @@ mod tests {
         assert!(!by_path("/p/a.rs").created, "unattributable create flag is not applied");
         assert_eq!((by_path("/p/b.rs").adds, by_path("/p/b.rs").dels), (1, 0));
         assert_eq!((by_path("/p/c.rs").adds, by_path("/p/c.rs").dels), (2, 1), "input estimate, not the mismatched patch");
+    }
+
+    #[test]
+    fn files_touched_counts_noop_writes_as_zero() {
+        // an "update" whose diff is empty (identical content rewritten) is 0/0,
+        // not the input estimate's +N
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("t.jsonl");
+        let lines = [
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"w1","name":"Write","input":{"file_path":"/p/a.rs","content":"l1\nl2\nl3"}}]}}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"w1","content":"ok"}]},"toolUseResult":{"type":"update","filePath":"/p/a.rs","content":"l1\nl2\nl3","structuredPatch":[]}}"#,
+        ];
+        std::fs::write(&p, lines.join("\n") + "\n").unwrap();
+        let touched = files_touched(&p).unwrap();
+        assert_eq!((touched[0].adds, touched[0].dels), (0, 0));
+        assert!(!touched[0].created);
     }
 
     #[test]

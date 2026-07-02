@@ -18,8 +18,9 @@ fn transcript_file(db: &State<AppDb>, session_id: &str) -> Result<PathBuf, Strin
 }
 
 /// Structured transcript entries from `from_offset` (0 for the initial load;
-/// pass back `next_offset` to tail a live session incrementally).
-#[tauri::command]
+/// pass back `next_offset` to tail a live session incrementally). async: reads
+/// a whole transcript on first load — keep it off the main thread.
+#[tauri::command(async)]
 pub fn session_transcript(db: State<'_, AppDb>, session_id: String, from_offset: u64) -> Result<Page, String> {
     let path = transcript_file(&db, &session_id)?;
     transcript::read_page(&path, from_offset).map_err(|e| e.to_string())
@@ -182,7 +183,10 @@ fn filename_index(root: &Path) -> std::collections::HashMap<std::ffi::OsString, 
 }
 
 /// Among same-named files, the one sharing the longest trailing path with the
-/// recorded location — a strict winner only (a tie means we'd be guessing).
+/// recorded location — a strict winner only (a tie means we'd be guessing),
+/// and the match must extend past the bare file name (≥ 2 trailing components,
+/// i.e. name + parent dir): a name-only hit on README.md/mod.rs/index.ts would
+/// confidently "relocate" a deleted file onto an unrelated one.
 fn best_by_suffix(recorded: &Path, index: &std::collections::HashMap<std::ffi::OsString, Vec<PathBuf>>) -> Option<PathBuf> {
     let cands = index.get(recorded.file_name()?)?;
     let mut best: Option<(usize, &PathBuf)> = None;
@@ -200,7 +204,7 @@ fn best_by_suffix(recorded: &Path, index: &std::collections::HashMap<std::ffi::O
         }
     }
     match (best, tied) {
-        (Some((_, p)), false) => Some(p.clone()),
+        (Some((s, p)), false) if s >= 2 => Some(p.clone()),
         _ => None,
     }
 }
@@ -273,8 +277,10 @@ pub(crate) fn resolve_touches(touches: Vec<transcript::FileTouch>, session_root:
 
 /// Files this session changed (Edit/Write tool calls; errored calls dropped),
 /// each resolved to where it lives now, for the Briefing panel's
-/// "Files changed" section.
-#[tauri::command]
+/// "Files changed" section. async: reads the whole transcript and stats/walks
+/// the filesystem — that work must not run on the main thread (it re-runs on
+/// every index tick while the panel is open).
+#[tauri::command(async)]
 pub fn session_files(db: State<'_, AppDb>, session_id: String) -> Result<Vec<FileTouchView>, String> {
     let path = transcript_file(&db, &session_id)?;
     let touches = transcript::files_touched(&path).map_err(|e| e.to_string())?;
@@ -302,7 +308,10 @@ pub fn session_files(db: State<'_, AppDb>, session_id: String) -> Result<Vec<Fil
 /// Open a file in the user's editor (reveal=false) or reveal it in Finder
 /// (reveal=true). Editor resolution: the settings `editor_cmd` when set (run
 /// via a login shell so PATH-installed CLIs like `code` resolve), else macOS
-/// `open`, which honors the user's default app for that file type.
+/// `open`, which honors the user's default app for that file type — with one
+/// guard: the fallback refuses executables (and .app bundles, which fail the
+/// regular-file check), because `open` would RUN those, and these paths come
+/// from transcript records, not from the user typing them.
 #[tauri::command]
 pub fn open_path(path: String, reveal: bool, settings: State<'_, crate::settings::SettingsState>) -> Result<(), String> {
     let p = Path::new(&path);
@@ -330,6 +339,9 @@ pub fn open_path(path: String, reveal: bool, settings: State<'_, crate::settings
                 .map_err(|e| format!("couldn't run editor_cmd: {e}"))?;
         }
         _ => {
+            if !launchable_by_default_app(p) {
+                return Err("refusing to open an executable with its default app — use Reveal in Finder, or set editor_cmd in settings".into());
+            }
             std::process::Command::new("open")
                 .arg(&path)
                 .spawn()
@@ -339,9 +351,21 @@ pub fn open_path(path: String, reveal: bool, settings: State<'_, crate::settings
     Ok(())
 }
 
+/// Safe for the `open` fallback: a regular, non-executable file. `open` on an
+/// executable (or a .app bundle — a directory, so it fails is_file) launches
+/// it rather than viewing it.
+fn launchable_by_default_app(p: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    match std::fs::metadata(p) {
+        Ok(m) => m.is_file() && m.permissions().mode() & 0o111 == 0,
+        Err(_) => false,
+    }
+}
+
 /// Export the whole transcript as Markdown into Downloads (deduped name), then
-/// reveal it in Finder. Returns the written path.
-#[tauri::command]
+/// reveal it in Finder. Returns the written path. async: full-transcript read
+/// + file write, off the main thread.
+#[tauri::command(async)]
 pub fn export_transcript(app: AppHandle, db: State<'_, AppDb>, session_id: String) -> Result<String, String> {
     let (title, project) = {
         let store = db.0.lock().unwrap();
@@ -513,6 +537,32 @@ mod tests {
         let alts = vec![r1.display().to_string(), r2.display().to_string()];
         let got = resolve_touches(vec![touch(&old.join("src/util.rs"))], old.to_str().unwrap(), &alts);
         assert_eq!(got[0].resolved, None, "two equally-good homes means no guess");
+    }
+
+    #[test]
+    fn resolve_rejects_name_only_matches() {
+        // a deleted src/x.rs must NOT "relocate" onto an unrelated x.rs whose
+        // only common trailing component is the bare file name
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("proj");
+        plant(&root, "docs/readme-ish.md"); // root exists
+        plant(&root, "tests/x.rs"); // same name, different parent — too weak
+        let got = resolve_touches(vec![touch(&root.join("src/x.rs"))], root.to_str().unwrap(), &[]);
+        assert_eq!(got[0].resolved, None, "bare-name matches are guesses, not relocations");
+    }
+
+    #[test]
+    fn default_app_guard_rejects_executables_and_dirs() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let doc = tmp.path().join("notes.md");
+        std::fs::write(&doc, b"hi").unwrap();
+        assert!(launchable_by_default_app(&doc));
+        let exe = tmp.path().join("evil.command");
+        std::fs::write(&exe, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!launchable_by_default_app(&exe), "executables would be RUN by `open`");
+        assert!(!launchable_by_default_app(tmp.path()), "directories (.app bundles) too");
     }
 
     #[test]

@@ -317,13 +317,22 @@ pub fn parse_mcp_list(output: &str) -> Vec<(String, String, String)> {
 /// spawns/pings every configured server, so slow is normal — hung is not.
 const MCP_LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
 
-/// Run a command to completion with a deadline; the child is killed on
-/// timeout (None). Stdout is drained on a thread so a chatty child can't
-/// deadlock on a full pipe.
+/// Run a command to completion with a deadline; on timeout the child's whole
+/// PROCESS GROUP is killed (None returned). The child here is a login shell
+/// that may fork — not exec — the real command (EXIT traps in a profile, or a
+/// wrapper-script `claude`): killing just the shell would orphan a grandchild
+/// still holding the stdout pipe, wedging the reader thread — and this fn —
+/// forever. Stdout is drained on a thread so a chatty child can't deadlock on
+/// a full pipe.
 fn output_with_timeout(mut cmd: std::process::Command, timeout: std::time::Duration) -> Option<Vec<u8>> {
     use std::io::Read;
     use std::process::Stdio;
     cmd.stdout(Stdio::piped()).stderr(Stdio::null()).stdin(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0); // own group, so the timeout can kill all descendants
+    }
     let mut child = cmd.spawn().ok()?;
     let mut stdout = child.stdout.take()?;
     let reader = std::thread::spawn(move || {
@@ -336,9 +345,15 @@ fn output_with_timeout(mut cmd: std::process::Command, timeout: std::time::Durat
         match child.try_wait() {
             Ok(Some(_)) => return reader.join().ok(),
             Ok(None) if std::time::Instant::now() >= deadline => {
+                #[cfg(unix)]
+                unsafe {
+                    libc::kill(-(child.id() as i32), libc::SIGKILL); // the whole group
+                }
                 let _ = child.kill();
                 let _ = child.wait();
-                let _ = reader.join();
+                // detach instead of join: if some descendant escaped the group
+                // and still holds the pipe, a leaked thread beats a wedged command
+                drop(reader);
                 return None; // partial output mid-check would misreport — say "timed out"
             }
             Ok(None) => std::thread::sleep(std::time::Duration::from_millis(120)),
@@ -487,6 +502,17 @@ mod tests {
         let t0 = std::time::Instant::now();
         assert!(output_with_timeout(hung, std::time::Duration::from_millis(300)).is_none());
         assert!(t0.elapsed() < std::time::Duration::from_secs(5), "killed at the deadline, not at exit");
+    }
+
+    #[test]
+    fn output_with_timeout_kills_grandchildren_holding_the_pipe() {
+        // the shell forks a background grandchild that inherits stdout; killing
+        // only the shell would leave the pipe open and wedge the reader forever
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.args(["-c", "sleep 30 & wait"]);
+        let t0 = std::time::Instant::now();
+        assert!(output_with_timeout(cmd, std::time::Duration::from_millis(300)).is_none());
+        assert!(t0.elapsed() < std::time::Duration::from_secs(5), "group kill reaps the grandchild too");
     }
 
     #[test]

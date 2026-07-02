@@ -133,10 +133,34 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
   const [dropTarget, setDropTarget] = useState<string | null>(null)
   const [flashSid, setFlashSid] = useState<string | null>(null)
   const xyRef = useRef({ x: 0, y: 0 })
+  const dragRef = useRef<Drag | null>(null) // the live drag, for handlers outside beginPress's closure
+  const dropRef = useRef<string | null>(null) // current drop target — read at pointerup
   const suppressClickRef = useRef(false) // a completed drag must not fire the row's click
   const scrollerRef = useRef<HTMLDivElement>(null)
   const flashTimer = useRef(0)
   useEffect(() => () => clearTimeout(flashTimer.current), [])
+
+  /** Recompute the drop target from the pointer position. DOM-driven (data
+   *  attributes + elementFromPoint), so both the pointermove handler and the
+   *  auto-scroll tick — which moves rows under a PARKED pointer — share it. */
+  const updateTarget = (d: Drag, x: number, y: number) => {
+    let target: string | null = null
+    if (d.kind === 'session') {
+      const el = document.elementFromPoint(x, y)
+      target = el?.closest('[data-drop]')?.getAttribute('data-drop') ?? null
+    } else {
+      // reorder: insertion index from folder-header midpoints
+      const heads = scrollerRef.current?.querySelectorAll('[data-fhead]') ?? []
+      let gap = heads.length
+      for (let i = 0; i < heads.length; i++) {
+        const r = heads[i].getBoundingClientRect()
+        if (y < r.top + r.height / 2) { gap = i; break }
+      }
+      target = `gap:${gap}`
+    }
+    dropRef.current = target
+    setDropTarget(target)
+  }
 
   useEffect(() => {
     if (!menu && !folderMenu) return
@@ -155,7 +179,9 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
   }, [menu, folderMenu])
 
   // Edge auto-scroll while a drag is live (pointermove stops firing when the
-  // pointer parks at the edge, so this needs its own clock).
+  // pointer parks at the edge, so this needs its own clock). Only while the
+  // pointer is horizontally over the sidebar, and rows moving under a parked
+  // pointer re-run the hit test so the drop lands where the eye says it will.
   useEffect(() => {
     if (!drag) return
     let raf = 0
@@ -163,9 +189,13 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
       const sc = scrollerRef.current
       if (sc) {
         const r = sc.getBoundingClientRect()
-        const y = xyRef.current.y
-        if (y < r.top + 28) sc.scrollTop -= Math.min(14, (r.top + 28 - y) / 2)
-        else if (y > r.bottom - 28) sc.scrollTop += Math.min(14, (y - (r.bottom - 28)) / 2)
+        const { x, y } = xyRef.current
+        if (x >= r.left && x <= r.right + 40) {
+          const before = sc.scrollTop
+          if (y < r.top + 28) sc.scrollTop -= Math.min(14, (r.top + 28 - y) / 2)
+          else if (y > r.bottom - 28) sc.scrollTop += Math.min(14, (y - (r.bottom - 28)) / 2)
+          if (sc.scrollTop !== before && dragRef.current) updateTarget(dragRef.current, x, y)
+        }
       }
       raf = requestAnimationFrame(tick)
     }
@@ -229,30 +259,17 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
     const startX = e.clientX
     const startY = e.clientY
     let live = false
-    let target: string | null = null
     const move = (ev: PointerEvent) => {
       if (!live && Math.hypot(ev.clientX - startX, ev.clientY - startY) > 5) {
         live = true
+        dragRef.current = d
         setDrag(d)
         document.body.style.cursor = 'grabbing'
       }
       if (!live) return
       xyRef.current = { x: ev.clientX, y: ev.clientY }
       setDragXY({ x: ev.clientX, y: ev.clientY })
-      if (d.kind === 'session') {
-        const el = document.elementFromPoint(ev.clientX, ev.clientY)
-        target = el?.closest('[data-drop]')?.getAttribute('data-drop') ?? null
-      } else {
-        // reorder: insertion index from folder-header midpoints
-        const heads = scrollerRef.current?.querySelectorAll('[data-fhead]') ?? []
-        let gap = heads.length
-        for (let i = 0; i < heads.length; i++) {
-          const r = heads[i].getBoundingClientRect()
-          if (ev.clientY < r.top + r.height / 2) { gap = i; break }
-        }
-        target = `gap:${gap}`
-      }
-      setDropTarget(target)
+      updateTarget(d, ev.clientX, ev.clientY)
     }
     const finish = (commit: boolean) => {
       window.removeEventListener('pointermove', move)
@@ -260,8 +277,15 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
       window.removeEventListener('keydown', key)
       window.removeEventListener('blur', cancel)
       if (!live) return
+      // Swallow only the click this drag synthesizes: if the pointer released
+      // over a different element, no click fires on the origin row — the flag
+      // must not lie in wait for the user's NEXT legitimate click.
       suppressClickRef.current = true
+      window.setTimeout(() => { suppressClickRef.current = false }, 0)
       document.body.style.cursor = ''
+      const target = dropRef.current
+      dragRef.current = null
+      dropRef.current = null
       setDrag(null)
       setDropTarget(null)
       if (commit) performDrop(d, target)
@@ -321,7 +345,7 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
         style={{ ...S.row, opacity: isDragging ? 0.4 : isHidden ? 0.45 : 1, borderLeftColor: sessionColor(s.session_id), background: sessionColor(s.session_id, isActive ? 0.3 : 0.1) }}
         onClick={dragSafe(() => onResume(s))}
         onPointerDown={(e) => beginPress(e, { kind: 'session', sid: s.session_id, label: sessionLabel(s), fromFolder: s.folder_id })}
-        onContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, s, view: 'main' }) }}
+        onContextMenu={(e) => { e.preventDefault(); if (dragRef.current) return; setMenu({ x: e.clientX, y: e.clientY, s, view: 'main' }) }}
         title={`${s.attention ? `⚠ ${s.attention}\n` : ''}${s.title}${s.starred && inFolder ? `\nin folder “${inFolder}”` : ''}\n${s.session_id}\n(right-click for options · drag into a folder)`}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -350,6 +374,9 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
       placeholder="Folder name"
       onFocus={(e) => e.currentTarget.select()}
       onKeyDown={(e) => {
+        // an Enter/Esc that confirms an IME composition (e.g. pinyin) is part
+        // of TYPING the name, not a commit/cancel of the editor
+        if (e.nativeEvent.isComposing || e.keyCode === 229) return
         if (e.key === 'Enter') commitName(e.currentTarget.value)
         else if (e.key === 'Escape') setNaming(null)
       }}
@@ -402,7 +429,7 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
               if ((e.target as HTMLElement).closest('button, input')) return
               beginPress(e, { kind: 'folder', id: f.id, name: f.name })
             }}
-            onContextMenu={(e) => { e.preventDefault(); setFolderMenu({ x: e.clientX, y: e.clientY, f, index: i }) }}
+            onContextMenu={(e) => { e.preventDefault(); if (dragRef.current) return; setFolderMenu({ x: e.clientX, y: e.clientY, f, index: i }) }}
           >
             <button style={S.chev} title={isClosed ? 'Expand folder' : 'Collapse folder'} onClick={() => toggleGroup(key)}>
               {isClosed ? '▸' : '▾'}
@@ -527,7 +554,16 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
       {menu && (
         <>
           <div style={{ position: 'fixed', inset: 0, zIndex: 59 }} onClick={() => setMenu(null)} onContextMenu={(e) => { e.preventDefault(); setMenu(null) }} />
-          <div style={{ ...S.menu, left: Math.min(menu.x, window.innerWidth - 220), top: Math.min(menu.y, window.innerHeight - 240) }}>
+          <div
+            style={{
+              ...S.menu,
+              left: Math.min(menu.x, window.innerWidth - 220),
+              top: Math.min(menu.y, window.innerHeight - 300),
+              // the folder list can outgrow the window — scroll it, never clip it
+              maxHeight: Math.min(300, window.innerHeight - 40),
+              overflowY: 'auto',
+            }}
+          >
             {menu.view === 'main' ? (
               <>
                 <button style={S.menuItem} {...menuHover} onClick={() => { onToggleStar(menu.s); setMenu(null) }}>
