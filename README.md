@@ -71,7 +71,20 @@ Drydock is a **read-only mirror**. A file watcher tails your transcripts into a 
 
 ## Install
 
-**Requirements:** macOS (Apple Silicon or Intel), [Claude Code](https://claude.com/claude-code) on your `PATH`. To build: Rust (stable) and Node 18+.
+**Requirements:** macOS on Apple Silicon (Intel: build from source), [Claude Code](https://claude.com/claude-code) on your `PATH`.
+
+**Homebrew**
+
+```sh
+brew tap xd00099/tap
+brew install --cask drydock
+```
+
+**Direct download** — grab the `.dmg` from the [latest release](https://github.com/xd00099/drydock/releases/latest).
+
+Drydock isn't signed with an Apple Developer ID yet, so macOS may refuse the first launch: approve it under **System Settings → Privacy & Security → Open Anyway** (or install with `brew install --cask drydock --no-quarantine`). Once installed, Drydock checks GitHub Releases daily and shows an **Update** button in the sidebar footer when a new version ships.
+
+**Build from source** — needs Rust (stable) and Node 18+:
 
 ```sh
 git clone https://github.com/xd00099/drydock.git
@@ -80,7 +93,7 @@ npm install
 npm run tauri build
 ```
 
-The bundle lands in `target/release/bundle/macos/Drydock.app`. It's unsigned, so on first launch right-click the app → **Open**. For development, `npm run tauri dev`.
+The bundle lands in `target/release/bundle/macos/Drydock.app`. For development, `npm run tauri dev`.
 
 ## Everyday use
 

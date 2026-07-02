@@ -1,0 +1,107 @@
+# Tag-triggered release: push a `vX.Y.Z` tag and this builds the macOS app,
+# publishes a GitHub Release with the .dmg, and bumps the Homebrew tap.
+#
+# One-time setup for the tap bump: create a fine-grained PAT with
+# contents:write on xd00099/homebrew-tap and save it as the TAP_TOKEN secret
+# in this repo. Without the secret, releases still publish — the tap step
+# just skips itself.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-14 # arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+
+      - name: Verify tag matches the app version
+        run: |
+          V=$(node -p "require('./package.json').version")
+          C=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)
+          T=$(node -p "JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json')).version")
+          echo "tag=$GITHUB_REF_NAME package.json=$V Cargo.toml=$C tauri.conf=$T"
+          [ "v$V" = "$GITHUB_REF_NAME" ] && [ "$C" = "$V" ] && [ "$T" = "$V" ] || {
+            echo "::error::version mismatch — run scripts/bump-version.py and re-tag"; exit 1; }
+
+      - run: npm ci
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Build app + dmg
+        run: npx tauri build --bundles app,dmg
+
+      - name: Stage artifacts
+        run: |
+          V=${GITHUB_REF_NAME#v}
+          mkdir -p dist-release
+          cp target/release/bundle/dmg/*.dmg "dist-release/Drydock_${V}_aarch64.dmg"
+          tar -C target/release/bundle/macos -czf "dist-release/Drydock_${V}_aarch64.app.tar.gz" Drydock.app
+          (cd dist-release && shasum -a 256 * > SHA256SUMS.txt && cat SHA256SUMS.txt)
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist-release/*
+          generate_release_notes: true
+
+      - name: Bump Homebrew tap
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "no TAP_TOKEN secret — skipping the Homebrew tap bump"
+            exit 0
+          fi
+          V=${GITHUB_REF_NAME#v}
+          SHA=$(shasum -a 256 "dist-release/Drydock_${V}_aarch64.dmg" | cut -d' ' -f1)
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/xd00099/homebrew-tap.git" tap
+          mkdir -p tap/Casks
+          cat > tap/Casks/drydock.rb <<EOF
+          cask "drydock" do
+            version "${V}"
+            sha256 "${SHA}"
+
+            url "https://github.com/xd00099/drydock/releases/download/v#{version}/Drydock_#{version}_aarch64.dmg"
+            name "Drydock"
+            desc "Home port for your Claude Code sessions — search, radar, resume"
+            homepage "https://github.com/xd00099/drydock"
+
+            depends_on arch: :arm64
+
+            app "Drydock.app"
+
+            zap trash: [
+              "~/Library/Application Support/com.drydock.app",
+            ]
+
+            caveats <<~EOS
+              Drydock is not signed with an Apple Developer ID yet. If macOS
+              refuses to open it, install with --no-quarantine, or approve it
+              under System Settings → Privacy & Security → Open Anyway.
+            EOS
+          end
+          EOF
+          cd tap
+          git add Casks/drydock.rb
+          if git diff --cached --quiet; then
+            echo "tap already at ${V} — nothing to push"
+          else
+            git -c user.name=xd00099 -c user.email=xd00099@berkeley.edu commit -m "drydock ${V}"
+            git push
+          fi
