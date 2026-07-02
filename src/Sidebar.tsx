@@ -4,6 +4,7 @@ import type { FolderView, SessionView } from './types'
 import { clampPanelWidth, clip, loadNum, relAge, sessionColor, sessionLabel, shortPath, uuidv4 } from './types'
 import ResizeHandle from './ResizeHandle'
 import LiveIndicator from './LiveIndicator'
+import VersionFooter from './VersionFooter'
 
 type Props = {
   sessions: SessionView[]
@@ -486,7 +487,8 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
   const showFolderBand = folders.length > 0 || naming?.kind === 'create' || drag?.kind === 'session'
   return (
     <div style={{ display: 'flex', height: '100%' }}>
-    <div ref={scrollerRef} style={{ ...S.side, width, minWidth: width, borderRight: 'none' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', width, minWidth: width, background: '#0b0e13' }}>
+    <div ref={scrollerRef} style={{ ...S.side, width: '100%', minWidth: 0, height: 'auto', flex: 1, borderRight: 'none' }}>
       <div style={S.bar}>
         <span style={{ flex: 1, fontWeight: 700, color: '#e8edf4' }}>DRYDOCK</span>
         <button
@@ -761,6 +763,8 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
           {drag.kind === 'session' ? drag.label : drag.name}
         </div>
       )}
+    </div>
+      <VersionFooter />
     </div>
       <ResizeHandle
         onDelta={(dx) => setWidth((w) => clampPanelWidth(w + dx))}

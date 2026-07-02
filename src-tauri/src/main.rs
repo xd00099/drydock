@@ -11,6 +11,7 @@ mod index;
 mod pty;
 mod search;
 mod settings;
+mod updates;
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
@@ -533,7 +534,10 @@ fn main() {
             enricher::get_card,
             enricher::refresh_card,
             enricher::check_claude,
-            capabilities::list_skills
+            capabilities::list_skills,
+            updates::app_version,
+            updates::check_update,
+            updates::open_releases_page
         ])
         .build(tauri::generate_context!())
         .expect("error while running Drydock")
