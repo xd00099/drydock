@@ -24,6 +24,24 @@ export type PaneSearch = {
   focus?: () => void
 }
 
+// Full-fidelity transcript entry (backend transcript::read_page). 'plain' is
+// frontend-only: the fallback rendering of indexed chunks when the session's
+// .jsonl is gone (radar stubs, expired transcripts).
+export type TEntryKind = 'user' | 'assistant' | 'thinking' | 'tool_use' | 'tool_result' | 'recap' | 'compact' | 'plain'
+export type TEntry = {
+  kind: TEntryKind
+  text: string
+  tool: string | null
+  tool_use_id: string | null
+  meta: boolean // caveat/command noise — rendered dimmed
+  error: boolean // tool_result with is_error
+  ts: number | null
+}
+export type TranscriptPage = { entries: TEntry[]; next_offset: number; reset: boolean }
+
+// One file a session changed (backend transcript::files_touched).
+export type FileTouch = { path: string; edits: number; writes: number; last_ts: number | null }
+
 export type TimelineItem = { text: string; detail: string[]; in_progress: boolean }
 export type CardView = { summary: string; timeline: TimelineItem[]; generated_at: number }
 

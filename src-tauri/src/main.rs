@@ -4,6 +4,7 @@ mod artifacts;
 mod capabilities;
 mod embedder;
 mod enricher;
+mod files;
 mod index;
 mod pty;
 mod search;
@@ -11,8 +12,8 @@ mod settings;
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
+use files::unique_path;
 use pty::PtyManager;
-use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, State};
 
 /// True for the shell commands Drydock builds to launch claude (`exec claude`
@@ -279,29 +280,6 @@ fn save_artifact(id: String, app: AppHandle, artifacts: State<'_, artifacts::Art
     Ok(dest.display().to_string())
 }
 
-/// A non-colliding path in `dir` for `filename`: the name as-is if free, else
-/// "stem (1).ext", "stem (2).ext", … like a browser's download de-duping.
-fn unique_path(dir: &Path, filename: &str) -> PathBuf {
-    let first = dir.join(filename);
-    if !first.exists() {
-        return first;
-    }
-    let p = Path::new(filename);
-    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("artifact");
-    let ext = p.extension().and_then(|e| e.to_str());
-    for n in 1..1000 {
-        let name = match ext {
-            Some(e) => format!("{stem} ({n}).{e}"),
-            None => format!("{stem} ({n})"),
-        };
-        let candidate = dir.join(name);
-        if !candidate.exists() {
-            return candidate;
-        }
-    }
-    first // give up after 999 — fall back to overwriting the original name
-}
-
 /// Quit confirmed by the frontend: "Quit anyway" from the guard modal, or a
 /// ⌘Q that the frontend found no live tabs for. Terminate every running session
 /// first so quitting Drydock doesn't leave orphaned claude processes behind.
@@ -446,6 +424,8 @@ fn main() {
             index::set_hidden,
             index::delete_session_permanently,
             index::session_chunks,
+            files::session_transcript,
+            files::export_transcript,
             search::search,
             enricher::get_card,
             enricher::refresh_card,
@@ -464,20 +444,6 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn unique_path_dedupes_existing_names() {
-        let dir = std::env::temp_dir().join(format!("drydock-dl-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        // free name → used as-is
-        assert_eq!(unique_path(&dir, "x.html"), dir.join("x.html"));
-        // taken → next free " (n)" variant, extension preserved
-        std::fs::write(dir.join("x.html"), b"").unwrap();
-        assert_eq!(unique_path(&dir, "x.html"), dir.join("x (1).html"));
-        std::fs::write(dir.join("x (1).html"), b"").unwrap();
-        assert_eq!(unique_path(&dir, "x.html"), dir.join("x (2).html"));
-        std::fs::remove_dir_all(&dir).ok();
-    }
 
     #[test]
     fn is_claude_exec_matches_new_resume_and_session_id_forms() {

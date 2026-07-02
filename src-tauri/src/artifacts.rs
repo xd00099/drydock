@@ -645,7 +645,7 @@ fn ext_for_kind(kind: &str) -> &'static str {
 
 /// Turn an artifact title into a safe single filename component: strip path
 /// separators and characters Finder/HFS dislike, trim, and bound the length.
-fn sanitize_filename(title: &str) -> String {
+pub(crate) fn sanitize_filename(title: &str) -> String {
     let cleaned: String = title
         .chars()
         .map(|c| if c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '-' } else { c })
