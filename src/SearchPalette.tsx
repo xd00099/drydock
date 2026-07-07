@@ -11,7 +11,7 @@ type Props = {
   open: boolean
   onClose: () => void
   onPick: (s: SessionView, transcript: boolean) => void
-  // open the Home overlay (usage + prompt timeline) without leaving the tab
+  // open the Home overlay (usage + recap log) without leaving the tab
   onOverlay?: () => void
 }
 
@@ -82,13 +82,13 @@ export default function SearchPalette({ open, onClose, onPick, onOverlay }: Prop
         {/* Command row — pinned on empty query, or when explicitly asked for
             by keyword. NEVER interleaved with session results and NEVER part
             of the arrow-key selection: typing = searching sessions, always. */}
-        {onOverlay && (q === '' || /^(usage|timeline|prompts?|home)/i.test(q.trim())) && (
+        {onOverlay && (q === '' || /^(usage|recaps?|log|timeline|home)/i.test(q.trim())) && (
           <button
             onClick={onOverlay}
             style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid #1d2530', color: '#9aa3af', cursor: 'pointer', padding: '7px 14px', fontSize: 12, fontFamily: 'system-ui' }}
           >
             <span style={{ color: '#5a7fb0' }}>◱</span>
-            <span style={{ flex: 1 }}>Usage &amp; prompt timeline</span>
+            <span style={{ flex: 1 }}>Usage &amp; recap log</span>
             <span style={{ color: '#4a5462', fontSize: 10 }}>overlay · ⌘0 for Home</span>
           </button>
         )}

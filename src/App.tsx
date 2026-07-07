@@ -22,7 +22,7 @@ const EMPTY_ARTIFACTS: Artifact[] = [] // stable ref so an artifact-less panel d
 const MAX_ARTIFACTS_PER_TAB = 20
 
 export default function App() {
-  const { sessions, hidden, folders, refresh } = useSessions()
+  const { sessions, hidden, folders, ready: sessionsReady, refresh } = useSessions()
   const [tabs, setTabs] = useState<Tab[]>([])
   const [activeId, setActiveId] = useState<number | null>(null)
   const [quitGuard, setQuitGuard] = useState(false)
@@ -428,7 +428,7 @@ export default function App() {
             </div>
           ))}
           {activeId === null && (
-            <HomeView sessions={sessions} onFocusSession={(sid) => focusSessionRef.current(sid)} />
+            <HomeView sessions={sessions} sessionsReady={sessionsReady} onFocusSession={(sid) => focusSessionRef.current(sid)} />
           )}
           {findOpen && (
             <FindBar
@@ -481,7 +481,7 @@ export default function App() {
           style={{ position: 'fixed', inset: 0, zIndex: 85, background: '#0b0e13', display: 'flex', flexDirection: 'column', transform: 'translateZ(0)', outline: 'none' }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid #1d2530', fontFamily: 'system-ui' }}>
-            <span style={{ flex: 1, color: '#e8edf4', fontWeight: 600, fontSize: 13 }}>Usage & prompt timeline</span>
+            <span style={{ flex: 1, color: '#e8edf4', fontWeight: 600, fontSize: 13 }}>Usage & recap log</span>
             <button
               onClick={() => setHomeOverlay(false)}
               title="Close (Esc)"
@@ -493,6 +493,7 @@ export default function App() {
           <div style={{ flex: 1, minHeight: 0 }}>
             <HomeView
               sessions={sessions}
+              sessionsReady={sessionsReady}
               onFocusSession={(sid) => { setHomeOverlay(false); focusSessionRef.current(sid) }}
             />
           </div>

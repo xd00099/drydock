@@ -7,7 +7,7 @@ import LiveIndicator from './LiveIndicator'
 import VersionFooter from './VersionFooter'
 
 type Props = {
-  onHome: () => void // show the Home view (usage + prompt timeline) in the center
+  onHome: () => void // show the Home view (recap log + usage) in the center
   sessions: SessionView[]
   folders: FolderView[] // user folders, in band order
   hidden: string[] // session ids the user hid from Drydock
@@ -529,7 +529,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
       <div style={S.bar}>
         <span
           onClick={onHome}
-          title="Home — usage & prompt timeline (⌘0)"
+          title="Home — recap log & usage (⌘0)"
           style={{ flex: 1, fontWeight: 700, color: '#e8edf4', cursor: 'pointer' }}
         >
           DRYDOCK

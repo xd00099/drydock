@@ -1,6 +1,6 @@
 //! Read-only views over Claude Code's own data stores — ~/.claude/tasks/,
-//! history.jsonl, stats-cache.json — plus Drydock's indexed token usage.
-//! Drydock NEVER writes any of the ~/.claude paths here.
+//! stats-cache.json, file-history/ — plus Drydock's own index (token usage,
+//! recaps). Drydock NEVER writes any of the ~/.claude paths here.
 
 use crate::index::AppDb;
 use serde_json::Value;
@@ -86,49 +86,48 @@ pub fn session_tasks(session_id: String) -> Result<TasksView, String> {
     Ok(TasksView { tasks: tasks.into_iter().map(|(_, t)| t).collect(), updated_at })
 }
 
-// ---- global prompt timeline (~/.claude/history.jsonl) ---------------------
+// ---- Home recaps digest (Drydock's own index) ------------------------------
 
 #[derive(serde::Serialize)]
-pub struct PromptView {
-    pub display: String,
-    pub project: String,
+pub struct RecapEntry {
     pub session_id: String,
-    pub ts: i64,
+    pub project_path: String,
+    /// A genuine short name, or None — never the recap (see Store::recap_digest).
+    pub label: Option<String>,
+    pub summary: String,
+    /// The card's milestones, parsed here so the frontend never re-parses
+    /// store-owned JSON; unparseable/absent timelines become [].
+    pub timeline: Vec<crate::enricher::TimelineItem>,
+    pub last_message_at: i64,
 }
 
-/// Newest-first page of prompts. `before` (ms, exclusive) pages older; the
-/// file is chronological, so one streaming pass with a ring buffer suffices —
-/// no index, no state, tolerant of malformed lines.
+/// Newest-first page of the "what happened" work log: each visible session's
+/// distilled recap. `before`/`before_sid` form a keyset cursor — the exact
+/// (last_message_at, session_id) of the last row shown; both or neither.
 #[tauri::command]
-pub fn recent_prompts(limit: usize, before: Option<i64>) -> Result<Vec<PromptView>, String> {
-    let path = crate::index::claude_dir().join("history.jsonl");
-    let limit = limit.clamp(1, 500);
-    let Ok(f) = std::fs::File::open(&path) else { return Ok(vec![]) };
-    let mut ring: std::collections::VecDeque<PromptView> = std::collections::VecDeque::with_capacity(limit + 1);
-    for line in std::io::BufReader::new(f).lines() {
-        let Ok(line) = line else { continue };
-        let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
-        let ts = v.get("timestamp").and_then(Value::as_i64).unwrap_or(0);
-        if let Some(b) = before {
-            if ts >= b {
-                continue;
-            }
-        }
-        let display = v.get("display").and_then(Value::as_str).unwrap_or("").trim().to_string();
-        if display.is_empty() {
-            continue;
-        }
-        ring.push_back(PromptView {
-            display,
-            project: v.get("project").and_then(Value::as_str).unwrap_or("").to_string(),
-            session_id: v.get("sessionId").and_then(Value::as_str).unwrap_or("").to_string(),
-            ts,
-        });
-        if ring.len() > limit {
-            ring.pop_front();
-        }
-    }
-    Ok(ring.into_iter().rev().collect()) // newest first
+pub fn recap_digest(
+    db: State<'_, AppDb>,
+    limit: i64,
+    before: Option<i64>,
+    before_sid: Option<String>,
+) -> Result<Vec<RecapEntry>, String> {
+    let store = db.0.lock().unwrap();
+    let cursor = match (before, before_sid.as_deref()) {
+        (Some(ts), Some(sid)) => Some((ts, sid)),
+        _ => None,
+    };
+    let rows = store.recap_digest(cursor, limit).map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|r| RecapEntry {
+            session_id: r.session_id,
+            project_path: r.project_path,
+            label: r.label,
+            summary: r.summary,
+            timeline: serde_json::from_str(&r.timeline).unwrap_or_default(),
+            last_message_at: r.last_message_at,
+        })
+        .collect())
 }
 
 // ---- usage: per-session (Drydock index) + global (stats-cache.json) -------

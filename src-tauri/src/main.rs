@@ -522,7 +522,7 @@ fn main() {
             index::set_hidden,
             index::set_session_name,
             cc_data::session_tasks,
-            cc_data::recent_prompts,
+            cc_data::recap_digest,
             cc_data::session_usage,
             cc_data::usage_overview,
             cc_data::file_history,

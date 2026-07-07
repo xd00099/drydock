@@ -92,8 +92,17 @@ export function fmtTokens(n: number): string {
   return String(n)
 }
 
-// Global prompt timeline row (backend cc_data::recent_prompts, history.jsonl)
-export type PromptView = { display: string; project: string; session_id: string; ts: number }
+// One session's entry in the Home "what happened" digest (backend
+// cc_data::recap_digest). `label` is a genuine short name or null — never the
+// recap, so it can't echo `summary`. `timeline` arrives parsed.
+export type RecapEntry = {
+  session_id: string
+  project_path: string
+  label: string | null
+  summary: string
+  timeline: TimelineItem[]
+  last_message_at: number
+}
 
 // Global usage overview (backend cc_data::usage_overview)
 export type DailyActivity = { date: string; messages: number; sessions: number; tools: number; tokens: number }

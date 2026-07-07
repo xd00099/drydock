@@ -71,6 +71,26 @@ pub struct Card {
     pub at_message_count: i64,
 }
 
+/// One row of the Home "what happened" digest: a session's distilled recap,
+/// filed under the day it was last active.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecapRow {
+    pub session_id: String,
+    pub project_path: String,
+    /// A genuine short name (Drydock name > custom title > AI title > slug);
+    /// None when the session has none. Deliberately NOT `title`: title
+    /// resolution falls back to the recap itself, and a label that echoes
+    /// `summary` says nothing twice.
+    pub label: Option<String>,
+    /// Card summary, else latest_recap. Sessions with neither are omitted —
+    /// the digest is a log of summarized work, not a session list.
+    pub summary: String,
+    /// The card's timeline JSON (shape owned by the app layer); '[]' when the
+    /// session has a recap but no card yet.
+    pub timeline: String,
+    pub last_message_at: i64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchHit {
     pub chunk_id: i64,
@@ -984,6 +1004,44 @@ impl Store {
         Ok(label)
     }
 
+    /// Newest-first page of the Home digest: every visible session with a real
+    /// recap. Excludes hidden sessions and radar stubs with the same gates as
+    /// top_sessions_by_tokens — Home must not resurface what the sidebar hides.
+    /// `before` is a keyset cursor — the exact (last_message_at, session_id) of
+    /// the last row already shown; the page resumes strictly after it in scan
+    /// order. A timestamp-only cursor would wedge when a whole page ties on one
+    /// millisecond (bulk imports): the pair can't.
+    pub fn recap_digest(&self, before: Option<(i64, &str)>, limit: i64) -> Result<Vec<RecapRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.session_id, s.project_path,
+                    COALESCE(
+                      NULLIF(TRIM((SELECT name FROM session_names WHERE session_id = s.session_id)), ''),
+                      NULLIF(TRIM(s.custom_title), ''),
+                      NULLIF(TRIM(s.ai_title), ''),
+                      NULLIF(TRIM(s.slug), '')),
+                    COALESCE(NULLIF(TRIM(c.summary), ''), NULLIF(TRIM(s.latest_recap), '')),
+                    COALESCE(c.timeline, '[]'),
+                    s.last_message_at
+             FROM sessions s LEFT JOIN cards c ON c.session_id = s.session_id
+             WHERE s.hidden = 0 AND s.title_source != 'radar-stub'
+               AND s.session_id NOT IN (SELECT session_id FROM hidden_sessions)
+               AND s.last_message_at IS NOT NULL
+               AND (?1 IS NULL OR s.last_message_at < ?1
+                    OR (s.last_message_at = ?1 AND s.session_id > ?2))
+               AND COALESCE(NULLIF(TRIM(c.summary), ''), NULLIF(TRIM(s.latest_recap), '')) IS NOT NULL
+             ORDER BY s.last_message_at DESC, s.session_id LIMIT ?3",
+        )?;
+        let rows = stmt
+            .query_map(params![before.map(|b| b.0), before.map(|b| b.1), limit.clamp(1, 200)], |r| {
+                Ok(RecapRow {
+                    session_id: r.get(0)?, project_path: r.get(1)?, label: r.get(2)?,
+                    summary: r.get(3)?, timeline: r.get(4)?, last_message_at: r.get(5)?,
+                })
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
     // ---- session hues (semantic colors) -----------------------------------
 
     /// Sessions whose hue is missing, or computed from fewer embedded chunks
@@ -1795,5 +1853,127 @@ mod tests {
         s.set_session_name(sid, &"x".repeat(100_000)).unwrap();
         let stored = &s.session_names().unwrap()[0].1;
         assert!(stored.chars().count() <= 200, "cap ignores the frontend's honesty");
+    }
+
+    /// A session touched at `ts` whose only summary source is its recap.
+    fn recapped(recap: &str, ts: i64) -> SessionDelta {
+        SessionDelta {
+            project_path: Some("/Users/dev/work".into()),
+            latest_recap: Some(recap.into()),
+            last_message_at: Some(ts),
+            message_count: 4,
+            user_message_count: 2,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn recap_digest_filters_orders_and_pages() {
+        let mut s = mem();
+        s.apply_delta("s-old", &recapped("built the parser", 1000), &[]).unwrap();
+        s.apply_delta("s-mid", &recapped("fixed the radar", 2000), &[]).unwrap();
+        s.apply_delta("s-new", &recapped("shipped the digest", 3000), &[]).unwrap();
+        // user-hidden: recap or not, Home must not resurface it
+        s.apply_delta("s-hid", &recapped("secret work", 2500), &[]).unwrap();
+        s.set_session_hidden("s-hid", true).unwrap();
+        // ghost (0 real user messages → hidden flag): excluded
+        let mut ghost = recapped("ghost recap", 2600);
+        ghost.user_message_count = 0;
+        s.apply_delta("s-ghost", &ghost, &[]).unwrap();
+        // no recap and no card: a session list entry, not a log entry
+        s.apply_delta("s-bare", &delta("just a prompt"), &[]).unwrap();
+
+        let rows = s.recap_digest(None, 10).unwrap();
+        let ids: Vec<&str> = rows.iter().map(|r| r.session_id.as_str()).collect();
+        assert_eq!(ids, ["s-new", "s-mid", "s-old"], "newest first, hidden/ghost/recapless out");
+        assert_eq!(rows[0].summary, "shipped the digest");
+        assert_eq!(rows[0].timeline, "[]", "no card yet — empty timeline, not an error");
+
+        // keyset cursor resumes strictly after the given (ts, sid) row
+        let page = s.recap_digest(Some((2000, "s-mid")), 10).unwrap();
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].session_id, "s-old");
+        let page = s.recap_digest(Some((3000, "s-new")), 10).unwrap();
+        assert_eq!(page[0].session_id, "s-mid");
+        assert_eq!(s.recap_digest(None, 2).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn recap_digest_pages_through_a_tie_group_wider_than_the_page() {
+        let mut s = mem();
+        // 35 sessions stamped with the SAME millisecond (a bulk import), plus
+        // one genuinely older row that a timestamp-only cursor could never reach
+        for i in 0..35 {
+            s.apply_delta(&format!("s-tie-{i:02}"), &recapped("tied work", 5000), &[]).unwrap();
+        }
+        s.apply_delta("s-past", &recapped("older work", 4000), &[]).unwrap();
+
+        // drive the frontend's exact loop: page of 30, cursor = last row shown
+        let mut seen = std::collections::HashSet::new();
+        let mut cursor: Option<(i64, String)> = None;
+        loop {
+            let page = s
+                .recap_digest(cursor.as_ref().map(|(t, sid)| (*t, sid.as_str())), 30)
+                .unwrap();
+            if page.is_empty() {
+                break;
+            }
+            for r in &page {
+                assert!(seen.insert(r.session_id.clone()), "row served twice: {}", r.session_id);
+            }
+            let last = page.last().unwrap();
+            cursor = Some((last.last_message_at, last.session_id.clone()));
+            if page.len() < 30 {
+                break;
+            }
+        }
+        assert_eq!(seen.len(), 36, "every row reachable — no tie-group livelock");
+        assert!(seen.contains("s-past"), "rows older than the tie group are reachable");
+    }
+
+    #[test]
+    fn recap_digest_label_is_a_real_name_never_the_recap() {
+        let mut s = mem();
+        // recap-only session: its TITLE resolves to the recap, but the digest
+        // label must be None — a label that echoes the summary says nothing.
+        s.apply_delta("s-plain", &recapped("wired the store", 1000), &[]).unwrap();
+        // name sources, in precedence order
+        let mut titled = recapped("titled work", 2000);
+        titled.ai_title = Some("Radar fix".into());
+        titled.slug = Some("radar-fix-slug".into());
+        s.apply_delta("s-ai", &titled, &[]).unwrap();
+        let mut custom = recapped("custom work", 3000);
+        custom.custom_title = Some("My session".into());
+        custom.ai_title = Some("loses to custom".into());
+        s.apply_delta("s-custom", &custom, &[]).unwrap();
+        s.apply_delta("s-named", &recapped("named work", 4000), &[]).unwrap();
+        s.set_session_name("s-named", "camera pipeline").unwrap();
+
+        let rows = s.recap_digest(None, 10).unwrap();
+        let by_id: std::collections::HashMap<&str, &RecapRow> =
+            rows.iter().map(|r| (r.session_id.as_str(), r)).collect();
+        assert_eq!(by_id["s-plain"].label, None);
+        assert_eq!(by_id["s-ai"].label.as_deref(), Some("Radar fix"));
+        assert_eq!(by_id["s-custom"].label.as_deref(), Some("My session"));
+        assert_eq!(by_id["s-named"].label.as_deref(), Some("camera pipeline"));
+    }
+
+    #[test]
+    fn recap_digest_prefers_card_summary_and_carries_its_timeline() {
+        let mut s = mem();
+        s.apply_delta("s-card", &recapped("raw recap text", 1000), &[]).unwrap();
+        let tl = r#"[{"text":"did a thing","detail":[],"in_progress":true}]"#;
+        s.put_card("s-card", "distilled summary", tl, "distilled summary did a thing", 4).unwrap();
+        // empty card summary: fall back to the recap but keep the card timeline
+        s.apply_delta("s-blank", &recapped("fallback recap", 2000), &[]).unwrap();
+        s.put_card("s-blank", "", tl, "x", 4).unwrap();
+
+        let rows = s.recap_digest(None, 10).unwrap();
+        let by_id: std::collections::HashMap<&str, &RecapRow> =
+            rows.iter().map(|r| (r.session_id.as_str(), r)).collect();
+        assert_eq!(by_id["s-card"].summary, "distilled summary");
+        assert_eq!(by_id["s-card"].timeline, tl);
+        assert_eq!(by_id["s-blank"].summary, "fallback recap");
+        assert_eq!(by_id["s-blank"].timeline, tl);
     }
 }
