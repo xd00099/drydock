@@ -13,6 +13,7 @@ pub fn parse_line(line: &str) -> ParsedRecord {
             kind: k.to_string(),
             session_id: str_field(&v, "sessionId"),
             ai_title: str_field(&v, "aiTitle"),
+            custom_title: str_field(&v, "customTitle"),
             last_prompt: str_field(&v, "lastPrompt"),
         }),
         other => ParsedRecord::Unknown { raw_type: other.map(|s| s.to_string()) },

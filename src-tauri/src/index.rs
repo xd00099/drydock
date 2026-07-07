@@ -10,6 +10,10 @@ pub struct SessionView {
     pub session_id: String,
     pub project_path: String,
     pub title: String,
+    /// Where `title` came from (custom-title | ai-title | recap | slug |
+    /// first-prompt | session-id). A custom-title is user-set and outranks
+    /// even the card summary in the UI.
+    pub title_source: String,
     /// AI summary from the card (~5 words); the sidebar renders it over `title`.
     pub summary: Option<String>,
     pub latest_recap: Option<String>,
@@ -276,6 +280,7 @@ pub fn sessions_snapshot(
                 session_id: r.session_id,
                 project_path: r.project_path,
                 title: r.title,
+                title_source: r.title_source,
                 latest_recap: r.latest_recap,
                 last_message_at: r.last_message_at,
                 starred: r.starred,
@@ -395,6 +400,17 @@ fn is_safe_transcript(p: &std::path::Path, claude: &std::path::Path, session_id:
         && p.file_stem().and_then(|s| s.to_str()) == Some(session_id)
 }
 
+/// A sidecar dir is safe to delete only if it's `<claude>/projects/<proj>/<id>`
+/// — the session's own uuid-named directory (subagents/tool-results/workflows
+/// live inside it). Same posture as is_safe_transcript: exact-name match under
+/// projects, or refuse.
+fn is_safe_sidecar_dir(p: &std::path::Path, claude: &std::path::Path, session_id: &str) -> bool {
+    p.starts_with(claude.join("projects"))
+        && p.is_dir()
+        && p.file_name().and_then(|s| s.to_str()) == Some(session_id)
+        && p.parent().is_some_and(|proj| proj.parent() == Some(&claude.join("projects")))
+}
+
 fn remove_session(store: &mut Store, claude: &std::path::Path, session_id: &str) -> Result<(), String> {
     if let Some(path) = store.transcript_path(session_id).map_err(|e| e.to_string())? {
         let p = PathBuf::from(&path);
@@ -405,6 +421,18 @@ fn remove_session(store: &mut Store, claude: &std::path::Path, session_id: &str)
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // already gone
             Err(e) => return Err(format!("could not delete transcript: {e}")),
+        }
+    }
+    // sweep the session's sidecar dirs too (subagents, tool-results, workflows)
+    // — leaving them would let the watcher re-index orphan agent files, and
+    // "delete permanently" should mean all of it. Best-effort per dir, behind
+    // the same style of exact-match guard as the transcript delete.
+    if let Ok(projects) = std::fs::read_dir(claude.join("projects")) {
+        for proj in projects.flatten() {
+            let side = proj.path().join(session_id);
+            if is_safe_sidecar_dir(&side, claude, session_id) {
+                let _ = std::fs::remove_dir_all(&side);
+            }
         }
     }
     store.delete_session(session_id).map_err(|e| e.to_string())

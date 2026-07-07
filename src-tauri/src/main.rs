@@ -529,6 +529,8 @@ fn main() {
             files::session_transcript,
             files::export_transcript,
             files::session_files,
+            files::session_agents,
+            files::agent_transcript,
             files::open_path,
             search::search,
             enricher::get_card,

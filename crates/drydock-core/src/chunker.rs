@@ -10,6 +10,13 @@ pub struct Chunk {
 }
 
 pub fn chunk_records(records: &[ParsedRecord]) -> Vec<Chunk> {
+    chunk_records_with(records, false)
+}
+
+/// `include_sidechain: true` is for SUBAGENT transcript files, whose records
+/// all carry isSidechain — the main-transcript path keeps excluding them so a
+/// parent file's inline sidechain stubs never double-index.
+pub fn chunk_records_with(records: &[ParsedRecord], include_sidechain: bool) -> Vec<Chunk> {
     let mut out: Vec<Chunk> = Vec::new();
     let mut buf = String::new();
     let mut buf_role: Option<String> = None;
@@ -27,7 +34,7 @@ pub fn chunk_records(records: &[ParsedRecord]) -> Vec<Chunk> {
 
     for r in records {
         let ParsedRecord::Chain(c) = r else { continue };
-        if c.is_sidechain { continue; }
+        if c.is_sidechain && !include_sidechain { continue; }
         let Some(text) = c.text.as_deref().filter(|t| !t.trim().is_empty()) else { continue };
 
         // recaps are standalone high-signal chunks (spec §7)

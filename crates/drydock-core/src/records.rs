@@ -27,11 +27,15 @@ pub struct Chain {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct State {
-    pub kind: String, // "ai-title" | "last-prompt" | "permission-mode" | "mode" | "file-history-snapshot" | "queue-operation"
+    pub kind: String, // one of STATE_KINDS
     pub session_id: Option<String>,
     pub ai_title: Option<String>,
+    /// User-assigned session name (`claude -n` / `/rename`) — outranks every
+    /// generated title.
+    pub custom_title: Option<String>,
     pub last_prompt: Option<String>,
 }
 
 pub const CHAIN_KINDS: [&str; 4] = ["user", "assistant", "system", "attachment"];
-pub const STATE_KINDS: [&str; 6] = ["ai-title", "last-prompt", "permission-mode", "mode", "file-history-snapshot", "queue-operation"];
+pub const STATE_KINDS: [&str; 7] =
+    ["ai-title", "custom-title", "last-prompt", "permission-mode", "mode", "file-history-snapshot", "queue-operation"];

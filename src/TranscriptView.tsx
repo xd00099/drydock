@@ -7,6 +7,7 @@ import type { PaneSearch, SessionView, TEntry, TranscriptPage } from './types'
 import { clip } from './types'
 
 type ChunkView = { role: string; text: string; ts: number | null }
+type AgentInfo = { agent_id: string; agent_type: string | null; description: string | null }
 
 type Props = {
   sessionId: string
@@ -83,7 +84,7 @@ const MdBlock = memo(function MdBlock({ text }: { text: string }) {
 // Fallback rendering source: the indexed chunks (already role-prefixed text).
 function chunkEntry(c: ChunkView): TEntry {
   const kind = c.role === 'recap' ? 'recap' : c.role === 'user' ? 'user' : 'plain'
-  return { kind, text: c.text, tool: null, tool_use_id: null, meta: false, error: false, ts: c.ts }
+  return { kind, text: c.text, tool: null, tool_use_id: null, meta: false, error: false, persisted_path: null, ts: c.ts }
 }
 
 const chipBtn: React.CSSProperties = {
@@ -209,6 +210,36 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
     return () => { cancelled = true; un?.() }
   }, [refresh])
 
+  // Subagent conversations attached to this session (sidecar files). Loaded
+  // once per session + refreshed on index ticks so a live fan-out appears.
+  const [agents, setAgents] = useState<AgentInfo[]>([])
+  const [agentOpen, setAgentOpen] = useState<AgentInfo | null>(null)
+  useEffect(() => {
+    setAgents([])
+    setAgentOpen(null)
+    let cancelled = false
+    let busy = false
+    let lastJson = ''
+    // index ticks are frequent; only re-render when the agent list CHANGED,
+    // and never let a slow scan overlap the next one
+    const load = () => {
+      if (busy) return
+      busy = true
+      invoke<AgentInfo[]>('session_agents', { sessionId })
+        .then((a) => {
+          if (cancelled) return
+          const j = JSON.stringify(a)
+          if (j !== lastJson) { lastJson = j; setAgents(a) }
+        })
+        .catch(() => {})
+        .finally(() => { busy = false })
+    }
+    load()
+    let un: UnlistenFn | null = null
+    listen('index-updated', load).then((u) => { if (cancelled) u(); else un = u })
+    return () => { cancelled = true; un?.() }
+  }, [sessionId])
+
   useEffect(() => { if (pinnedRef.current) bottomRef.current?.scrollIntoView() }, [entries])
 
   // "show earlier" prepends rows; keep the reader's place by anchoring to the
@@ -224,6 +255,9 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
   useImperativeHandle(ref, (): PaneSearch => ({
     find(query, { dir, incremental }) {
       try {
+        // ⌘F searches the PARENT transcript; an open agent overlay would hide
+        // every hit behind itself — close it when a real query starts
+        if (query) setAgentOpen(null)
         if (!query) { setHl({ q: '', active: -1 }); onMatchesRef.current?.(-1, 0); return }
         const ms = computeMatches(rowsRef.current, query)
         if (ms.length === 0) { setHl({ q: query, active: -1 }); onMatchesRef.current?.(-1, 0); return }
@@ -385,6 +419,17 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
                 {r.result && (
                   <div style={{ marginTop: 6, color: r.result.error ? '#cf6b6b' : '#7d8794' }}>{r.result.text || '(no output)'}</div>
                 )}
+                {r.result?.persisted_path && (
+                  <button
+                    style={{ ...hBtn, marginTop: 6, fontSize: 11, padding: '2px 8px' }}
+                    title={`The result was too large for the transcript; the full output is on disk.\n${r.result.persisted_path}`}
+                    onClick={() =>
+                      invoke('open_path', { path: r.result!.persisted_path, reveal: false }).catch((err) => flash(String(err), true))
+                    }
+                  >
+                    Open full output
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -417,7 +462,15 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
 
   const live = session && session.live_status !== 'ended'
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', color: '#c8cdd5', fontFamily: 'system-ui', fontSize: 13 }}>
+    <div
+      // links in rendered markdown (parent transcript AND agent overlay) must
+      // not navigate the app's own webview — capture-guard the whole pane
+      onClickCapture={(ev) => {
+        const a = (ev.target as HTMLElement).closest?.('a')
+        if (a) ev.preventDefault()
+      }}
+      style={{ position: 'relative', height: '100%', display: 'flex', flexDirection: 'column', color: '#c8cdd5', fontFamily: 'system-ui', fontSize: 13 }}
+    >
       <div style={{ padding: '6px 10px', background: '#161c25', display: 'flex', alignItems: 'center', gap: 10 }}>
         <span style={{ flexShrink: 0 }}>
           {live
@@ -450,6 +503,21 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
           </span>
         )}
       </div>
+      {agents.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px', background: '#10141a', borderBottom: '1px solid #161c25', overflowX: 'auto', flexShrink: 0 }}>
+          <span style={{ color: '#5b6675', fontSize: 11, flexShrink: 0 }}>⑂ {agents.length} subagent{agents.length > 1 ? 's' : ''}</span>
+          {agents.map((a) => (
+            <button
+              key={a.agent_id}
+              onClick={() => setAgentOpen(a)}
+              title={`${a.agent_type ?? 'agent'}${a.description ? ` — ${a.description}` : ''}\nOpen this agent's conversation`}
+              style={{ flexShrink: 0, background: '#141b26', border: '1px solid #2c3647', borderRadius: 10, color: '#8ea0b5', padding: '1px 9px', fontSize: 11, cursor: 'pointer', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+            >
+              {a.agent_type ?? 'agent'}{a.description ? ` · ${clip(a.description, 24)}` : ''}
+            </button>
+          ))}
+        </div>
+      )}
       <div
         ref={scrollerRef}
         onWheel={onInteract}
@@ -457,11 +525,6 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
         onScroll={() => {
           const el = scrollerRef.current
           if (el) pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
-        }}
-        // links in rendered markdown must not navigate the app's own webview
-        onClickCapture={(ev) => {
-          const a = (ev.target as HTMLElement).closest?.('a')
-          if (a) ev.preventDefault()
         }}
         style={{ flex: 1, overflowY: 'auto', padding: 12, fontFamily: 'Menlo, monospace', fontSize: 12 }}
       >
@@ -481,8 +544,110 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
         {rows.length === 0 && <div style={{ color: '#5b6675' }}>no indexed content yet</div>}
         <div ref={bottomRef} />
       </div>
+      {agentOpen && <AgentPane sessionId={sessionId} agent={agentOpen} onClose={() => setAgentOpen(null)} />}
     </div>
   )
 })
+
+/// A subagent's conversation, overlaid on its parent transcript. Read-only,
+/// fetched whole (agent files are bounded); Esc or ‹ returns to the parent.
+function AgentPane({ sessionId, agent, onClose }: { sessionId: string; agent: AgentInfo; onClose: () => void }) {
+  const [entries, setEntries] = useState<TEntry[] | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+  const rootRef = useRef<HTMLDivElement>(null)
+  // incremental + live: same offset contract as the parent transcript, so a
+  // still-running agent tails in, and a transient read error retries on the
+  // next index tick instead of sticking forever
+  useEffect(() => {
+    let cancelled = false
+    let busy = false
+    const offset = { current: 0 }
+    const load = () => {
+      if (busy) return
+      busy = true
+      invoke<TranscriptPage>('agent_transcript', { sessionId, agentId: agent.agent_id, fromOffset: offset.current })
+        .then((p) => {
+          if (cancelled) return
+          setErr(null)
+          offset.current = p.next_offset
+          if (p.reset) setEntries(p.entries)
+          else if (p.entries.length) setEntries((prev) => [...(prev ?? []), ...p.entries])
+          else setEntries((prev) => prev ?? [])
+        })
+        .catch((e) => { if (!cancelled) setErr(String(e)) })
+        .finally(() => { busy = false })
+    }
+    load()
+    let un: UnlistenFn | null = null
+    listen('index-updated', load).then((u) => { if (cancelled) u(); else un = u })
+    return () => { cancelled = true; un?.() }
+  }, [sessionId, agent.agent_id])
+  // Esc is scoped to the pane's own (focused) element — a window-capture
+  // listener would swallow Escape for hidden tabs, the palette and find bar
+  useEffect(() => { rootRef.current?.focus() }, [])
+
+  const [open, setOpen] = useState<Set<number>>(new Set())
+  const row = (e: TEntry, i: number) => {
+    switch (e.kind) {
+      case 'user':
+        return (
+          <div key={i} style={{ margin: '10px 0', padding: '6px 10px', background: e.meta ? 'transparent' : '#141b26', border: '1px solid #1d2530', borderRadius: 6, color: e.meta ? '#5b6675' : '#dbe2ea', whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>
+            {e.text}
+          </div>
+        )
+      case 'assistant':
+        return (
+          <div key={i} style={{ margin: '8px 0' }}>
+            <MdBlock text={e.text} />
+          </div>
+        )
+      case 'thinking':
+      case 'tool_use':
+      case 'tool_result': {
+        const o = open.has(i)
+        const label = e.kind === 'thinking' ? 'thinking' : e.kind === 'tool_use' ? `⏺ ${e.tool ?? 'tool'}` : e.error ? '✗ result' : '✓ result'
+        return (
+          <div key={i} style={{ margin: '2px 0' }}>
+            <button style={chipBtn} onClick={() => setOpen((p) => { const n = new Set(p); if (o) n.delete(i); else n.add(i); return n })}>
+              <span style={{ flexShrink: 0 }}>{o ? '▾' : '▸'}</span>
+              <span style={{ color: e.error ? '#cf6b6b' : '#7ecfc0', flexShrink: 0 }}>{label}</span>
+              {!o && <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{clip(e.text.replace(/\s+/g, ' '), 80)}</span>}
+            </button>
+            {o && (
+              <div style={{ margin: '2px 0 6px 16px', color: '#7d8794', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', fontSize: 11 }}>{e.text}</div>
+            )}
+          </div>
+        )
+      }
+      default:
+        return null
+    }
+  }
+
+  return (
+    <div
+      ref={rootRef}
+      tabIndex={-1}
+      onKeyDown={(e) => {
+        if (e.nativeEvent.isComposing || e.keyCode === 229) return
+        if (e.key === 'Escape') { e.stopPropagation(); onClose() }
+      }}
+      style={{ position: 'absolute', inset: 0, background: '#10141a', display: 'flex', flexDirection: 'column', zIndex: 20, outline: 'none' }}
+    >
+      <div style={{ padding: '6px 10px', background: '#161c25', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+        <button style={hBtn} onClick={onClose} title="Back to the session transcript (Esc)">‹ back</button>
+        <span style={{ color: '#8ea0b5', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          subagent · {agent.agent_type ?? agent.agent_id}{agent.description ? ` — ${agent.description}` : ''}
+        </span>
+      </div>
+      <div style={{ flex: 1, overflowY: 'auto', padding: 12, fontFamily: 'Menlo, monospace', fontSize: 12, color: '#c8cdd5' }}>
+        {err && <div style={{ color: '#cf6b6b' }}>{err}</div>}
+        {entries === null && !err && <div style={{ color: '#5b6675' }}>loading…</div>}
+        {entries?.map(row)}
+        {entries?.length === 0 && <div style={{ color: '#5b6675' }}>empty agent transcript</div>}
+      </div>
+    </div>
+  )
+}
 
 export default TranscriptView

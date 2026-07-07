@@ -199,3 +199,100 @@ fn unchanged_file_is_skipped() {
     assert_eq!(r2.files_parsed, 0);
     assert_eq!(r2.files_skipped, 1);
 }
+
+#[test]
+fn subagent_files_index_into_parent_search_without_touching_its_stats() {
+    let (tmp, file) = setup();
+    let mut store = Store::open_in_memory().unwrap();
+    fs::write(&file, fixture("session_basic.jsonl")).unwrap();
+    sync_all(&mut store, tmp.path()).unwrap();
+    let before = store.get_session(SID).unwrap().unwrap();
+
+    // agent sidecar lands in a DIFFERENT project dir (session cwd moved),
+    // nested a workflow level deep — both must still attach to SID
+    let other = tmp.path().join("projects").join("-Users-dev-work-app");
+    let deep = other.join(SID).join("subagents").join("workflows").join("wf_1");
+    fs::create_dir_all(&deep).unwrap();
+    let agent = deep.join("agent-abc123.jsonl");
+    let rec = serde_json::json!({
+        "type": "user", "uuid": "au1", "sessionId": SID, "isSidechain": true,
+        "agentId": "abc123", "timestamp": "2026-07-06T00:00:00.000Z",
+        "message": {"role": "user", "content": "investigate the flaky retry semantics"}
+    });
+    fs::write(&agent, format!("{rec}\n")).unwrap();
+    let report = sync_all(&mut store, tmp.path()).unwrap();
+    assert_eq!(report.agent_files_parsed, 1);
+
+    // searchable under the parent…
+    let hits = store.search_keyword("flaky retry semantics", 10).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].session_id, SID);
+    // …but invisible to the parent's own conversation surfaces
+    assert!(store.get_chunks(SID).unwrap().iter().all(|c| !c.text.contains("flaky retry")));
+    // and the parent's stats/title/recency are untouched
+    let after = store.get_session(SID).unwrap().unwrap();
+    assert_eq!(after.message_count, before.message_count);
+    assert_eq!(after.user_message_count, before.user_message_count);
+    assert_eq!(after.last_message_at, before.last_message_at);
+    assert_eq!(after.title, before.title);
+
+    // pruning JUST the agent file drops only its chunks — session survives
+    fs::remove_file(&agent).unwrap();
+    let report = sync_all(&mut store, tmp.path()).unwrap();
+    assert_eq!(report.sessions_deleted, 0);
+    assert!(store.get_session(SID).unwrap().is_some());
+    assert!(store.search_keyword("flaky retry semantics", 10).unwrap().is_empty());
+}
+
+#[test]
+fn orphan_agent_file_without_parent_session_is_skipped() {
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = tmp.path().join("projects").join("-Users-dev-work");
+    let dir = proj.join(SID).join("subagents");
+    fs::create_dir_all(&dir).unwrap();
+    let rec = serde_json::json!({
+        "type": "user", "uuid": "au1", "sessionId": SID, "isSidechain": true,
+        "message": {"role": "user", "content": "orphan agent text"}
+    });
+    fs::write(dir.join("agent-zzz.jsonl"), format!("{rec}\n")).unwrap();
+    let mut store = Store::open_in_memory().unwrap();
+    let report = sync_all(&mut store, tmp.path()).unwrap();
+    assert_eq!(report.agent_files_parsed, 0);
+    assert!(store.search_keyword("orphan agent text", 10).unwrap().is_empty());
+}
+
+#[test]
+fn agent_file_never_attaches_to_a_radar_stub() {
+    // a stub session row (radar) must not adopt agent chunks — stub cleanup
+    // would strand them (chunks/FTS/sync rows without a session)
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = tmp.path().join("projects").join("-Users-dev-work");
+    let dir = proj.join(SID).join("subagents");
+    fs::create_dir_all(&dir).unwrap();
+    let rec = serde_json::json!({
+        "type": "user", "uuid": "au1", "sessionId": SID, "isSidechain": true,
+        "message": {"role": "user", "content": "stub adoption attempt"}
+    });
+    fs::write(dir.join("agent-s1.jsonl"), format!("{rec}\n")).unwrap();
+
+    let mut store = Store::open_in_memory().unwrap();
+    store
+        .apply_live(&[drydock_core::radar::LiveSession {
+            session_id: SID.to_string(),
+            cwd: Some("/Users/dev/work".into()),
+            status: "busy".into(),
+            pid: 42,
+            updated_at: None,
+        }])
+        .unwrap();
+    assert!(store.get_session(SID).unwrap().is_some(), "stub exists");
+
+    let report = sync_all(&mut store, tmp.path()).unwrap();
+    assert_eq!(report.agent_files_parsed, 0);
+    assert!(store.search_keyword("stub adoption attempt", 10).unwrap().is_empty());
+
+    // stub ends → cleanup leaves nothing behind
+    store.apply_live(&[]).unwrap();
+    assert!(store.get_session(SID).unwrap().is_none());
+    assert_eq!(store.all_synced_paths().unwrap().len(), 0, "no orphan sync rows");
+}

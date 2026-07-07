@@ -8,6 +8,7 @@ pub struct SessionDelta {
     pub last_prompt: Option<String>,
     pub latest_recap: Option<String>,
     pub ai_title: Option<String>,
+    pub custom_title: Option<String>,
     pub slug: Option<String>,
     pub last_message_at: Option<i64>,
     pub message_count: i64,
@@ -69,6 +70,7 @@ pub fn accumulate(records: &[ParsedRecord]) -> SessionDelta {
             ParsedRecord::State(s) => {
                 d.session_id = d.session_id.or_else(|| s.session_id.clone());
                 if let Some(t) = &s.ai_title { d.ai_title = Some(t.clone()); }
+                if let Some(t) = &s.custom_title { d.custom_title = Some(t.clone()); }
                 if let Some(p) = &s.last_prompt { d.last_prompt = Some(p.clone()); }
             }
             ParsedRecord::Unknown { .. } | ParsedRecord::Malformed => {}
@@ -81,8 +83,12 @@ fn truncate80(s: &str) -> String {
     s.chars().take(80).collect()
 }
 
-/// Spec §6.6 title priority: ai-title > newest recap > slug > first prompt > session-id prefix.
+/// Title priority: custom-title (user-set, spec §6.6 amended) > ai-title >
+/// newest recap > slug > first prompt > session-id prefix.
 pub fn resolve_title(d: &SessionDelta, session_id: &str) -> (String, &'static str) {
+    if let Some(t) = d.custom_title.as_deref().filter(|s| !s.trim().is_empty()) {
+        return (truncate80(t), "custom-title");
+    }
     if let Some(t) = d.ai_title.as_deref().filter(|s| !s.trim().is_empty()) {
         return (truncate80(t), "ai-title");
     }
@@ -151,6 +157,51 @@ mod tests {
     fn ghost_session_has_zero_user_messages() {
         let d = accumulate(&records("session_ghost.jsonl"));
         assert_eq!(d.user_message_count, 0);
+    }
+
+    #[test]
+    fn custom_title_outranks_everything() {
+        // a /rename or `claude -n` name is explicit user intent
+        let full = SessionDelta {
+            custom_title: Some("My name for it".into()),
+            ai_title: Some("AI Title".into()),
+            latest_recap: Some("Recap text".into()),
+            ..Default::default()
+        };
+        assert_eq!(resolve_title(&full, "deadbeef-0000"), ("My name for it".into(), "custom-title"));
+        // whitespace-only custom title falls through like an absent one
+        let blank = SessionDelta { custom_title: Some("   ".into()), ..full };
+        assert_eq!(resolve_title(&blank, "deadbeef-0000").1, "ai-title");
+    }
+
+    #[test]
+    fn accumulates_custom_title_record_last_one_wins() {
+        let lines = [
+            r#"{"type":"custom-title","customTitle":"first name","sessionId":"s"}"#,
+            r#"{"type":"custom-title","customTitle":"renamed later","sessionId":"s"}"#,
+        ];
+        let recs: Vec<_> = lines.iter().map(|l| parse_line(l)).collect();
+        let d = accumulate(&recs);
+        assert_eq!(d.custom_title.as_deref(), Some("renamed later"));
+        assert_eq!(d.session_id.as_deref(), Some("s"));
+    }
+
+    #[test]
+    fn unknown_and_new_record_types_are_inert() {
+        // 2.1.x types Drydock deliberately ignores must add no counts/noise
+        let lines = [
+            r#"{"type":"queue-operation","operation":"enqueue","content":"queued msg","sessionId":"s","timestamp":"2026-07-01T00:00:00.000Z"}"#,
+            r#"{"type":"system","subtype":"api_error","error":"rate_limit","sessionId":"s","retryAttempt":1}"#,
+            r#"{"type":"system","subtype":"turn_duration","durationMs":1200,"messageCount":4,"sessionId":"s"}"#,
+            r#"{"type":"file-history-snapshot","messageId":"m1","snapshot":{}}"#,
+            r#"{"type":"some-future-type","payload":true}"#,
+        ];
+        let recs: Vec<_> = lines.iter().map(|l| parse_line(l)).collect();
+        let d = accumulate(&recs);
+        assert_eq!(d.message_count, 0);
+        assert_eq!(d.user_message_count, 0);
+        assert!(d.first_prompt.is_none());
+        assert!(crate::chunker::chunk_records(&recs).is_empty());
     }
 
     #[test]

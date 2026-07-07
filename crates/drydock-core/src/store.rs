@@ -21,6 +21,7 @@ pub struct SessionRow {
     pub git_branch: Option<String>,
     pub cli_version: Option<String>,
     pub ai_title: Option<String>,
+    pub custom_title: Option<String>,
     pub slug: Option<String>,
     pub starred: bool,
     pub hidden: bool,
@@ -84,7 +85,7 @@ CREATE TABLE IF NOT EXISTS sessions(
   last_message_at INTEGER,
   message_count INTEGER NOT NULL DEFAULT 0,
   user_message_count INTEGER NOT NULL DEFAULT 0,
-  git_branch TEXT, cli_version TEXT, ai_title TEXT, slug TEXT,
+  git_branch TEXT, cli_version TEXT, ai_title TEXT, custom_title TEXT, slug TEXT,
   starred INTEGER NOT NULL DEFAULT 0,
   hidden INTEGER NOT NULL DEFAULT 0,
   live_status TEXT NOT NULL DEFAULT 'ended',
@@ -96,15 +97,17 @@ CREATE TABLE IF NOT EXISTS chunks(
   seq INTEGER NOT NULL,
   role TEXT NOT NULL,
   text TEXT NOT NULL,
-  ts INTEGER
+  ts INTEGER,
+  agent_id TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_chunks_session ON chunks(session_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_session_seq ON chunks(session_id, seq);
 CREATE TABLE IF NOT EXISTS sync_state(
   file_path TEXT PRIMARY KEY,
   session_id TEXT NOT NULL,
   byte_offset INTEGER NOT NULL,
   mtime INTEGER NOT NULL,
-  tail_hex TEXT
+  tail_hex TEXT,
+  is_agent INTEGER NOT NULL DEFAULT 0
 );
 -- Sessions the user hid from Drydock (kept in its own table so re-syncs, which
 -- recompute the ghost `hidden` column, can't clobber the user's choice).
@@ -166,6 +169,11 @@ fn migrate(conn: &Connection) {
     let _ = conn.execute("ALTER TABLE sessions ADD COLUMN live_status TEXT NOT NULL DEFAULT 'ended'", []);
     let _ = conn.execute("ALTER TABLE sessions ADD COLUMN live_pid INTEGER", []);
     let _ = conn.execute("ALTER TABLE sync_state ADD COLUMN tail_hex TEXT", []);
+    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN custom_title TEXT", []);
+    let _ = conn.execute("ALTER TABLE chunks ADD COLUMN agent_id TEXT", []);
+    let _ = conn.execute("ALTER TABLE sync_state ADD COLUMN is_agent INTEGER NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_session_seq ON chunks(session_id, seq)", []);
+    let _ = conn.execute("DROP INDEX IF EXISTS idx_chunks_session", []);
     // Project-level pins were removed; drop the table on existing DBs.
     let _ = conn.execute("DROP TABLE IF EXISTS pins", []);
     // Cards moved from {goal,state,next_step} to {summary,timeline}. The old
@@ -287,6 +295,7 @@ impl Store {
             last_prompt: d.last_prompt.clone().or_else(|| existing.as_ref().and_then(|e| e.last_prompt.clone())),
             latest_recap: d.latest_recap.clone().or_else(|| existing.as_ref().and_then(|e| e.latest_recap.clone())),
             ai_title: d.ai_title.clone().or_else(|| existing.as_ref().and_then(|e| e.ai_title.clone())),
+            custom_title: d.custom_title.clone().or_else(|| existing.as_ref().and_then(|e| e.custom_title.clone())),
             slug: d.slug.clone().or_else(|| existing.as_ref().and_then(|e| e.slug.clone())),
             last_message_at: match (d.last_message_at, existing.as_ref().and_then(|e| e.last_message_at)) {
                 (Some(a), Some(b)) => Some(a.max(b)),
@@ -304,8 +313,8 @@ impl Store {
         tx.execute(
             "INSERT INTO sessions(session_id, project_path, title, title_source, latest_recap,
                first_prompt, last_prompt, last_message_at, message_count, user_message_count,
-               git_branch, cli_version, ai_title, slug, hidden)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
+               git_branch, cli_version, ai_title, custom_title, slug, hidden)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
              ON CONFLICT(session_id) DO UPDATE SET
                project_path=excluded.project_path, title=excluded.title,
                title_source=excluded.title_source, latest_recap=excluded.latest_recap,
@@ -313,12 +322,12 @@ impl Store {
                last_message_at=excluded.last_message_at, message_count=excluded.message_count,
                user_message_count=excluded.user_message_count, git_branch=excluded.git_branch,
                cli_version=excluded.cli_version, ai_title=excluded.ai_title,
-               slug=excluded.slug, hidden=excluded.hidden",
+               custom_title=excluded.custom_title, slug=excluded.slug, hidden=excluded.hidden",
             params![
                 session_id, merged.project_path.clone().unwrap_or_default(), title, title_source,
                 merged.latest_recap, merged.first_prompt, merged.last_prompt, merged.last_message_at,
                 merged.message_count, merged.user_message_count, merged.git_branch,
-                merged.cli_version, merged.ai_title, merged.slug, hidden as i64
+                merged.cli_version, merged.ai_title, merged.custom_title, merged.slug, hidden as i64
             ],
         )?;
 
@@ -345,7 +354,7 @@ impl Store {
         Ok(conn.query_row(
             "SELECT session_id, project_path, title, title_source, latest_recap, first_prompt,
                     last_prompt, last_message_at, message_count, user_message_count, git_branch,
-                    cli_version, ai_title, slug, starred, hidden, live_status, live_pid
+                    cli_version, ai_title, custom_title, slug, starred, hidden, live_status, live_pid
              FROM sessions WHERE session_id = ?1",
             params![session_id],
             |r| Ok(SessionRow {
@@ -353,9 +362,9 @@ impl Store {
                 title_source: r.get(3)?, latest_recap: r.get(4)?, first_prompt: r.get(5)?,
                 last_prompt: r.get(6)?, last_message_at: r.get(7)?, message_count: r.get(8)?,
                 user_message_count: r.get(9)?, git_branch: r.get(10)?, cli_version: r.get(11)?,
-                ai_title: r.get(12)?, slug: r.get(13)?,
-                starred: r.get::<_, i64>(14)? != 0, hidden: r.get::<_, i64>(15)? != 0,
-                live_status: r.get(16)?, live_pid: r.get(17)?,
+                ai_title: r.get(12)?, custom_title: r.get(13)?, slug: r.get(14)?,
+                starred: r.get::<_, i64>(15)? != 0, hidden: r.get::<_, i64>(16)? != 0,
+                live_status: r.get(17)?, live_pid: r.get(18)?,
             }),
         ).optional()?)
     }
@@ -421,17 +430,85 @@ impl Store {
         Ok(())
     }
 
+    /// Append a SUBAGENT transcript's chunks: searchable (FTS + embeddings)
+    /// under the parent session, but tagged with agent_id so get_chunks —
+    /// which feeds the transcript fallback, the enricher's card context and
+    /// the card-search backfill — never mixes agent traffic into the parent's
+    /// own conversation.
+    /// Returns false (writing nothing) unless the parent is a REAL indexed
+    /// session. The check lives inside the write transaction on purpose: a
+    /// radar STUB must not adopt agent content (stub cleanup would strand it),
+    /// and a concurrent delete_session_permanently must not race a
+    /// check-then-act gap into re-inserting chunks for a dead session. The
+    /// caller skips recording sync state when this returns false.
+    pub fn apply_agent_chunks(&mut self, session_id: &str, agent_id: &str, chunks: &[Chunk]) -> Result<bool> {
+        let tx = self.conn.transaction()?;
+        let parent_real: bool = tx
+            .query_row(
+                "SELECT 1 FROM sessions WHERE session_id = ?1 AND title_source != 'radar-stub'",
+                params![session_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !parent_real {
+            return Ok(false);
+        }
+        let next_seq: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(seq), -1) + 1 FROM chunks WHERE session_id = ?1",
+            params![session_id], |r| r.get(0),
+        )?;
+        for (i, c) in chunks.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO chunks(session_id, seq, role, text, ts, agent_id) VALUES (?1,?2,?3,?4,?5,?6)",
+                params![session_id, next_seq + i as i64, c.role, c.text, c.ts, agent_id],
+            )?;
+            let chunk_rowid = tx.last_insert_rowid();
+            tx.execute(
+                "INSERT INTO chunks_fts(text, chunk_id, session_id) VALUES (?1, ?2, ?3)",
+                params![c.text, chunk_rowid, session_id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Drop one subagent file's derived data (its chunks + its sync row) —
+    /// the parent session stays intact. Used when CC prunes an agent file.
+    pub fn delete_agent_file(&mut self, file_path: &str, session_id: &str, agent_id: &str) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "DELETE FROM chunks_fts WHERE chunk_id IN
+               (SELECT chunk_id FROM chunks WHERE session_id = ?1 AND agent_id = ?2)",
+            params![session_id, agent_id],
+        )?;
+        tx.execute(
+            "DELETE FROM chunk_embeddings WHERE chunk_id IN
+               (SELECT chunk_id FROM chunks WHERE session_id = ?1 AND agent_id = ?2)",
+            params![session_id, agent_id],
+        )?;
+        tx.execute("DELETE FROM chunks WHERE session_id = ?1 AND agent_id = ?2", params![session_id, agent_id])?;
+        tx.execute("DELETE FROM sync_state WHERE file_path = ?1", params![file_path])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn chunk_count(&self, session_id: &str) -> Result<i64> {
         Ok(self.conn.query_row("SELECT COUNT(*) FROM chunks WHERE session_id = ?1",
             params![session_id], |r| r.get(0))?)
     }
 
     pub fn set_sync_state(&mut self, file_path: &str, session_id: &str, byte_offset: i64, mtime: i64, tail_hex: Option<&str>) -> Result<()> {
+        self.set_sync_state_kind(file_path, session_id, byte_offset, mtime, tail_hex, false)
+    }
+
+    pub fn set_sync_state_kind(&mut self, file_path: &str, session_id: &str, byte_offset: i64, mtime: i64, tail_hex: Option<&str>, is_agent: bool) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO sync_state(file_path, session_id, byte_offset, mtime, tail_hex) VALUES (?1,?2,?3,?4,?5)
+            "INSERT INTO sync_state(file_path, session_id, byte_offset, mtime, tail_hex, is_agent) VALUES (?1,?2,?3,?4,?5,?6)
              ON CONFLICT(file_path) DO UPDATE SET session_id=excluded.session_id,
-               byte_offset=excluded.byte_offset, mtime=excluded.mtime, tail_hex=excluded.tail_hex",
-            params![file_path, session_id, byte_offset, mtime, tail_hex])?;
+               byte_offset=excluded.byte_offset, mtime=excluded.mtime, tail_hex=excluded.tail_hex,
+               is_agent=excluded.is_agent",
+            params![file_path, session_id, byte_offset, mtime, tail_hex, is_agent as i64])?;
         Ok(())
     }
 
@@ -463,10 +540,26 @@ impl Store {
                 )?;
             }
         }
-        tx.execute(
-            "DELETE FROM sessions WHERE live_status = 'ended' AND title_source = 'radar-stub'",
-            [],
-        )?;
+        // ended stubs cascade like any delete: agent sidecar chunks can attach
+        // to a stub (race), and a bare row delete would strand them forever
+        let dead: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT session_id FROM sessions WHERE live_status = 'ended' AND title_source = 'radar-stub'",
+            )?;
+            let ids = stmt.query_map([], |r| r.get(0))?.collect::<Result<Vec<String>, _>>()?;
+            ids
+        };
+        for sid in &dead {
+            tx.execute("DELETE FROM chunks_fts WHERE session_id = ?1", params![sid])?;
+            tx.execute(
+                "DELETE FROM chunk_embeddings WHERE chunk_id IN (SELECT chunk_id FROM chunks WHERE session_id = ?1)",
+                params![sid],
+            )?;
+            tx.execute("DELETE FROM chunks WHERE session_id = ?1", params![sid])?;
+            tx.execute("DELETE FROM sync_state WHERE session_id = ?1", params![sid])?;
+            tx.execute("DELETE FROM session_hues WHERE session_id = ?1", params![sid])?;
+            tx.execute("DELETE FROM sessions WHERE session_id = ?1", params![sid])?;
+        }
         tx.commit()?;
         Ok(())
     }
@@ -476,7 +569,10 @@ impl Store {
     /// shows in the transcript nor feeds back into the next card generation.
     pub fn get_chunks(&self, session_id: &str) -> Result<Vec<Chunk>> {
         let mut stmt = self.conn.prepare(
-            "SELECT role, text, ts FROM chunks WHERE session_id = ?1 AND role != 'card' ORDER BY seq",
+            // agent chunks are search-only: the transcript fallback and the
+            // enricher's card context must see the parent conversation alone
+            "SELECT role, text, ts FROM chunks
+             WHERE session_id = ?1 AND role != 'card' AND agent_id IS NULL ORDER BY seq",
         )?;
         let rows: Vec<Chunk> = stmt
             .query_map(params![session_id], |r| {
@@ -591,7 +687,8 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT c.chunk_id, c.text FROM chunks c
              LEFT JOIN chunk_embeddings e ON e.chunk_id = c.chunk_id
-             WHERE e.chunk_id IS NULL ORDER BY c.chunk_id LIMIT ?1",
+             WHERE e.chunk_id IS NULL
+             ORDER BY (c.agent_id IS NOT NULL) ASC, c.chunk_id ASC LIMIT ?1",
         )?;
         let rows: Vec<(i64, String)> = stmt
             .query_map(params![limit], |r| Ok((r.get(0)?, r.get(1)?)))?
@@ -680,6 +777,7 @@ impl Store {
             "SELECT q.sid FROM (
                SELECT c.session_id AS sid, COUNT(e.chunk_id) AS n
                FROM chunks c JOIN chunk_embeddings e ON e.chunk_id = c.chunk_id
+               WHERE c.agent_id IS NULL
                GROUP BY c.session_id
              ) q LEFT JOIN session_hues h ON h.session_id = q.sid
              WHERE h.session_id IS NULL OR h.embedded_chunks != q.n
@@ -697,7 +795,7 @@ impl Store {
     pub fn session_embedding_mean(&self, session_id: &str) -> Result<Option<(Vec<f32>, i64)>> {
         let mut stmt = self.conn.prepare(
             "SELECT e.embedding FROM chunks c JOIN chunk_embeddings e ON e.chunk_id = c.chunk_id
-             WHERE c.session_id = ?1",
+             WHERE c.session_id = ?1 AND c.agent_id IS NULL",
         )?;
         let mut mean: Vec<f32> = Vec::new();
         let mut n = 0i64;
@@ -727,7 +825,8 @@ impl Store {
     pub fn all_session_embedding_means(&self) -> Result<Vec<(String, Vec<f32>)>> {
         let mut stmt = self.conn.prepare(
             "SELECT c.session_id, e.embedding
-             FROM chunks c JOIN chunk_embeddings e ON e.chunk_id = c.chunk_id",
+             FROM chunks c JOIN chunk_embeddings e ON e.chunk_id = c.chunk_id
+             WHERE c.agent_id IS NULL",
         )?;
         let mut acc: std::collections::HashMap<String, (Vec<f32>, i64)> = std::collections::HashMap::new();
         for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?)))?.flatten() {
@@ -858,16 +957,25 @@ impl Store {
         Ok(self
             .conn
             .query_row(
-                "SELECT file_path FROM sync_state WHERE session_id = ?1",
+                // agent sidecar rows share the parent's session_id — the
+                // session's transcript is the one non-agent row
+                "SELECT file_path FROM sync_state WHERE session_id = ?1 AND is_agent = 0",
                 params![session_id],
                 |r| r.get(0),
             )
             .optional()?)
     }
 
-    pub fn all_synced_paths(&self) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare("SELECT file_path FROM sync_state ORDER BY file_path")?;
-        let rows: Vec<String> = stmt.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
+    /// (file_path, session_id, is_agent) for every synced file — deletion
+    /// mirroring needs to know whether a vanished path was a whole session's
+    /// transcript or just one subagent sidecar file.
+    pub fn all_synced_paths(&self) -> Result<Vec<(String, String, bool)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT file_path, session_id, is_agent FROM sync_state ORDER BY file_path",
+        )?;
+        let rows: Vec<(String, String, bool)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0)))?
+            .collect::<Result<_, _>>()?;
         Ok(rows)
     }
 }
@@ -1049,11 +1157,24 @@ mod tests {
         let st = s.get_sync_state("/a/b.jsonl").unwrap().unwrap();
         assert_eq!((st.byte_offset, st.mtime), (1234, 5678));
         assert_eq!(st.tail_hex.as_deref(), Some("deadbeef"));
-        assert_eq!(s.all_synced_paths().unwrap(), vec!["/a/b.jsonl".to_string()]);
+        assert_eq!(
+            s.all_synced_paths().unwrap(),
+            vec![("/a/b.jsonl".to_string(), "sid".to_string(), false)]
+        );
 
         // tail_hex is optional (pre-migration rows carry NULL)
         s.set_sync_state("/a/b.jsonl", "sid", 2000, 5679, None).unwrap();
         assert_eq!(s.get_sync_state("/a/b.jsonl").unwrap().unwrap().tail_hex, None);
+    }
+
+    #[test]
+    fn transcript_path_never_returns_an_agent_sidecar() {
+        let mut s = mem();
+        // agent row synced FIRST (path sorts first too) — must still lose
+        s.set_sync_state_kind("/p/a/sid/subagents/agent-x.jsonl", "sid", 10, 1, None, true).unwrap();
+        assert_eq!(s.transcript_path("sid").unwrap(), None, "agent-only session has no transcript");
+        s.set_sync_state("/p/b/sid.jsonl", "sid", 20, 2, None).unwrap();
+        assert_eq!(s.transcript_path("sid").unwrap().as_deref(), Some("/p/b/sid.jsonl"));
     }
 
     fn live(sid: &str, status: &str, pid: u32, cwd: Option<&str>) -> crate::radar::LiveSession {

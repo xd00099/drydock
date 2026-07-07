@@ -63,6 +63,7 @@ fn view(r: drydock_core::store::SessionRow, summary: Option<String>) -> SessionV
         session_id: r.session_id,
         project_path: r.project_path,
         title: r.title,
+        title_source: r.title_source,
         latest_recap: r.latest_recap,
         last_message_at: r.last_message_at,
         starred: r.starred,

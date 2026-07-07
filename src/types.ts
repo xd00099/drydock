@@ -2,6 +2,9 @@ export type SessionView = {
   session_id: string
   project_path: string
   title: string
+  // where `title` came from; 'custom-title' means the USER named the session
+  // (claude -n / /rename) and that name outranks even the card summary
+  title_source: string
   summary: string | null // AI ~5-word title from the card; rendered over `title`
   latest_recap: string | null
   last_message_at: number | null
@@ -47,6 +50,8 @@ export type TEntry = {
   tool_use_id: string | null
   meta: boolean // caveat/command noise — rendered dimmed
   error: boolean // tool_result with is_error
+  // full output on disk for spilled (>50K) tool results — offer to open it
+  persisted_path: string | null
   ts: number | null
 }
 export type TranscriptPage = { entries: TEntry[]; next_offset: number; reset: boolean }
@@ -98,8 +103,10 @@ export type Artifact = { id: string; title: string; kind: ArtifactKind; content:
 // at render time, so the gallery dedups against the in-memory list.
 export type SavedArtifact = { file: string; title: string; kind: string; created_ms: number; seq: number; path: string | null }
 
-/** Display label for a session: AI summary when present, else its raw title. */
+/** Display label for a session: a user-set name (claude -n / /rename) always
+ *  wins; otherwise the AI card summary when present, else the indexed title. */
 export function sessionLabel(s: SessionView): string {
+  if (s.title_source === 'custom-title' && s.title.trim()) return s.title
   return s.summary && s.summary.trim() ? s.summary : s.title
 }
 
