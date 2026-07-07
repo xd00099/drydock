@@ -19,6 +19,9 @@ type Props = {
   onToggleStar?: () => void
   // rename the session in Drydock's index (blank clears); absent = unindexed
   onRename?: (name: string) => void
+  // artifacts arrived while this tab was NOT focused (e.g. Home was showing):
+  // open the Artifacts tab on mount so the badge's click actually lands there
+  initialUnread?: boolean
 }
 
 const TABS: { id: RightTab; label: string }[] = [
@@ -1083,7 +1086,7 @@ function PreviewTab({ artifacts, sessionId }: { artifacts: Artifact[]; sessionId
   )
 }
 
-export default function BriefingPanel({ sessionId, projectPath, starred, artifacts, label, onToggleStar, onRename }: Props) {
+export default function BriefingPanel({ sessionId, projectPath, starred, artifacts, label, onToggleStar, onRename, initialUnread }: Props) {
   const [card, setCard] = useState<CardView | null>(null)
   const [files, setFiles] = useState<FileTouch[]>([])
   const [tasks, setTasks] = useState<TasksView | null>(null)
@@ -1092,7 +1095,7 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
   // clamp on load AND on window resize: a width persisted (or auto-widened) on a
   // big monitor must not overflow a smaller window later
   const [width, setWidth] = useState(() => clampPanelWidth(loadNum('dd.briefingWidth', 252)))
-  const [tab, setTab] = useState<RightTab>(loadRightTab)
+  const [tab, setTab] = useState<RightTab>(() => (initialUnread ? 'preview' : loadRightTab()))
   const widthRef = useRef(width)
   widthRef.current = width
   useEffect(() => {

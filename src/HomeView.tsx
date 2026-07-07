@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { PromptView, SessionView, UsageOverview } from './types'
@@ -29,7 +29,10 @@ function dayLabel(ts: number): string {
   const same = (a: Date, b: Date) => a.toDateString() === b.toDateString()
   if (same(d, today)) return 'TODAY'
   if (same(d, yest)) return 'YESTERDAY'
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }).toUpperCase()
+  // year included once it differs — "JUL 1" must not mean two different years
+  return d
+    .toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: d.getFullYear() === today.getFullYear() ? undefined : 'numeric' })
+    .toUpperCase()
 }
 
 const fmtTime = (ts: number) =>
@@ -43,12 +46,19 @@ export default function HomeView({ sessions, onFocusSession }: Props) {
 
   const bySid = new Map(sessions.map((s) => [s.session_id, s]))
 
+  const paged = useRef(false)
   const loadPrompts = useCallback((before: number | null) => {
     setBusy(true)
     invoke<PromptView[]>('recent_prompts', { limit: 30, before })
       .then((page) => {
         setMore(page.length === 30)
-        setPrompts((prev) => (before == null ? page : [...prev, ...page]))
+        setPrompts((prev) => {
+          if (before == null) return page
+          // the cursor re-includes boundary-timestamp rows (ties would
+          // otherwise be silently dropped) — dedupe on append
+          const seen = new Set(prev.map((p) => `${p.ts}:${p.session_id}:${p.display}`))
+          return [...prev, ...page.filter((p) => !seen.has(`${p.ts}:${p.session_id}:${p.display}`))]
+        })
       })
       .catch(() => setMore(false))
       .finally(() => setBusy(false))
@@ -62,6 +72,9 @@ export default function HomeView({ sessions, onFocusSession }: Props) {
     let un: UnlistenFn | null = null
     listen('index-updated', () => {
       invoke<UsageOverview>('usage_overview').then((u) => { if (!cancelled) setUsage(u) }).catch(() => {})
+      // fresh prompts too — but never yank the list out from under a reader
+      // who has paged back in time
+      if (!cancelled && !paged.current) loadPrompts(null)
     }).then((u) => { if (cancelled) u(); else un = u })
     return () => { cancelled = true; un?.() }
   }, [loadPrompts])
@@ -120,7 +133,7 @@ export default function HomeView({ sessions, onFocusSession }: Props) {
                   const s = bySid.get(p.session_id)
                   return (
                     <button
-                      key={p.ts + ':' + i}
+                      key={`${p.ts}:${p.session_id}:${i}`}
                       onClick={() => s && onFocusSession(p.session_id)}
                       disabled={!s}
                       title={s ? `${p.display}\n${p.project}` : `${p.display}\n${p.project}\n(transcript no longer indexed — expired or deleted)`}
@@ -137,7 +150,7 @@ export default function HomeView({ sessions, onFocusSession }: Props) {
             ))}
             {more && prompts.length > 0 && (
               <button
-                onClick={() => loadPrompts(prompts[prompts.length - 1]?.ts ?? null)}
+                onClick={() => { paged.current = true; loadPrompts((prompts[prompts.length - 1]?.ts ?? 0) + 1) }}
                 disabled={busy}
                 style={{ marginTop: 10, background: '#141b26', border: '1px solid #2c3647', borderRadius: 5, color: '#9aa3af', fontSize: 11, padding: '3px 10px', cursor: busy ? 'default' : 'pointer' }}
               >

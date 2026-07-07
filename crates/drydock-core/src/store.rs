@@ -54,6 +54,10 @@ pub struct SyncState {
     pub mtime: i64,
     /// Hex of the last <=64 bytes before byte_offset; None for pre-migration rows.
     pub tail_hex: Option<String>,
+    /// message.id of the last usage-counted record: a multi-block turn can
+    /// straddle two sync batches, and its repeated usage lines must not be
+    /// re-counted at the start of the next batch.
+    pub last_usage_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -117,7 +121,8 @@ CREATE TABLE IF NOT EXISTS sync_state(
   byte_offset INTEGER NOT NULL,
   mtime INTEGER NOT NULL,
   tail_hex TEXT,
-  is_agent INTEGER NOT NULL DEFAULT 0
+  is_agent INTEGER NOT NULL DEFAULT 0,
+  last_usage_id TEXT
 );
 -- Sessions the user hid from Drydock (kept in its own table so re-syncs, which
 -- recompute the ghost `hidden` column, can't clobber the user's choice).
@@ -198,6 +203,7 @@ CREATE TABLE IF NOT EXISTS cards(
 /// Additive migrations for DBs created by older Drydock versions.
 /// ALTER fails harmlessly when the column already exists (fresh SCHEMA has it).
 fn migrate(conn: &Connection) {
+    let _ = conn.execute("ALTER TABLE sync_state ADD COLUMN last_usage_id TEXT", []);
     let _ = conn.execute("ALTER TABLE sessions ADD COLUMN live_status TEXT NOT NULL DEFAULT 'ended'", []);
     let _ = conn.execute("ALTER TABLE sessions ADD COLUMN live_pid INTEGER", []);
     let _ = conn.execute("ALTER TABLE sync_state ADD COLUMN tail_hex TEXT", []);
@@ -337,7 +343,6 @@ impl Store {
             user_message_count: d.user_message_count + existing.as_ref().map_or(0, |e| e.user_message_count),
             git_branch: d.git_branch.clone().or_else(|| existing.as_ref().and_then(|e| e.git_branch.clone())),
             cli_version: d.cli_version.clone().or_else(|| existing.as_ref().and_then(|e| e.cli_version.clone())),
-            usage_by_model: Default::default(), // applied additively below, not merged into the row
         };
 
         let (title, title_source) = resolve_title(&merged, session_id);
@@ -364,11 +369,6 @@ impl Store {
             ],
         )?;
 
-        // token usage is append-only like the transcript itself: each sync
-        // pass parses only NEW records, so the delta's sums ADD to the row
-        for (model, [i, o, cr, cc]) in &d.usage_by_model {
-            Self::add_usage_in_conn(&tx, session_id, "main", model, *i, *o, *cr, *cc)?;
-        }
 
         let next_seq: i64 = tx.query_row(
             "SELECT COALESCE(MAX(seq), -1) + 1 FROM chunks WHERE session_id = ?1",
@@ -570,25 +570,27 @@ impl Store {
             params![session_id], |r| r.get(0))?)
     }
 
-    pub fn set_sync_state(&mut self, file_path: &str, session_id: &str, byte_offset: i64, mtime: i64, tail_hex: Option<&str>) -> Result<()> {
-        self.set_sync_state_kind(file_path, session_id, byte_offset, mtime, tail_hex, false)
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_sync_state(&mut self, file_path: &str, session_id: &str, byte_offset: i64, mtime: i64, tail_hex: Option<&str>, last_usage_id: Option<&str>) -> Result<()> {
+        self.set_sync_state_kind(file_path, session_id, byte_offset, mtime, tail_hex, false, last_usage_id)
     }
 
-    pub fn set_sync_state_kind(&mut self, file_path: &str, session_id: &str, byte_offset: i64, mtime: i64, tail_hex: Option<&str>, is_agent: bool) -> Result<()> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_sync_state_kind(&mut self, file_path: &str, session_id: &str, byte_offset: i64, mtime: i64, tail_hex: Option<&str>, is_agent: bool, last_usage_id: Option<&str>) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO sync_state(file_path, session_id, byte_offset, mtime, tail_hex, is_agent) VALUES (?1,?2,?3,?4,?5,?6)
+            "INSERT INTO sync_state(file_path, session_id, byte_offset, mtime, tail_hex, is_agent, last_usage_id) VALUES (?1,?2,?3,?4,?5,?6,?7)
              ON CONFLICT(file_path) DO UPDATE SET session_id=excluded.session_id,
                byte_offset=excluded.byte_offset, mtime=excluded.mtime, tail_hex=excluded.tail_hex,
-               is_agent=excluded.is_agent",
-            params![file_path, session_id, byte_offset, mtime, tail_hex, is_agent as i64])?;
+               is_agent=excluded.is_agent, last_usage_id=excluded.last_usage_id",
+            params![file_path, session_id, byte_offset, mtime, tail_hex, is_agent as i64, last_usage_id])?;
         Ok(())
     }
 
     pub fn get_sync_state(&self, file_path: &str) -> Result<Option<SyncState>> {
         Ok(self.conn.query_row(
-            "SELECT session_id, byte_offset, mtime, tail_hex FROM sync_state WHERE file_path = ?1",
+            "SELECT session_id, byte_offset, mtime, tail_hex, last_usage_id FROM sync_state WHERE file_path = ?1",
             params![file_path],
-            |r| Ok(SyncState { session_id: r.get(0)?, byte_offset: r.get(1)?, mtime: r.get(2)?, tail_hex: r.get(3)? }),
+            |r| Ok(SyncState { session_id: r.get(0)?, byte_offset: r.get(1)?, mtime: r.get(2)?, tail_hex: r.get(3)?, last_usage_id: r.get(4)? }),
         ).optional()?)
     }
 
@@ -905,15 +907,44 @@ impl Store {
         Ok(rows)
     }
 
+    /// Add a batch's token sums to a (session, scope) — the incremental path.
+    pub fn add_usage(&mut self, session_id: &str, scope: &str, usage: &std::collections::HashMap<String, [i64; 4]>) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        for (model, [i, o, cr, cc]) in usage {
+            Self::add_usage_in_conn(&tx, session_id, scope, model, *i, *o, *cr, *cc)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// True for an indexed, non-stub session (the same gate agent chunks use).
+    pub fn is_real_session(&self, session_id: &str) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT 1 FROM sessions WHERE session_id = ?1 AND title_source != 'radar-stub'",
+                params![session_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
     /// Sessions ranked by output tokens (the best available effort proxy) —
     /// (session_id, output_tokens, input+output+cache_creation). Cache READS
     /// are excluded from the total: they dominate numerically but cost little.
+    /// Hidden sessions (ghosts AND user-hidden) and radar stubs are excluded —
+    /// Home must not resurface what the sidebar deliberately doesn't show.
     pub fn top_sessions_by_tokens(&self, limit: i64) -> Result<Vec<(String, i64, i64)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT session_id, SUM(output_tokens),
-                    SUM(input_tokens + output_tokens + cache_creation_tokens)
-             FROM session_usage GROUP BY session_id
-             ORDER BY SUM(output_tokens) DESC LIMIT ?1",
+            "SELECT u.session_id, SUM(u.output_tokens),
+                    SUM(u.input_tokens + u.output_tokens + u.cache_creation_tokens)
+             FROM session_usage u
+             JOIN sessions s ON s.session_id = u.session_id
+             WHERE s.hidden = 0 AND s.title_source != 'radar-stub'
+               AND u.session_id NOT IN (SELECT session_id FROM hidden_sessions)
+             GROUP BY u.session_id
+             ORDER BY SUM(u.output_tokens) DESC LIMIT ?1",
         )?;
         let rows = stmt
             .query_map(params![limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
@@ -1328,7 +1359,7 @@ mod tests {
         s.apply_delta("11111111-1111-1111-1111-111111111111", &delta("hello"), &[
             Chunk { role: "user".into(), text: "t".into(), ts: None },
         ]).unwrap();
-        s.set_sync_state("/tmp/f.jsonl", "11111111-1111-1111-1111-111111111111", 10, 99, None).unwrap();
+        s.set_sync_state("/tmp/f.jsonl", "11111111-1111-1111-1111-111111111111", 10, 99, None, None).unwrap();
         s.delete_session("11111111-1111-1111-1111-111111111111").unwrap();
         assert!(s.get_session("11111111-1111-1111-1111-111111111111").unwrap().is_none());
         assert_eq!(s.chunk_count("11111111-1111-1111-1111-111111111111").unwrap(), 0);
@@ -1338,17 +1369,18 @@ mod tests {
     #[test]
     fn sync_state_roundtrip() {
         let mut s = mem();
-        s.set_sync_state("/a/b.jsonl", "sid", 1234, 5678, Some("deadbeef")).unwrap();
+        s.set_sync_state("/a/b.jsonl", "sid", 1234, 5678, Some("deadbeef"), Some("msg_1")).unwrap();
         let st = s.get_sync_state("/a/b.jsonl").unwrap().unwrap();
         assert_eq!((st.byte_offset, st.mtime), (1234, 5678));
         assert_eq!(st.tail_hex.as_deref(), Some("deadbeef"));
+        assert_eq!(st.last_usage_id.as_deref(), Some("msg_1"));
         assert_eq!(
             s.all_synced_paths().unwrap(),
             vec![("/a/b.jsonl".to_string(), "sid".to_string(), false)]
         );
 
         // tail_hex is optional (pre-migration rows carry NULL)
-        s.set_sync_state("/a/b.jsonl", "sid", 2000, 5679, None).unwrap();
+        s.set_sync_state("/a/b.jsonl", "sid", 2000, 5679, None, None).unwrap();
         assert_eq!(s.get_sync_state("/a/b.jsonl").unwrap().unwrap().tail_hex, None);
     }
 
@@ -1356,9 +1388,9 @@ mod tests {
     fn transcript_path_never_returns_an_agent_sidecar() {
         let mut s = mem();
         // agent row synced FIRST (path sorts first too) — must still lose
-        s.set_sync_state_kind("/p/a/sid/subagents/agent-x.jsonl", "sid", 10, 1, None, true).unwrap();
+        s.set_sync_state_kind("/p/a/sid/subagents/agent-x.jsonl", "sid", 10, 1, None, true, None).unwrap();
         assert_eq!(s.transcript_path("sid").unwrap(), None, "agent-only session has no transcript");
-        s.set_sync_state("/p/b/sid.jsonl", "sid", 20, 2, None).unwrap();
+        s.set_sync_state("/p/b/sid.jsonl", "sid", 20, 2, None, None).unwrap();
         assert_eq!(s.transcript_path("sid").unwrap().as_deref(), Some("/p/b/sid.jsonl"));
     }
 
@@ -1721,10 +1753,11 @@ mod tests {
         let mut s = Store::open_in_memory().unwrap();
         let sid = "s-usage";
         // main usage adds across two syncs (append-only contract)
-        let mut d = delta("hi");
-        d.usage_by_model.insert("m1".into(), [10, 5, 100, 2]);
-        s.apply_delta(sid, &d, &[]).unwrap();
-        s.apply_delta(sid, &d, &[]).unwrap();
+        s.apply_delta(sid, &delta("hi"), &[]).unwrap();
+        let mut m = std::collections::HashMap::new();
+        m.insert("m1".to_string(), [10i64, 5, 100, 2]);
+        s.add_usage(sid, "main", &m).unwrap();
+        s.add_usage(sid, "main", &m).unwrap();
         // agent usage under its own scope, through the gated path
         let mut agent_usage = std::collections::HashMap::new();
         agent_usage.insert("m2".to_string(), [3i64, 7, 0, 0]);

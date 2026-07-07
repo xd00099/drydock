@@ -44,9 +44,15 @@ pub fn session_tasks(session_id: String) -> Result<TasksView, String> {
         return Ok(TasksView { tasks: vec![], updated_at: None }); // no board = empty, not an error
     };
     for e in entries.flatten() {
+        if tasks.len() >= 500 {
+            break; // a task board is a checklist, not a database
+        }
         let path = e.path();
         if path.extension().and_then(|x| x.to_str()) != Some("json") {
             continue;
+        }
+        if e.metadata().map(|m| m.len() > 256_000).unwrap_or(true) {
+            continue; // oversized or unreadable — not a task file we render
         }
         if let Ok(md) = e.metadata() {
             let mt = md
@@ -150,26 +156,35 @@ pub struct SessionUsageView {
 #[tauri::command]
 pub fn session_usage(db: State<'_, AppDb>, session_id: String) -> Result<SessionUsageView, String> {
     let store = db.0.lock().unwrap();
-    let rows = store.session_usage(&session_id).map_err(|e| e.to_string())?;
+    let raw = store.session_usage(&session_id).map_err(|e| e.to_string())?;
     let mut total_output = 0i64;
     let mut total_tokens = 0i64;
     let mut agent_output = 0i64;
-    let rows: Vec<ModelUsageView> = rows
+    // collapse per-agent scopes to one 'agents' bucket per model: the chip
+    // tooltip wants "who wrote what", not one line per subagent id
+    let mut agg: std::collections::BTreeMap<(String, String), [i64; 4]> = Default::default();
+    for r in raw {
+        total_output += r.output;
+        total_tokens += r.input + r.output + r.cache_creation;
+        let scope = if r.scope == "main" { "main" } else { "agents" };
+        if scope == "agents" {
+            agent_output += r.output;
+        }
+        let e = agg.entry((scope.to_string(), r.model)).or_insert([0; 4]);
+        e[0] += r.input;
+        e[1] += r.output;
+        e[2] += r.cache_read;
+        e[3] += r.cache_creation;
+    }
+    let rows = agg
         .into_iter()
-        .map(|r| {
-            total_output += r.output;
-            total_tokens += r.input + r.output + r.cache_creation;
-            if r.scope != "main" {
-                agent_output += r.output;
-            }
-            ModelUsageView {
-                model: r.model,
-                scope: r.scope,
-                input: r.input,
-                output: r.output,
-                cache_read: r.cache_read,
-                cache_creation: r.cache_creation,
-            }
+        .map(|((scope, model), [i, o, cr, cc])| ModelUsageView {
+            model,
+            scope,
+            input: i,
+            output: o,
+            cache_read: cr,
+            cache_creation: cc,
         })
         .collect();
     Ok(SessionUsageView { rows, total_output, total_tokens, agent_output })
@@ -336,7 +351,13 @@ pub fn file_history(db: State<'_, AppDb>, session_id: String) -> Result<Vec<File
         let Some(tracked) = v.pointer("/snapshot/trackedFileBackups").and_then(Value::as_object) else { continue };
         for (rel, info) in tracked {
             let Some(version) = info.get("version").and_then(Value::as_i64) else { continue };
-            let backup = info.get("backupFileName").and_then(Value::as_str).map(String::from);
+            // shape-gate BEFORE any disk probe: the name comes from the
+            // transcript and is joined into a path
+            let backup = info
+                .get("backupFileName")
+                .and_then(Value::as_str)
+                .filter(|b| is_blob_name(b))
+                .map(String::from);
             let ts = info
                 .get("backupTime")
                 .and_then(Value::as_str)

@@ -23,12 +23,25 @@ type DiffLine = { kind: 'ctx' | 'add' | 'del' | 'gap'; text: string }
 
 const DIFF_CAP = 1500 // lines per side; beyond this the DP table gets silly
 
+/// Split blob text into lines: CRLF normalized (a line-endings-only rewrite
+/// must not read as a total rewrite), empty content = zero lines (not ['']).
+function toLines(s: string): string[] {
+  if (s === '') return []
+  return s.replace(/\r\n/g, '\n').split('\n')
+}
+
 /// Plain LCS line diff — small, dependency-free, fine at checkpoint sizes.
 function diffLines(a: string[], b: string[]): DiffLine[] {
   const n = a.length
   const m = b.length
   if (n > DIFF_CAP || m > DIFF_CAP) {
-    return [{ kind: 'gap', text: `file too large to diff (${n} → ${m} lines) — showing the newer version` }, ...b.map((text) => ({ kind: 'add' as const, text }))]
+    // don't dump 100k DOM rows: show the head of the newer version only
+    const head = b.slice(0, 400)
+    return [
+      { kind: 'gap', text: `file too large to diff (${n} → ${m} lines) — showing the start of the newer version` },
+      ...head.map((text) => ({ kind: 'add' as const, text })),
+      ...(m > head.length ? [{ kind: 'gap' as const, text: `··· ${m - head.length} more lines ···` }] : []),
+    ]
   }
   // LCS lengths, bottom-up
   const w = m + 1
@@ -139,8 +152,9 @@ export default function TimeMachine({ sessionId, initialPath, onClose }: Props) 
     const before = prev?.backup_file ? blobs[prev.backup_file] : ''
     if (before === undefined) return 'loading'
     if (before === null) return 'unreadable'
-    const a = before === '' ? [] : before.split('\n')
-    return foldContext(diffLines(a, after.split('\n')))
+    const folded = foldContext(diffLines(toLines(before), toLines(after)))
+    if (!folded.some((l) => l.kind === 'add' || l.kind === 'del')) return 'identical'
+    return folded
   }, [sel, prev, blobs])
 
   const mono = { fontFamily: 'Menlo, monospace', fontSize: 11 } as const
@@ -191,7 +205,7 @@ export default function TimeMachine({ sessionId, initialPath, onClose }: Props) 
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
         <div style={{ width: 210, flex: 'none', borderRight: '1px solid #1d2530', overflowY: 'auto', padding: 10 }}>
           {history === null ? (
-            <div style={{ color: '#5b6675' }}>loading checkpoints…</div>
+            <div style={{ color: err ? '#cf6b6b' : '#5b6675' }}>{err ?? 'loading checkpoints…'}</div>
           ) : versions.length === 0 ? (
             <div style={{ color: '#5b6675' }}>
               {err ?? 'No file checkpoints for this session — Claude Code keeps them only for files it edited (and prunes old ones).'}
@@ -219,6 +233,8 @@ export default function TimeMachine({ sessionId, initialPath, onClose }: Props) 
             <div style={{ color: '#5b6675' }}>loading…</div>
           ) : diff === 'unreadable' ? (
             <div style={{ color: '#cf6b6b' }}>couldn’t read this version (too large or binary)</div>
+          ) : diff === 'identical' ? (
+            <div style={{ color: '#5b6675' }}>no line changes between these checkpoints (whitespace/line-ending identical too)</div>
           ) : (
             <pre style={{ ...mono, margin: 0, lineHeight: 1.6 }}>
               {diff.map((l, i) => (

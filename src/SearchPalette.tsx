@@ -46,7 +46,7 @@ export default function SearchPalette({ open, onClose, onPick, onOverlay }: Prop
   if (!open) return null
   const results = resp.results
   return (
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', display: 'flex', justifyContent: 'center', paddingTop: 80, zIndex: 50 }}>
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', display: 'flex', justifyContent: 'center', paddingTop: 80, zIndex: 95 }}>
       <div onClick={(e) => e.stopPropagation()} style={{ width: 640, maxHeight: '70vh', background: '#161c25', borderRadius: 10, overflow: 'hidden', display: 'flex', flexDirection: 'column', fontFamily: 'system-ui', fontSize: 13, color: '#c8cdd5' }}>
         <input
           ref={inputRef}

@@ -10,6 +10,10 @@ pub enum ParsedRecord {
 /// tokens, by model. None for user/system records and synthetic messages.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Usage {
+    /// message.id — Claude Code writes ONE LINE PER CONTENT BLOCK, each
+    /// repeating the same id and the same full-turn usage object; counting
+    /// must dedupe on this or every tool-using turn is summed 2-3x.
+    pub message_id: Option<String>,
     pub model: String,
     pub input: i64,
     pub output: i64,

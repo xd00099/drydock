@@ -62,6 +62,7 @@ fn parse_usage(message: Option<&Value>) -> Option<crate::records::Usage> {
     let u = m.get("usage")?;
     let n = |k: &str| u.get(k).and_then(Value::as_i64).unwrap_or(0);
     Some(crate::records::Usage {
+        message_id: m.get("id").and_then(Value::as_str).map(String::from),
         model: model.to_string(),
         input: n("input_tokens"),
         output: n("output_tokens"),
