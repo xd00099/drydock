@@ -202,14 +202,21 @@ fn pty_write(app: AppHandle, mgr: State<'_, PtyManager>, id: u32, data: String) 
 
 /// Show a macOS notification (used by the frontend when a session needs input
 /// or finishes while unfocused). Requests permission lazily on first use.
+/// `sound` plays the "Glass" system sound — the frontend sets it only on
+/// needs-input, so an audible ping always means "a session is blocked on you";
+/// per-app mute stays available in System Settings → Notifications.
 #[tauri::command]
-fn notify_user(app: AppHandle, title: String, body: String) {
+fn notify_user(app: AppHandle, title: String, body: String, sound: bool) {
     use tauri_plugin_notification::{NotificationExt, PermissionState};
     let n = app.notification();
     if !matches!(n.permission_state(), Ok(PermissionState::Granted)) {
         let _ = n.request_permission();
     }
-    let _ = n.builder().title(&title).body(&body).show();
+    let mut b = n.builder().title(&title).body(&body);
+    if sound {
+        b = b.sound("Glass");
+    }
+    let _ = b.show();
 }
 
 #[tauri::command]

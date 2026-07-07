@@ -316,10 +316,11 @@ export default function App() {
       const label = clip(s ? sessionLabel(s) : 'Claude session', 60)
       if (p.state === 'needs_input') {
         if (document.hasFocus() && activeIdRef.current === p.pty_id) return
-        invoke('notify_user', { title: label, body: p.message || 'Claude needs your input' }).catch(() => {})
+        // sound only here: an audible ping always means "blocked on you"
+        invoke('notify_user', { title: label, body: p.message || 'Claude needs your input', sound: true }).catch(() => {})
       } else if (p.state === 'done') {
         if (document.hasFocus()) return
-        invoke('notify_user', { title: label, body: 'Finished — ready for you' }).catch(() => {})
+        invoke('notify_user', { title: label, body: 'Finished — ready for you', sound: false }).catch(() => {})
       }
     }).then((u) => { if (cancelled) u(); else un = u })
     return () => { cancelled = true; un?.() }
