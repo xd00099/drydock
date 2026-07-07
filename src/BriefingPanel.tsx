@@ -5,7 +5,7 @@ import { clampPanelWidth, loadNum, relAge, baseName, type Artifact, type Artifac
 import ArtifactView from './ArtifactView'
 import ResizeHandle from './ResizeHandle'
 
-type RightTab = 'briefing' | 'skills' | 'mcp' | 'preview'
+type RightTab = 'briefing' | 'project' | 'preview'
 
 type Props = {
   sessionId: string | null // null for a brand-new claude tab with no session id yet
@@ -17,10 +17,17 @@ type Props = {
 
 const TABS: { id: RightTab; label: string }[] = [
   { id: 'briefing', label: 'Briefing' },
-  { id: 'skills', label: 'Skills' },
-  { id: 'mcp', label: 'MCP' },
+  { id: 'project', label: 'Project' }, // skills + MCP, merged: project/environment scope
   { id: 'preview', label: 'Artifacts' }, // id stays 'preview' so saved dd.rightTab keeps working
 ]
+
+// Saved right-tab prefs from before the Skills/MCP merge name tabs that no
+// longer exist; both fold into Project. Anything else unexpected → briefing.
+function loadRightTab(): RightTab {
+  const saved = localStorage.getItem('dd.rightTab')
+  if (saved === 'skills' || saved === 'mcp') return 'project'
+  return saved === 'briefing' || saved === 'project' || saved === 'preview' ? saved : 'briefing'
+}
 
 const loadStrSet = (key: string): Set<string> => {
   try {
@@ -61,6 +68,7 @@ const S = {
     overflow: 'hidden',
   } as const,
   chip: { fontSize: 9, color: '#9aa3af', background: '#1b2230', border: '1px solid #2c3647', borderRadius: 4, padding: '0 5px' } as const,
+  secHead: { color: '#7d8794', fontWeight: 700, fontSize: 10, letterSpacing: 0.8 } as const,
   iconBtn: { background: 'none', border: '1px solid #2c3647', borderRadius: 4, cursor: 'pointer', color: '#9aa3af', fontSize: 12, lineHeight: 1, padding: '2px 6px' } as const,
 }
 
@@ -307,7 +315,7 @@ function BriefingTab({ sessionId, card, starred, files, projectPath, onToggleSta
   )
 }
 
-function SkillsTab({ projectPath }: { projectPath?: string }) {
+function SkillsSection({ projectPath }: { projectPath?: string }) {
   // Fetched per-mount (~17 file reads) so it stays fresh when plugins change and
   // a transient failure isn't pinned by a module cache. Includes plugin +
   // personal (~/.claude) skills and this project's own (<project>/.claude/skills).
@@ -332,9 +340,17 @@ function SkillsTab({ projectPath }: { projectPath?: string }) {
       return next
     })
 
-  if (state === 'loading') return <div style={S.muted}>loading skills…</div>
-  if (state === 'error') return <div style={S.muted}>couldn’t load skills</div>
-  if (state.length === 0) return <div style={S.muted}>no plugin skills found</div>
+  const header = (
+    <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
+      <span style={S.secHead}>SKILLS</span>
+      {Array.isArray(state) && state.length > 0 && (
+        <span style={{ color: '#5b6675', fontSize: 10 }}>{state.length} · plugin, personal &amp; project</span>
+      )}
+    </div>
+  )
+  if (state === 'loading') return <div>{header}<div style={S.muted}>loading skills…</div></div>
+  if (state === 'error') return <div>{header}<div style={S.muted}>couldn’t load skills</div></div>
+  if (state.length === 0) return <div>{header}<div style={S.muted}>no plugin skills found</div></div>
 
   const groups = new Map<string, Skill[]>()
   for (const s of state) {
@@ -343,7 +359,7 @@ function SkillsTab({ projectPath }: { projectPath?: string }) {
   }
   return (
     <div>
-      <div style={{ color: '#5b6675', fontSize: 10, marginBottom: 8 }}>{state.length} skills · plugin, personal &amp; project</div>
+      {header}
       {[...groups.entries()].map(([plugin, list]) => {
         const open = expanded.has(plugin)
         return (
@@ -395,7 +411,22 @@ function Toggle({ on, busy, onClick, title }: { on: boolean; busy: boolean; onCl
   )
 }
 
-function McpTab({ projectPath }: { projectPath?: string }) {
+// `claude mcp list` spawns the CLI (seconds, not ms), and this whole panel
+// remounts on every center-tab switch (key={activeTab.id} in App) — so the last
+// health check is cached per project across remounts and only re-run once stale.
+const MCP_RECHECK_MS = 60_000
+const mcpStatusCache = new Map<string, { status: Record<string, { st: string; raw: string }>; checkedAt: number }>()
+// The in-flight check, so concurrent remounts JOIN one `claude mcp list`
+// spawn instead of racing several during the cold multi-second window.
+const mcpCheckInFlight = new Map<string, Promise<unknown>>()
+// Last server list per project: seeds the section on remount so the header
+// (rollup dot, count) doesn't blink out while list_mcp_servers re-resolves.
+const mcpServersCache = new Map<string, McpServer[]>()
+
+// Worst-first, so the section header can report health even while collapsed.
+const STATUS_RANK: Record<string, number> = { failed: 4, pending: 3, unknown: 2, checking: 1, connected: 0 }
+
+function McpSection({ projectPath }: { projectPath?: string }) {
   const [servers, setServers] = useState<McpServer[] | null>(null)
   // null = never checked (dots show "checking"); {} = checked, no statuses
   const [status, setStatus] = useState<Record<string, { st: string; raw: string }> | null>(null)
@@ -404,11 +435,14 @@ function McpTab({ projectPath }: { projectPath?: string }) {
   const [checkErr, setCheckErr] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [busy, setBusy] = useState<Set<string>>(new Set())
+  // Collapsed still shows the rollup dot + age; the 60s re-check keeps running.
+  const [secOpen, setSecOpen] = useState(() => localStorage.getItem('dd.mcpOpen') !== '0')
   // Result-application guard: bumped whenever projectPath changes, so a check
   // still in flight for the OLD project can't label the new one. Also the
   // "one check at a time" latch (state lags; a ref doesn't).
   const epochRef = useRef(0)
   const inFlightRef = useRef(false)
+  const cacheKey = projectPath ?? ''
 
   const runCheck = useCallback((hasExternal: boolean) => {
     const epoch = epochRef.current
@@ -420,11 +454,26 @@ function McpTab({ projectPath }: { projectPath?: string }) {
     if (inFlightRef.current) return
     inFlightRef.current = true
     setChecking(true)
-    invoke<[string, string, string][]>('mcp_status', { projectPath: projectPath ?? null })
-      .then((triples) => {
+    // join the check another instance already started for this project — a
+    // remount mid-check must not spawn a second concurrent CLI process
+    let check = mcpCheckInFlight.get(cacheKey)
+    if (!check) {
+      check = invoke<[string, string, string][]>('mcp_status', { projectPath: projectPath ?? null })
+        .then((triples) => {
+          // single writer per spawn; joiners read the cache in their .then
+          mcpStatusCache.set(cacheKey, {
+            status: Object.fromEntries(triples.map(([n, st, raw]) => [n, { st, raw }])),
+            checkedAt: Date.now(),
+          })
+        })
+        .finally(() => mcpCheckInFlight.delete(cacheKey))
+      mcpCheckInFlight.set(cacheKey, check)
+    }
+    check
+      .then(() => {
         if (epochRef.current !== epoch) return
-        setStatus(Object.fromEntries(triples.map(([n, st, raw]) => [n, { st, raw }])))
-        setCheckedAt(Date.now())
+        const c = mcpStatusCache.get(cacheKey)
+        if (c) { setStatus(c.status); setCheckedAt(c.checkedAt) }
         setCheckErr(null)
       })
       .catch((e) => {
@@ -435,7 +484,7 @@ function McpTab({ projectPath }: { projectPath?: string }) {
         inFlightRef.current = false
         if (epochRef.current === epoch) setChecking(false)
       })
-  }, [projectPath])
+  }, [projectPath, cacheKey])
 
   useEffect(() => {
     epochRef.current++
@@ -445,15 +494,24 @@ function McpTab({ projectPath }: { projectPath?: string }) {
     // anyway, and its finally() harmlessly re-clears this)
     inFlightRef.current = false
     setServers(null)
-    setStatus(null)
-    setCheckedAt(null)
     setCheckErr(null)
     setChecking(false)
+    // seed from the caches so a remount shows last-known health immediately
+    const cached = mcpStatusCache.get(projectPath ?? '')
+    setStatus(cached?.status ?? null)
+    setCheckedAt(cached?.checkedAt ?? null)
+    setServers(mcpServersCache.get(projectPath ?? '') ?? null)
     invoke<McpServer[]>('list_mcp_servers', { projectPath: projectPath ?? null })
       .then((list) => {
         if (epochRef.current !== epoch) return
+        mcpServersCache.set(projectPath ?? '', list)
         setServers(list)
-        runCheck(list.some((s) => !s.builtin))
+        // a cached check stands in for the mount-time one only while it's
+        // fresh AND covers every external server — a just-added server must
+        // trigger a real check, not wear "not in the output" for a minute
+        const covered = !!cached && list.every((s) => s.builtin || cached.status[s.name] !== undefined)
+        if (!cached || !covered || Date.now() - cached.checkedAt >= MCP_RECHECK_MS)
+          runCheck(list.some((s) => !s.builtin))
       })
       .catch(() => {
         if (epochRef.current !== epoch) return
@@ -464,11 +522,22 @@ function McpTab({ projectPath }: { projectPath?: string }) {
 
   // A dot is only as honest as its age: re-check every minute while this tab
   // stays open (a dead server otherwise kept its green from panel-mount time).
+  // The FIRST tick honors the cached check's age — a 59s-old seed re-checks in
+  // ~1s, not 60 — so remounting can never stretch staleness past one TTL.
   const hasExternal = !!servers?.some((s) => !s.builtin)
+  const checkedAtRef = useRef<number | null>(null)
+  checkedAtRef.current = checkedAt
   useEffect(() => {
     if (!hasExternal) return
-    const t = window.setInterval(() => runCheck(true), 60_000)
-    return () => window.clearInterval(t)
+    const first = checkedAtRef.current == null
+      ? MCP_RECHECK_MS
+      : Math.max(0, checkedAtRef.current + MCP_RECHECK_MS - Date.now())
+    let iv = 0
+    const t = window.setTimeout(() => {
+      runCheck(true)
+      iv = window.setInterval(() => runCheck(true), MCP_RECHECK_MS)
+    }, first)
+    return () => { window.clearTimeout(t); if (iv) window.clearInterval(iv) }
   }, [hasExternal, runCheck])
 
   const toggleExpand = (name: string) =>
@@ -478,7 +547,11 @@ function McpTab({ projectPath }: { projectPath?: string }) {
     setBusy((prev) => new Set(prev).add(s.name))
     try {
       await invoke('set_mcp_enabled', { name: s.name, enabled: !s.enabled })
-      setServers((prev) => prev && prev.map((x) => (x.name === s.name ? { ...x, enabled: !x.enabled } : x)))
+      setServers((prev) => {
+        const next = prev && prev.map((x) => (x.name === s.name ? { ...x, enabled: !x.enabled } : x))
+        if (next) mcpServersCache.set(cacheKey, next) // keep the remount seed honest
+        return next
+      })
     } catch (e) {
       console.error(e)
     } finally {
@@ -502,6 +575,9 @@ function McpTab({ projectPath }: { projectPath?: string }) {
         : { status: 'unknown', title: 'Off — new sessions won’t get the render tool' }
     if (status === null) return { status: 'checking', title: 'Checking…' }
     const e = status[s.name]
+    // not in the (possibly cache-seeded) map while a check runs: it's being
+    // checked right now, not "missing from the output"
+    if (!e && checking) return { status: 'checking', title: 'Checking…' }
     const st = e?.st ?? 'unknown'
     const what = e?.raw
       ? e.raw
@@ -509,30 +585,67 @@ function McpTab({ projectPath }: { projectPath?: string }) {
     return { status: st, title: checkedAt ? `${what}\nchecked ${ageText(checkedAt)}` : what }
   }
 
-  const proj = projectPath ? baseName(projectPath) : undefined
+  // Header rollup: the WORST status across enabled servers, so the collapsed
+  // section still reports health at a glance — a red server can't be buried.
+  // Disabled servers don't count: they're not offered to new sessions anyway.
+  const dots = (servers ?? []).filter((s) => s.enabled).map((s) => dotFor(s).status)
+  const failed = dots.filter((d) => d === 'failed').length
+  const worst = dots.length
+    ? dots.reduce((a, b) => ((STATUS_RANK[b] ?? 0) > (STATUS_RANK[a] ?? 0) ? b : a))
+    : null
+
+  const toggleOpen = () =>
+    setSecOpen((o) => { localStorage.setItem('dd.mcpOpen', o ? '0' : '1'); return !o })
+
+  // Pinned-section layout, same recipe as FILES CHANGED: seam on top, darker
+  // ground, own scroll, bounded height — skills can never bury a dead server.
   return (
-    <div>
-      {proj && (
-        <div style={{ color: '#7d8794', marginBottom: 4 }}>
-          for project: <span style={{ color: '#c8cdd5' }}>{proj}</span>
-        </div>
-      )}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-        <span style={{ flex: 1, color: '#5b6675', fontSize: 10, lineHeight: 1.4 }}>
-          ● health via `claude mcp list` ·{' '}
-          {!hasExternal ? 'no external servers' : checking ? 'checking…' : checkedAt ? `checked ${ageText(checkedAt)}` : 'not checked yet'}
+    <div style={{ flex: secOpen ? '0 1 auto' : 'none', maxHeight: secOpen ? '55%' : undefined, display: 'flex', flexDirection: 'column', borderTop: '1px solid #232c3a', background: '#0d1117' }}>
+      <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 7, padding: '8px 12px 6px' }}>
+        {/* label and age SHRINK (ellipsize) at narrow widths; the dot, the
+            count, and ↻ are flex:none so the signal + the cure never clip */}
+        <button onClick={toggleOpen} title={secOpen ? 'Collapse' : 'Expand'} style={{ ...S.groupBtn, width: 'auto', flex: '0 1 auto', minWidth: 0, gap: 5, padding: 0 }}>
+          <span style={{ width: 9, flex: 'none', color: '#4a5462' }}>{secOpen ? '▾' : '▸'}</span>
+          <span style={{ ...S.secHead, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>MCP SERVERS</span>
+        </button>
+        {worst && (
+          <StatusDot
+            status={worst}
+            title={`worst across enabled servers: ${worst}${checkedAt ? ` · checked ${ageText(checkedAt)}` : ''}\nhealth via \`claude mcp list\``}
+          />
+        )}
+        {servers !== null && servers.length > 0 && (
+          <span style={{ flex: 'none', color: '#5b6675', fontSize: 10, whiteSpace: 'nowrap' }}>
+            {servers.length}{failed > 0 ? ` · ${failed} failed` : ''}
+          </span>
+        )}
+        <span style={{ flex: 1 }} />
+        {/* compact age ('2m'), full wording in the tooltip; turns into a red
+            'check failed' when the refresh errors — visible even collapsed,
+            so the rollup dot can't silently advertise stale health */}
+        <span
+          title={
+            checkErr
+              ? `${checkErr}\nlast good check: ${checkedAt ? ageText(checkedAt) : 'never'}`
+              : checkedAt ? `health checked ${ageText(checkedAt)}` : undefined
+          }
+          style={{ color: checkErr ? '#cf6b6b' : '#5b6675', fontSize: 10, whiteSpace: 'nowrap', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}
+        >
+          {checking ? 'checking…' : checkErr ? 'check failed' : hasExternal && checkedAt ? relAge(checkedAt) : ''}
         </span>
         {hasExternal && (
           <button
             onClick={() => runCheck(true)}
             disabled={checking}
             title="Re-check server health now"
-            style={{ ...S.iconBtn, fontSize: 10, padding: '1px 5px', opacity: checking ? 0.4 : 1, cursor: checking ? 'default' : 'pointer' }}
+            style={{ ...S.iconBtn, flex: 'none', fontSize: 10, padding: '1px 5px', opacity: checking ? 0.4 : 1, cursor: checking ? 'default' : 'pointer' }}
           >
             ↻
           </button>
         )}
       </div>
+      {secOpen && (
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 12px 10px' }}>
       {checkErr && (
         <div title={checkErr} style={{ color: '#cf6b6b', fontSize: 10, marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {checkErr}
@@ -542,7 +655,7 @@ function McpTab({ projectPath }: { projectPath?: string }) {
       {servers === null ? (
         <div style={S.muted}>loading…</div>
       ) : servers.length === 0 ? (
-        <div style={S.muted}>no MCP servers configured{proj ? ' for this project' : ''}</div>
+        <div style={S.muted}>no MCP servers configured{projectPath ? ' for this project' : ''}</div>
       ) : (
         servers.map((s) => {
           const open = expanded.has(s.name)
@@ -585,6 +698,31 @@ function McpTab({ projectPath }: { projectPath?: string }) {
           )
         })
       )}
+      </div>
+      )}
+    </div>
+  )
+}
+
+// The merged project/environment tab: what new sessions launched from this
+// project get. Browse-y lists (skills) scroll on top; the short, actionable
+// MCP section is pinned below with its own scroll — the same arrangement as
+// briefing card over FILES CHANGED.
+function ProjectTab({ projectPath }: { projectPath?: string }) {
+  const proj = projectPath ? baseName(projectPath) : undefined
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+      {/* pinned above the scroll: the scope must stay visible however far the
+          skills list is scrolled — both sections below answer to it */}
+      {proj && (
+        <div style={{ flex: 'none', padding: '12px 12px 0', color: '#7d8794' }}>
+          for project: <span style={{ color: '#c8cdd5' }}>{proj}</span>
+        </div>
+      )}
+      <div style={{ flex: '1 1 auto', minHeight: 0, overflowY: 'auto', padding: proj ? '8px 12px 12px' : 12 }}>
+        <SkillsSection projectPath={projectPath} />
+      </div>
+      <McpSection projectPath={projectPath} />
     </div>
   )
 }
@@ -785,7 +923,7 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
   // clamp on load AND on window resize: a width persisted (or auto-widened) on a
   // big monitor must not overflow a smaller window later
   const [width, setWidth] = useState(() => clampPanelWidth(loadNum('dd.briefingWidth', 252)))
-  const [tab, setTab] = useState<RightTab>(() => (localStorage.getItem('dd.rightTab') as RightTab) || 'briefing')
+  const [tab, setTab] = useState<RightTab>(loadRightTab)
   const widthRef = useRef(width)
   widthRef.current = width
   useEffect(() => {
@@ -858,17 +996,14 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
           </div>
         </div>
 
-        {/* Preview and Briefing manage their own layout (edge-to-edge / split
-            sections); Skills and MCP scroll inside padding. */}
+        {/* Every tab manages its own layout: Preview edge-to-edge, Briefing and
+            Project as scrolling-top / pinned-bottom section stacks. */}
         {tab === 'preview' ? (
           <PreviewTab artifacts={artifacts} sessionId={sessionId} />
         ) : tab === 'briefing' ? (
           <BriefingTab sessionId={sessionId} card={card} starred={starred} files={files} projectPath={projectPath} onToggleStar={onToggleStar} />
         ) : (
-          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 12 }}>
-            {tab === 'skills' && <SkillsTab projectPath={projectPath} />}
-            {tab === 'mcp' && <McpTab projectPath={projectPath} />}
-          </div>
+          <ProjectTab projectPath={projectPath} />
         )}
       </div>
     </div>
