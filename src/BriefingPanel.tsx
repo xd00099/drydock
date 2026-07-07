@@ -12,7 +12,12 @@ type Props = {
   projectPath?: string // active session's project, for per-project MCP lookup
   starred: boolean
   artifacts: Artifact[] // visual artifacts this tab's session has rendered
+  // resolved display label (Drydock name > custom-title > summary > title);
+  // null when the session isn't indexed yet
+  label?: string | null
   onToggleStar?: () => void
+  // rename the session in Drydock's index (blank clears); absent = unindexed
+  onRename?: (name: string) => void
 }
 
 const TABS: { id: RightTab; label: string }[] = [
@@ -270,7 +275,21 @@ function FilesChanged({ files, projectPath, sessionId }: { files: FileTouch[]; p
 // Two clearly separated sections: the briefing card scrolls on top; "Files
 // changed" is its own visually distinct region pinned below with its own
 // scroll — a long timeline can't bury the file list and vice versa.
-function BriefingTab({ sessionId, card, starred, files, projectPath, onToggleStar }: { sessionId: string | null; card: CardView | null; starred: boolean; files: FileTouch[]; projectPath?: string; onToggleStar?: () => void }) {
+function BriefingTab({ sessionId, card, starred, files, projectPath, label, onToggleStar, onRename }: { sessionId: string | null; card: CardView | null; starred: boolean; files: FileTouch[]; projectPath?: string; label?: string | null; onToggleStar?: () => void; onRename?: (name: string) => void }) {
+  // editing holds the label CAPTURED when the pencil was clicked (null = not
+  // editing): the unchanged-commit guard must compare against what the user
+  // saw when they started, not the live prop — a mid-edit refresh changing
+  // `label` must neither freeze a stale auto title nor block a real commit.
+  const [editing, setEditing] = useState<string | null>(null)
+  const commitRename = (value: string) => {
+    const initial = editing
+    setEditing(null)
+    const name = value.trim()
+    // unchanged = no-op: a click-away blur must not freeze an AUTO title
+    // (card summary) into a permanent override
+    if (initial === null || name === initial.trim()) return
+    onRename?.(name)
+  }
   if (!sessionId)
     return <div style={{ ...S.muted, padding: 12 }}>No indexed session yet — once this conversation is saved, its briefing card appears here.</div>
   return (
@@ -285,7 +304,35 @@ function BriefingTab({ sessionId, card, starred, files, projectPath, onToggleSta
           >
             ★
           </button>
-          <div style={{ flex: 1, color: '#e8edf4', fontWeight: 600, fontSize: 13, lineHeight: 1.3 }}>{card?.summary || 'Session'}</div>
+          {editing !== null && onRename ? (
+            <input
+              autoFocus
+              defaultValue={editing}
+              maxLength={60}
+              placeholder="Session name — empty clears"
+              style={{ flex: 1, minWidth: 0, background: '#10141a', border: '1px solid #4f7fd9', borderRadius: 4, color: '#e8edf4', fontSize: 13, fontWeight: 600, fontFamily: 'system-ui', padding: '2px 6px', outline: 'none' }}
+              onFocus={(e) => e.currentTarget.select()}
+              onKeyDown={(e) => {
+                // an Enter/Esc confirming an IME composition (pinyin) is part
+                // of typing the name, not a commit/cancel
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return
+                if (e.key === 'Enter') commitRename(e.currentTarget.value)
+                else if (e.key === 'Escape') setEditing(null)
+              }}
+              onBlur={(e) => commitRename(e.currentTarget.value)}
+            />
+          ) : (
+            <div style={{ flex: 1, color: '#e8edf4', fontWeight: 600, fontSize: 13, lineHeight: 1.3 }}>{label || card?.summary || 'Session'}</div>
+          )}
+          {onRename && editing === null && (
+            <button
+              onClick={() => setEditing(label ?? '')}
+              title="Rename session (a Drydock-only name — claude's own session is untouched)"
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#5b6675', fontSize: 12, padding: 0, lineHeight: 1.3 }}
+            >
+              ✎
+            </button>
+          )}
         </div>
         {card ? (
           <>
@@ -916,7 +963,7 @@ function PreviewTab({ artifacts, sessionId }: { artifacts: Artifact[]; sessionId
   )
 }
 
-export default function BriefingPanel({ sessionId, projectPath, starred, artifacts, onToggleStar }: Props) {
+export default function BriefingPanel({ sessionId, projectPath, starred, artifacts, label, onToggleStar, onRename }: Props) {
   const [card, setCard] = useState<CardView | null>(null)
   const [files, setFiles] = useState<FileTouch[]>([])
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('dd.briefingCollapsed') === '1')
@@ -1001,7 +1048,7 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
         {tab === 'preview' ? (
           <PreviewTab artifacts={artifacts} sessionId={sessionId} />
         ) : tab === 'briefing' ? (
-          <BriefingTab sessionId={sessionId} card={card} starred={starred} files={files} projectPath={projectPath} onToggleStar={onToggleStar} />
+          <BriefingTab sessionId={sessionId} card={card} starred={starred} files={files} projectPath={projectPath} label={label} onToggleStar={onToggleStar} onRename={onRename} />
         ) : (
           <ProjectTab projectPath={projectPath} />
         )}

@@ -115,6 +115,15 @@ CREATE TABLE IF NOT EXISTS hidden_sessions(
   session_id TEXT PRIMARY KEY,
   hidden_at INTEGER NOT NULL
 );
+-- User renames made in Drydock's UI. A Drydock-side override (we never write
+-- ~/.claude), in its own table for the same reason as hidden_sessions: re-syncs
+-- rewrite session rows and must never clobber the user's names. No FK: a name
+-- outlives transcript expiry and reattaches when the session returns.
+CREATE TABLE IF NOT EXISTS session_names(
+  session_id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  named_at INTEGER NOT NULL
+);
 -- User-created sidebar folders ('working groups') and their members. Own
 -- tables for the same reason as hidden_sessions: re-syncs rewrite session
 -- rows and must never clobber the user's organization. session_id is the
@@ -412,7 +421,24 @@ impl Store {
         Ok(())
     }
 
+    /// Remove a session the USER deleted: everything goes, including the
+    /// user-flag tables (hidden/name/folder) — an explicit delete is the one
+    /// declaration that a session's flags shouldn't ever come back.
     pub fn delete_session(&mut self, session_id: &str) -> Result<()> {
+        self.delete_session_inner(session_id, true)
+    }
+
+    /// Remove a session's DERIVED data only (chunks, card, sync state, hues,
+    /// row) — the watcher's reparse/expiry paths. The user-flag tables
+    /// (hidden_sessions, session_names, folder_sessions) SURVIVE, honoring
+    /// their schema contract: a truncated/rewritten transcript is immediately
+    /// re-indexed as the same session, and an expired one may return — the
+    /// user's names, hidden flags and filings must reattach, not vanish.
+    pub fn delete_session_data(&mut self, session_id: &str) -> Result<()> {
+        self.delete_session_inner(session_id, false)
+    }
+
+    fn delete_session_inner(&mut self, session_id: &str, purge_flags: bool) -> Result<()> {
         let tx = self.conn.transaction()?;
         tx.execute("DELETE FROM chunks_fts WHERE session_id = ?1", params![session_id])?;
         tx.execute(
@@ -422,8 +448,11 @@ impl Store {
         tx.execute("DELETE FROM chunks WHERE session_id = ?1", params![session_id])?;
         tx.execute("DELETE FROM cards WHERE session_id = ?1", params![session_id])?;
         tx.execute("DELETE FROM sync_state WHERE session_id = ?1", params![session_id])?;
-        tx.execute("DELETE FROM hidden_sessions WHERE session_id = ?1", params![session_id])?;
-        tx.execute("DELETE FROM folder_sessions WHERE session_id = ?1", params![session_id])?;
+        if purge_flags {
+            tx.execute("DELETE FROM hidden_sessions WHERE session_id = ?1", params![session_id])?;
+            tx.execute("DELETE FROM session_names WHERE session_id = ?1", params![session_id])?;
+            tx.execute("DELETE FROM folder_sessions WHERE session_id = ?1", params![session_id])?;
+        }
         tx.execute("DELETE FROM session_hues WHERE session_id = ?1", params![session_id])?;
         tx.execute("DELETE FROM sessions WHERE session_id = ?1", params![session_id])?;
         tx.commit()?;
@@ -558,6 +587,10 @@ impl Store {
             tx.execute("DELETE FROM chunks WHERE session_id = ?1", params![sid])?;
             tx.execute("DELETE FROM sync_state WHERE session_id = ?1", params![sid])?;
             tx.execute("DELETE FROM session_hues WHERE session_id = ?1", params![sid])?;
+            // a stub that dies transcript-less can never reattach a name —
+            // without this, renaming a stub leaves an orphan row carried into
+            // every backup forever
+            tx.execute("DELETE FROM session_names WHERE session_id = ?1", params![sid])?;
             tx.execute("DELETE FROM sessions WHERE session_id = ?1", params![sid])?;
         }
         tx.commit()?;
@@ -766,6 +799,49 @@ impl Store {
         let mut stmt = self.conn.prepare("SELECT session_id FROM hidden_sessions ORDER BY hidden_at")?;
         let rows: Vec<String> = stmt.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
         Ok(rows)
+    }
+
+    /// Rename a session from Drydock's UI. The name is a Drydock-side override
+    /// (never written to ~/.claude); a blank/whitespace name clears it. Capped
+    /// server-side (the UI's maxLength only guards the honest path).
+    pub fn set_session_name(&self, session_id: &str, name: &str) -> Result<()> {
+        let trimmed: String = name.trim().chars().take(200).collect();
+        let trimmed = trimmed.trim();
+        if trimmed.is_empty() {
+            self.conn.execute("DELETE FROM session_names WHERE session_id = ?1", params![session_id])?;
+        } else {
+            let now = chrono::Utc::now().timestamp_millis();
+            self.conn.execute(
+                "INSERT INTO session_names(session_id, name, named_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(session_id) DO UPDATE SET name = ?2, named_at = ?3",
+                params![session_id, trimmed, now],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn session_names(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare("SELECT session_id, name FROM session_names")?;
+        let rows: Vec<(String, String)> =
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// The label a session wears in the UI, resolved with the frontend's
+    /// precedence: Drydock name > claude custom-title > card summary > title.
+    /// For backend surfaces that show labels (menu-bar tray, export) so they
+    /// can't drift from what the sidebar shows.
+    pub fn display_label(&self, session_id: &str) -> Result<Option<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT COALESCE(
+               NULLIF(TRIM((SELECT name FROM session_names WHERE session_id = s.session_id)), ''),
+               CASE WHEN s.title_source = 'custom-title' THEN NULLIF(TRIM(s.title), '') END,
+               NULLIF(TRIM((SELECT summary FROM cards WHERE session_id = s.session_id)), ''),
+               s.title)
+             FROM sessions s WHERE s.session_id = ?1",
+        )?;
+        let label: Option<String> = stmt.query_row(params![session_id], |r| r.get(0)).optional()?;
+        Ok(label)
     }
 
     // ---- session hues (semantic colors) -----------------------------------
@@ -1475,5 +1551,69 @@ mod tests {
         s.set_session_hidden(sid, true).unwrap();
         s.delete_session(sid).unwrap();
         assert!(s.hidden_session_ids().unwrap().is_empty());
+    }
+
+    #[test]
+    fn session_names_set_rename_clear_and_survive_resync() {
+        let mut s = Store::open_in_memory().unwrap();
+        let sid = "s-named";
+        s.apply_delta(sid, &delta("hi"), &[]).unwrap();
+        assert!(s.session_names().unwrap().is_empty());
+
+        s.set_session_name(sid, "  release pipeline  ").unwrap();
+        assert_eq!(s.session_names().unwrap(), vec![(sid.to_string(), "release pipeline".to_string())], "stored trimmed");
+
+        // rename replaces (upsert, not a second row)
+        s.set_session_name(sid, "release CI").unwrap();
+        assert_eq!(s.session_names().unwrap(), vec![(sid.to_string(), "release CI".to_string())]);
+
+        // a re-sync rewriting the session row must not clobber the name
+        s.apply_delta(sid, &delta("more"), &[]).unwrap();
+        assert_eq!(s.session_names().unwrap().len(), 1);
+
+        // blank clears the override
+        s.set_session_name(sid, "   ").unwrap();
+        assert!(s.session_names().unwrap().is_empty());
+
+        // a USER delete drops the name (an explicit delete means "gone")
+        s.set_session_name(sid, "gone").unwrap();
+        s.delete_session(sid).unwrap();
+        assert!(s.session_names().unwrap().is_empty());
+    }
+
+    #[test]
+    fn sync_driven_reparse_preserves_names_hidden_and_folders() {
+        // The watcher deletes-and-reparses a session when its file is
+        // truncated/rewritten, and mirrors deletions when files vanish. Those
+        // are DATA events, not user intent: names, hidden flags and folder
+        // filings must survive and reattach when the session returns.
+        let mut s = Store::open_in_memory().unwrap();
+        let sid = "s-reparse";
+        s.apply_delta(sid, &delta("hi"), &[]).unwrap();
+        s.set_session_name(sid, "release CI").unwrap();
+        s.set_session_hidden(sid, true).unwrap();
+        s.create_folder("f1", "infra").unwrap();
+        s.set_session_folder(sid, Some("f1")).unwrap();
+
+        // truncate-reparse / vanished-transcript path
+        s.delete_session_data(sid).unwrap();
+        assert!(s.get_session(sid).unwrap().is_none(), "row and derived data gone");
+        assert_eq!(s.session_names().unwrap().len(), 1, "name survives");
+        assert_eq!(s.hidden_session_ids().unwrap(), vec![sid.to_string()], "hidden survives");
+        assert_eq!(s.folder_memberships().unwrap().len(), 1, "filing survives");
+
+        // the session returns (re-synced from byte 0) → flags reattach
+        s.apply_delta(sid, &delta("hi again"), &[]).unwrap();
+        assert_eq!(s.session_names().unwrap(), vec![(sid.to_string(), "release CI".to_string())]);
+    }
+
+    #[test]
+    fn session_name_is_capped_server_side() {
+        let mut s = Store::open_in_memory().unwrap();
+        let sid = "s-cap";
+        s.apply_delta(sid, &delta("hi"), &[]).unwrap();
+        s.set_session_name(sid, &"x".repeat(100_000)).unwrap();
+        let stored = &s.session_names().unwrap()[0].1;
+        assert!(stored.chars().count() <= 200, "cap ignores the frontend's honesty");
     }
 }

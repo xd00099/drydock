@@ -482,7 +482,10 @@ pub fn export_transcript(app: AppHandle, db: State<'_, AppDb>, session_id: Strin
             .get_session(&session_id)
             .map_err(|e| e.to_string())?
             .ok_or("session not indexed")?;
-        (row.title, row.project_path)
+        // export under the label the user sees (Drydock rename > custom-title
+        // > summary > title), not the raw indexed title
+        let label = store.display_label(&session_id).ok().flatten().unwrap_or(row.title);
+        (label, row.project_path)
     };
     let path = transcript_file(&db, &session_id)?;
     let page = transcript::read_page(&path, 0).map_err(|e| e.to_string())?;

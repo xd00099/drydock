@@ -48,7 +48,9 @@ pub fn sync_file(store: &mut Store, sf: &SessionFile) -> Result<SyncOutcome> {
     let mut start = match &prev {
         Some(st) if st.byte_offset as u64 > sf.size => {
             // file replaced/truncated: drop derived data, reparse from zero
-            store.delete_session(&sf.session_id)?;
+            // (data-only: the user's name/hidden/folder flags must survive
+            // the reparse — it's still the same session)
+            store.delete_session_data(&sf.session_id)?;
             0u64
         }
         Some(st) => {
@@ -66,7 +68,7 @@ pub fn sync_file(store: &mut Store, sf: &SessionFile) -> Result<SyncOutcome> {
     if start > 0 {
         if let Some(stored_tail) = prev.as_ref().and_then(|st| st.tail_hex.as_deref()) {
             if tail_fingerprint(&sf.path, start)? != stored_tail {
-                store.delete_session(&sf.session_id)?;
+                store.delete_session_data(&sf.session_id)?;
                 start = 0;
             }
         }
@@ -222,7 +224,9 @@ pub fn sync_all(store: &mut Store, claude_dir: &Path) -> Result<SyncReport> {
                 .to_string();
             store.delete_agent_file(&path, &session_id, &agent_id)?;
         } else {
-            store.delete_session(&session_id)?;
+            // transcript vanished (expiry, external cleanup) — data-only:
+            // flags reattach if the session ever comes back
+            store.delete_session_data(&session_id)?;
             report.sessions_deleted += 1;
         }
     }

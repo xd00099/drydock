@@ -432,9 +432,13 @@ export default function App() {
             sessionId={activeTab.sessionId ?? null}
             projectPath={s?.project_path ?? activeTab.cwd ?? undefined}
             starred={!!s?.starred}
+            label={s ? sessionLabel(s) : null}
             artifacts={artifactsByTab[activeTab.id] ?? EMPTY_ARTIFACTS}
             onToggleStar={
               s ? () => invoke('set_starred', { sessionId: s.session_id, starred: !s.starred }).then(refresh) : undefined
+            }
+            onRename={
+              s ? (name) => invoke('set_session_name', { sessionId: s.session_id, name }).then(refresh).catch(console.error) : undefined
             }
           />
         )

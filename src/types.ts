@@ -5,6 +5,9 @@ export type SessionView = {
   // where `title` came from; 'custom-title' means the USER named the session
   // (claude -n / /rename) and that name outranks even the card summary
   title_source: string
+  // rename made in Drydock's own UI (stored in Drydock's index, never in
+  // ~/.claude) — outranks every other source, including claude's custom-title
+  name: string | null
   summary: string | null // AI ~5-word title from the card; rendered over `title`
   latest_recap: string | null
   last_message_at: number | null
@@ -103,11 +106,20 @@ export type Artifact = { id: string; title: string; kind: ArtifactKind; content:
 // at render time, so the gallery dedups against the in-memory list.
 export type SavedArtifact = { file: string; title: string; kind: string; created_ms: number; seq: number; path: string | null }
 
-/** Display label for a session: a user-set name (claude -n / /rename) always
- *  wins; otherwise the AI card summary when present, else the indexed title. */
-export function sessionLabel(s: SessionView): string {
+/** The label a session would wear WITHOUT a Drydock rename — i.e. what
+ *  "Clear name" restores: claude custom-title > card summary > title. */
+export function sessionAutoLabel(s: SessionView): string {
   if (s.title_source === 'custom-title' && s.title.trim()) return s.title
   return s.summary && s.summary.trim() ? s.summary : s.title
+}
+
+/** Display label for a session. Precedence: a Drydock rename > a claude-side
+ *  user name (claude -n / /rename) > the AI card summary > the indexed title.
+ *  User-set names always beat generated ones; Drydock's own rename beats
+ *  claude's because it was set later and deliberately, in this app. */
+export function sessionLabel(s: SessionView): string {
+  if (s.name && s.name.trim()) return s.name
+  return sessionAutoLabel(s)
 }
 
 /** RFC-4122 v4 UUID via WebCrypto. Used to pin a *new* claude session's id at

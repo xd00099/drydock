@@ -519,6 +519,7 @@ fn main() {
             index::sessions_snapshot,
             index::set_starred,
             index::set_hidden,
+            index::set_session_name,
             index::create_folder,
             index::rename_folder,
             index::delete_folder,
