@@ -162,13 +162,61 @@ pub fn sync_agent_file(store: &mut Store, af: &AgentFile) -> Result<SyncOutcome>
     // The store's in-transaction gate refuses stub/absent parents; recording
     // sync state anyway would mark the file "done" and never retry it.
     let chunks = chunk_records_with(&records, true);
-    if !store.apply_agent_chunks(&af.parent_session_id, &af.agent_id, &chunks)? {
+    let usage = usage_sums(&records);
+    if !store.apply_agent_chunks(&af.parent_session_id, &af.agent_id, &chunks, &usage)? {
         return Ok(SyncOutcome::Skipped);
     }
     let new_offset = start + consumed as u64;
     let tail = tail_fingerprint(&af.path, new_offset)?;
     store.set_sync_state_kind(&path_str, &af.parent_session_id, new_offset as i64, af.mtime, Some(&tail), true)?;
     Ok(SyncOutcome::Parsed { malformed })
+}
+
+/// Sum token usage per model over a batch of parsed records.
+fn usage_sums(records: &[crate::records::ParsedRecord]) -> std::collections::HashMap<String, [i64; 4]> {
+    let mut out: std::collections::HashMap<String, [i64; 4]> = Default::default();
+    for r in records {
+        if let crate::records::ParsedRecord::Chain(c) = r {
+            if let Some(u) = &c.usage {
+                let e = out.entry(u.model.clone()).or_insert([0; 4]);
+                e[0] += u.input;
+                e[1] += u.output;
+                e[2] += u.cache_read;
+                e[3] += u.cache_creation;
+            }
+        }
+    }
+    out
+}
+
+/// One-time backfill: sessions indexed BEFORE the usage column existed have
+/// their sync offsets at EOF, so incremental syncs will never revisit their
+/// records. Re-read every transcript (and agent sidecar) for usage only and
+/// REPLACE each (session, scope)'s sums — idempotent, callable again safely.
+/// The caller gates it behind a store meta key.
+pub fn backfill_usage(store: &mut Store, claude_dir: &Path) -> Result<usize> {
+    let mut filled = 0usize;
+    for sf in scan_projects(claude_dir)? {
+        if let Ok(text) = std::fs::read_to_string(&sf.path) {
+            let records: Vec<_> = text.lines().map(parse_line).collect();
+            let sums = usage_sums(&records);
+            if !sums.is_empty() {
+                store.replace_usage(&sf.session_id, "main", &sums)?;
+                filled += 1;
+            }
+        }
+    }
+    for af in crate::scanner::scan_subagents(claude_dir)? {
+        if let Ok(text) = std::fs::read_to_string(&af.path) {
+            let records: Vec<_> = text.lines().map(parse_line).collect();
+            let sums = usage_sums(&records);
+            if !sums.is_empty() {
+                store.replace_usage(&af.parent_session_id, &af.agent_id, &sums)?;
+                filled += 1;
+            }
+        }
+    }
+    Ok(filled)
 }
 
 /// Scan everything under <claude_dir>/projects, sync each file, and mirror deletions.

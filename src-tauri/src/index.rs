@@ -242,6 +242,18 @@ pub fn start(app: &AppHandle) -> anyhow::Result<()> {
                         BACKUP_READY.store(true, std::sync::atomic::Ordering::SeqCst);
                         write_backup(&restore_handle, &s);
                         restored.store(true, std::sync::atomic::Ordering::SeqCst);
+                        // one-time usage backfill, AFTER the first sync: sync
+                        // offsets sit at EOF then, so replace_usage's full-file
+                        // sums can't be double-counted by the incremental path
+                        if s.meta_get("usage_backfill").ok().flatten().as_deref() != Some("v1") {
+                            match drydock_core::sync::backfill_usage(&mut s, &claude_dir()) {
+                                Ok(n) => {
+                                    let _ = s.meta_set("usage_backfill", "v1");
+                                    eprintln!("drydock: usage backfill covered {n} transcripts");
+                                }
+                                Err(e) => eprintln!("drydock: usage backfill failed (retries next run): {e:#}"),
+                            }
+                        }
                     }
                 }
                 let _ = emit.emit("index-updated", ());

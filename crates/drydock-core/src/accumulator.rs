@@ -15,6 +15,9 @@ pub struct SessionDelta {
     pub user_message_count: i64,
     pub git_branch: Option<String>,
     pub cli_version: Option<String>,
+    /// Token usage summed per model: (input, output, cache_read,
+    /// cache_creation). Sidechain records count too — they're real cost.
+    pub usage_by_model: std::collections::HashMap<String, [i64; 4]>,
 }
 
 /// True for text a human actually typed (not caveat/command meta blocks).
@@ -27,6 +30,16 @@ pub fn accumulate(records: &[ParsedRecord]) -> SessionDelta {
     for r in records {
         match r {
             ParsedRecord::Chain(c) => {
+                // usage counts BEFORE the sidechain skip: inline sidechain
+                // turns (old-format transcripts) cost real tokens even though
+                // their text stays out of the parent's stats/chunks
+                if let Some(u) = &c.usage {
+                    let e = d.usage_by_model.entry(u.model.clone()).or_insert([0; 4]);
+                    e[0] += u.input;
+                    e[1] += u.output;
+                    e[2] += u.cache_read;
+                    e[3] += u.cache_creation;
+                }
                 if c.is_sidechain {
                     continue; // spec §6.9: subagent records skipped
                 }
@@ -236,5 +249,22 @@ mod tests {
     fn long_titles_truncated_to_80_chars() {
         let d = SessionDelta { first_prompt: Some("x".repeat(300)), ..Default::default() };
         assert_eq!(resolve_title(&d, "deadbeef-0000").0.chars().count(), 80);
+    }
+
+    #[test]
+    fn usage_sums_per_model_and_skips_synthetic() {
+        let lines = [
+            r#"{"type":"assistant","uuid":"a1","timestamp":"2026-06-01T10:00:01.000Z","sessionId":"s","message":{"role":"assistant","model":"claude-sonnet-4-6","usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":1000,"cache_creation_input_tokens":50},"content":[{"type":"text","text":"hi"}]}}"#,
+            r#"{"type":"assistant","uuid":"a2","timestamp":"2026-06-01T10:00:02.000Z","sessionId":"s","message":{"role":"assistant","model":"claude-sonnet-4-6","usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"content":[{"type":"text","text":"more"}]}}"#,
+            // synthetic messages carry no real cost
+            r#"{"type":"assistant","uuid":"a3","timestamp":"2026-06-01T10:00:03.000Z","sessionId":"s","message":{"role":"assistant","model":"<synthetic>","usage":{"input_tokens":9999,"output_tokens":9999},"content":[{"type":"text","text":"x"}]}}"#,
+            // inline sidechain turns still cost tokens (old-format transcripts)
+            r#"{"type":"assistant","uuid":"a4","isSidechain":true,"timestamp":"2026-06-01T10:00:04.000Z","sessionId":"s","message":{"role":"assistant","model":"claude-haiku-4-5","usage":{"input_tokens":7,"output_tokens":3,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"content":[{"type":"text","text":"agent"}]}}"#,
+        ];
+        let recs: Vec<_> = lines.iter().map(|l| parse_line(l)).collect();
+        let d = accumulate(&recs);
+        assert_eq!(d.usage_by_model.len(), 2, "synthetic model excluded");
+        assert_eq!(d.usage_by_model["claude-sonnet-4-6"], [110, 25, 1000, 50]);
+        assert_eq!(d.usage_by_model["claude-haiku-4-5"], [7, 3, 0, 0], "sidechain usage counts");
     }
 }

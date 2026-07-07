@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { clampPanelWidth, loadNum, relAge, baseName, type Artifact, type ArtifactKind, type CardView, type FileTouch, type McpServer, type SavedArtifact, type Skill, type TimelineItem } from './types'
+import { clampPanelWidth, fmtTokens, loadNum, relAge, baseName, type Artifact, type ArtifactKind, type CardView, type FileTouch, type McpServer, type SavedArtifact, type SessionUsage, type Skill, type TasksView, type TimelineItem } from './types'
 import ArtifactView from './ArtifactView'
 import ResizeHandle from './ResizeHandle'
 
@@ -139,7 +139,11 @@ function DiffStat({ f }: { f: FileTouch }) {
 /// stats — in its own scroll region under a sticky totals header. Rows open the
 /// file's CURRENT location (the resolver's work); files that are gone render
 /// struck-through and explain themselves instead of erroring.
-function FilesChanged({ files, projectPath, sessionId }: { files: FileTouch[]; projectPath?: string; sessionId: string | null }) {
+function FilesChanged({ files, projectPath, sessionId, squeeze }: { files: FileTouch[]; projectPath?: string; sessionId: string | null; squeeze?: boolean }) {
+  // collapsible pinned section (same grammar as TASKS and MCP SERVERS);
+  // named secOpen: `open` is already this component's file-opening handler
+  const [secOpen, setSecOpen] = useState(() => localStorage.getItem('dd.filesOpen') !== '0')
+  const toggleOpen = () => setSecOpen((o) => { localStorage.setItem('dd.filesOpen', o ? '0' : '1'); return !o })
   // Transient error line (editor_cmd broken, file vanished mid-click, …).
   const [err, setErr] = useState<string | null>(null)
   const errTimer = useRef(0)
@@ -188,17 +192,21 @@ function FilesChanged({ files, projectPath, sessionId }: { files: FileTouch[]; p
     })
 
   return (
-    <div style={{ flex: '0 1 auto', maxHeight: '55%', display: 'flex', flexDirection: 'column', borderTop: '1px solid #232c3a', background: '#0d1117' }}>
+    <div style={{ flex: secOpen ? '0 1 auto' : 'none', maxHeight: secOpen ? (squeeze ? '40%' : '55%') : undefined, display: 'flex', flexDirection: 'column', borderTop: '1px solid #232c3a', background: '#0d1117' }}>
       <div style={{ flex: 'none', display: 'flex', alignItems: 'baseline', gap: 8, padding: '8px 12px 6px' }}>
-        <span style={{ color: '#7d8794', fontWeight: 700, fontSize: 10, letterSpacing: 0.8 }}>FILES CHANGED</span>
+        <button onClick={toggleOpen} title={secOpen ? 'Collapse' : 'Expand'} style={{ ...S.groupBtn, width: 'auto', flex: 'none', gap: 5, padding: 0 }}>
+          <span style={{ width: 9, flex: 'none', color: '#4a5462' }}>{secOpen ? '▾' : '▸'}</span>
+          <span style={S.secHead}>FILES CHANGED</span>
+        </button>
         <span style={{ display: 'flex', gap: 6, fontFamily: 'Menlo, monospace', fontSize: 11 }}>
           <span style={{ color: '#5fb98a' }}>+{totAdds.toLocaleString('en-US')}</span>
           <span style={{ color: '#cf6b6b' }}>−{totDels.toLocaleString('en-US')}</span>
         </span>
-        <span style={{ color: '#5b6675', fontSize: 10 }}>
+        <span style={{ color: '#5b6675', fontSize: 10, whiteSpace: 'nowrap' }}>
           · {files.length} file{files.length === 1 ? '' : 's'}{gone > 0 ? ` · ${gone} gone` : ''}
         </span>
       </div>
+      {secOpen && (
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 10px 10px' }}>
         {groups.map((g) => {
           const isOpen = !collapsed.has(g.dir)
@@ -267,7 +275,72 @@ function FilesChanged({ files, projectPath, sessionId }: { files: FileTouch[]; p
           )
         })}
       </div>
-      {err && <div style={{ flex: 'none', color: '#cf6b6b', fontSize: 10, padding: '4px 12px 8px' }}>{err}</div>}
+      )}
+      {secOpen && err && <div style={{ flex: 'none', color: '#cf6b6b', fontSize: 10, padding: '4px 12px 8px' }}>{err}</div>}
+    </div>
+  )
+}
+
+/// Live task board (~/.claude/tasks/<sid>/) as a pinned section between the
+/// card and FILES CHANGED. Renders NOTHING when the session has no board; the
+/// header carries the board's age so a stale "in progress" reads as stale.
+function TasksSection({ view }: { view: TasksView | null }) {
+  const [open, setOpen] = useState(() => localStorage.getItem('dd.tasksOpen') !== '0')
+  const toggleOpen = () => setOpen((o) => { localStorage.setItem('dd.tasksOpen', o ? '0' : '1'); return !o })
+  if (!view || view.tasks.length === 0) return null
+  const total = view.tasks.length
+  const done = view.tasks.filter((t) => t.status === 'completed').length
+  const blocked = view.tasks.filter((t) => t.status !== 'completed' && t.blocked_by.length > 0)
+  const active = view.tasks.find((t) => t.status === 'in_progress')
+  const subjects = new Map(view.tasks.map((t) => [t.id, t.subject]))
+  const glyph = (t: (typeof view.tasks)[number]): [string, string, string] =>
+    t.status === 'completed'
+      ? ['✓', '#4a5462', 'completed']
+      : t.status === 'in_progress'
+        ? ['◐', '#7ec8a0', 'in progress']
+        : t.blocked_by.length > 0
+          ? ['⊘', '#d6b24a', `waiting on: ${t.blocked_by.map((b) => subjects.get(b) ?? `#${b}`).join(', ')}`]
+          : ['○', '#7d8794', 'pending']
+  return (
+    <div style={{ flex: open ? '0 1 auto' : 'none', maxHeight: open ? '40%' : undefined, display: 'flex', flexDirection: 'column', borderTop: '1px solid #232c3a', background: '#0d1117' }}>
+      <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 7, padding: '8px 12px 6px' }}>
+        <button onClick={toggleOpen} title={open ? 'Collapse' : 'Expand'} style={{ ...S.groupBtn, width: 'auto', flex: 'none', gap: 5, padding: 0 }}>
+          <span style={{ width: 9, flex: 'none', color: '#4a5462' }}>{open ? '▾' : '▸'}</span>
+          <span style={S.secHead}>TASKS</span>
+        </button>
+        <span style={{ flex: 'none', color: '#5b6675', fontSize: 10, whiteSpace: 'nowrap' }}>
+          {done}/{total}{blocked.length > 0 ? ` · ${blocked.length} blocked` : ''}
+        </span>
+        <span style={{ flex: 1 }} />
+        {view.updated_at != null && (
+          <span title={'the board\u2019s last change — a stale \u201cin progress\u201d is old news, not live'} style={{ color: '#5b6675', fontSize: 10, whiteSpace: 'nowrap' }}>
+            {relAge(view.updated_at)}
+          </span>
+        )}
+      </div>
+      {open && (
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 12px 10px' }}>
+          {active?.active_form && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+              <span style={{ color: '#7ec8a0', fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>◐ now: {active.active_form}</span>
+              <span style={{ flex: 1, minWidth: 24, height: 3, borderRadius: 2, background: '#1b2230', overflow: 'hidden' }}>
+                <span style={{ display: 'block', height: '100%', width: `${Math.round((done / total) * 100)}%`, background: '#5fb98a' }} />
+              </span>
+            </div>
+          )}
+          {view.tasks.map((t) => {
+            const [g, color, tip] = glyph(t)
+            return (
+              <div key={t.id} title={tip} style={{ display: 'flex', gap: 7, alignItems: 'baseline', padding: '2px 0', fontSize: 11.5 }}>
+                <span style={{ width: 12, flex: 'none', textAlign: 'center', color }}>{g}</span>
+                <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: t.status === 'completed' ? '#5b6675' : t.status === 'in_progress' ? '#e8edf4' : '#9aa3af' }}>
+                  {t.subject}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
@@ -275,7 +348,7 @@ function FilesChanged({ files, projectPath, sessionId }: { files: FileTouch[]; p
 // Two clearly separated sections: the briefing card scrolls on top; "Files
 // changed" is its own visually distinct region pinned below with its own
 // scroll — a long timeline can't bury the file list and vice versa.
-function BriefingTab({ sessionId, card, starred, files, projectPath, label, onToggleStar, onRename }: { sessionId: string | null; card: CardView | null; starred: boolean; files: FileTouch[]; projectPath?: string; label?: string | null; onToggleStar?: () => void; onRename?: (name: string) => void }) {
+function BriefingTab({ sessionId, card, starred, files, tasks, usage, projectPath, label, onToggleStar, onRename }: { sessionId: string | null; card: CardView | null; starred: boolean; files: FileTouch[]; tasks: TasksView | null; usage: SessionUsage | null; projectPath?: string; label?: string | null; onToggleStar?: () => void; onRename?: (name: string) => void }) {
   // editing holds the label CAPTURED when the pencil was clicked (null = not
   // editing): the unchanged-commit guard must compare against what the user
   // saw when they started, not the live prop — a mid-edit refresh changing
@@ -333,13 +406,28 @@ function BriefingTab({ sessionId, card, starred, files, projectPath, label, onTo
               ✎
             </button>
           )}
+          {usage && usage.total_tokens > 0 && (
+            <span
+              style={{ ...S.chip, flex: 'none', fontFamily: 'Menlo, monospace', alignSelf: 'flex-start', lineHeight: '15px' }}
+              title={
+                `${usage.total_tokens.toLocaleString('en-US')} tokens (input + output + cache writes; cache reads excluded)\n` +
+                usage.rows.map((r) => `${r.model}${r.scope !== 'main' ? ' (agents)' : ''}: ${fmtTokens(r.input)} in · ${fmtTokens(r.output)} out`).join('\n') +
+                (usage.agent_output > 0 ? `\nsubagents wrote ${fmtTokens(usage.agent_output)} of the output` : '') +
+                '\nfrom transcript usage records — an estimate, not a bill'
+              }
+            >
+              Σ {fmtTokens(usage.total_tokens)}
+            </span>
+          )}
         </div>
         {card ? (
           <>
             {card.timeline.length > 0 ? (
               <ul style={{ margin: 0, padding: 0, listStyle: 'none' }}>
+                {/* one source of "now doing": with a live task board below,
+                    the AI card's own in-progress flags stand down */}
                 {card.timeline.map((it, i) => (
-                  <Item key={i} it={it} />
+                  <Item key={i} it={tasks && tasks.tasks.length > 0 ? { ...it, in_progress: false } : it} />
                 ))}
               </ul>
             ) : (
@@ -357,7 +445,8 @@ function BriefingTab({ sessionId, card, starred, files, projectPath, label, onTo
           Refresh card
         </button>
       </div>
-      <FilesChanged files={files} projectPath={projectPath} sessionId={sessionId} />
+      <TasksSection view={tasks} />
+      <FilesChanged files={files} projectPath={projectPath} sessionId={sessionId} squeeze={!!tasks && tasks.tasks.length > 0} />
     </div>
   )
 }
@@ -966,6 +1055,8 @@ function PreviewTab({ artifacts, sessionId }: { artifacts: Artifact[]; sessionId
 export default function BriefingPanel({ sessionId, projectPath, starred, artifacts, label, onToggleStar, onRename }: Props) {
   const [card, setCard] = useState<CardView | null>(null)
   const [files, setFiles] = useState<FileTouch[]>([])
+  const [tasks, setTasks] = useState<TasksView | null>(null)
+  const [usage, setUsage] = useState<SessionUsage | null>(null)
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('dd.briefingCollapsed') === '1')
   // clamp on load AND on window resize: a width persisted (or auto-widened) on a
   // big monitor must not overflow a smaller window later
@@ -980,10 +1071,13 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
   }, [])
 
   const refresh = useCallback(() => {
-    if (!sessionId) { setCard(null); setFiles([]); return } // a session-less new tab has no card
+    if (!sessionId) { setCard(null); setFiles([]); setTasks(null); setUsage(null); return } // a session-less new tab has no card
     invoke<CardView | null>('get_card', { sessionId }).then(setCard).catch(console.error)
     // no transcript file yet (radar stub / expired) → just no files section
     invoke<FileTouch[]>('session_files', { sessionId }).then(setFiles).catch(() => setFiles([]))
+    // both refresh on the same index-updated tick that moves the transcript
+    invoke<TasksView>('session_tasks', { sessionId }).then(setTasks).catch(() => setTasks(null))
+    invoke<SessionUsage>('session_usage', { sessionId }).then(setUsage).catch(() => setUsage(null))
   }, [sessionId])
   useEffect(() => {
     refresh()
@@ -1048,7 +1142,7 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
         {tab === 'preview' ? (
           <PreviewTab artifacts={artifacts} sessionId={sessionId} />
         ) : tab === 'briefing' ? (
-          <BriefingTab sessionId={sessionId} card={card} starred={starred} files={files} projectPath={projectPath} label={label} onToggleStar={onToggleStar} onRename={onRename} />
+          <BriefingTab sessionId={sessionId} card={card} starred={starred} files={files} tasks={tasks} usage={usage} projectPath={projectPath} label={label} onToggleStar={onToggleStar} onRename={onRename} />
         ) : (
           <ProjectTab projectPath={projectPath} />
         )}

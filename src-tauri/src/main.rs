@@ -3,6 +3,7 @@
 mod artifacts;
 mod attention;
 mod capabilities;
+mod cc_data;
 mod embedder;
 mod enricher;
 mod files;
@@ -520,6 +521,10 @@ fn main() {
             index::set_starred,
             index::set_hidden,
             index::set_session_name,
+            cc_data::session_tasks,
+            cc_data::recent_prompts,
+            cc_data::session_usage,
+            cc_data::usage_overview,
             index::create_folder,
             index::rename_folder,
             index::delete_folder,

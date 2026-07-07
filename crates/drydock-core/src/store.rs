@@ -29,6 +29,16 @@ pub struct SessionRow {
     pub live_pid: Option<i64>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageRow {
+    pub scope: String,
+    pub model: String,
+    pub input: i64,
+    pub output: i64,
+    pub cache_read: i64,
+    pub cache_creation: i64,
+}
+
 /// One user-created sidebar folder, in band order.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FolderRow {
@@ -123,6 +133,19 @@ CREATE TABLE IF NOT EXISTS session_names(
   session_id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   named_at INTEGER NOT NULL
+);
+-- Token usage per session, summed from transcript assistant records. scope =
+-- 'main' for the session's own transcript, or the agent_id for a subagent
+-- sidecar (so pruning one agent file can subtract exactly its share).
+CREATE TABLE IF NOT EXISTS session_usage(
+  session_id TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  model TEXT NOT NULL,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (session_id, scope, model)
 );
 -- User-created sidebar folders ('working groups') and their members. Own
 -- tables for the same reason as hidden_sessions: re-syncs rewrite session
@@ -314,6 +337,7 @@ impl Store {
             user_message_count: d.user_message_count + existing.as_ref().map_or(0, |e| e.user_message_count),
             git_branch: d.git_branch.clone().or_else(|| existing.as_ref().and_then(|e| e.git_branch.clone())),
             cli_version: d.cli_version.clone().or_else(|| existing.as_ref().and_then(|e| e.cli_version.clone())),
+            usage_by_model: Default::default(), // applied additively below, not merged into the row
         };
 
         let (title, title_source) = resolve_title(&merged, session_id);
@@ -339,6 +363,12 @@ impl Store {
                 merged.cli_version, merged.ai_title, merged.custom_title, merged.slug, hidden as i64
             ],
         )?;
+
+        // token usage is append-only like the transcript itself: each sync
+        // pass parses only NEW records, so the delta's sums ADD to the row
+        for (model, [i, o, cr, cc]) in &d.usage_by_model {
+            Self::add_usage_in_conn(&tx, session_id, "main", model, *i, *o, *cr, *cc)?;
+        }
 
         let next_seq: i64 = tx.query_row(
             "SELECT COALESCE(MAX(seq), -1) + 1 FROM chunks WHERE session_id = ?1",
@@ -448,6 +478,7 @@ impl Store {
         tx.execute("DELETE FROM chunks WHERE session_id = ?1", params![session_id])?;
         tx.execute("DELETE FROM cards WHERE session_id = ?1", params![session_id])?;
         tx.execute("DELETE FROM sync_state WHERE session_id = ?1", params![session_id])?;
+        tx.execute("DELETE FROM session_usage WHERE session_id = ?1", params![session_id])?;
         if purge_flags {
             tx.execute("DELETE FROM hidden_sessions WHERE session_id = ?1", params![session_id])?;
             tx.execute("DELETE FROM session_names WHERE session_id = ?1", params![session_id])?;
@@ -470,7 +501,13 @@ impl Store {
     /// and a concurrent delete_session_permanently must not race a
     /// check-then-act gap into re-inserting chunks for a dead session. The
     /// caller skips recording sync state when this returns false.
-    pub fn apply_agent_chunks(&mut self, session_id: &str, agent_id: &str, chunks: &[Chunk]) -> Result<bool> {
+    pub fn apply_agent_chunks(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        chunks: &[Chunk],
+        usage: &std::collections::HashMap<String, [i64; 4]>,
+    ) -> Result<bool> {
         let tx = self.conn.transaction()?;
         let parent_real: bool = tx
             .query_row(
@@ -498,6 +535,11 @@ impl Store {
                 params![c.text, chunk_rowid, session_id],
             )?;
         }
+        // the agent's tokens land under its own scope, same gate/tx: a stub
+        // must not adopt cost any more than content
+        for (model, [i, o, cr, cc]) in usage {
+            Self::add_usage_in_conn(&tx, session_id, agent_id, model, *i, *o, *cr, *cc)?;
+        }
         tx.commit()?;
         Ok(true)
     }
@@ -517,6 +559,7 @@ impl Store {
             params![session_id, agent_id],
         )?;
         tx.execute("DELETE FROM chunks WHERE session_id = ?1 AND agent_id = ?2", params![session_id, agent_id])?;
+        tx.execute("DELETE FROM session_usage WHERE session_id = ?1 AND scope = ?2", params![session_id, agent_id])?;
         tx.execute("DELETE FROM sync_state WHERE file_path = ?1", params![file_path])?;
         tx.commit()?;
         Ok(())
@@ -825,6 +868,72 @@ impl Store {
         let rows: Vec<(String, String)> =
             stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?;
         Ok(rows)
+    }
+
+    fn add_usage_in_conn(
+        conn: &Connection, session_id: &str, scope: &str, model: &str,
+        input: i64, output: i64, cache_read: i64, cache_creation: i64,
+    ) -> Result<()> {
+        conn.execute(
+            "INSERT INTO session_usage(session_id, scope, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
+             VALUES (?1,?2,?3,?4,?5,?6,?7)
+             ON CONFLICT(session_id, scope, model) DO UPDATE SET
+               input_tokens = input_tokens + excluded.input_tokens,
+               output_tokens = output_tokens + excluded.output_tokens,
+               cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+               cache_creation_tokens = cache_creation_tokens + excluded.cache_creation_tokens",
+            params![session_id, scope, model, input, output, cache_read, cache_creation],
+        )?;
+        Ok(())
+    }
+
+    /// One session's token usage, per scope+model (scope 'main' = its own
+    /// transcript, else a subagent's id).
+    pub fn session_usage(&self, session_id: &str) -> Result<Vec<UsageRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT scope, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+             FROM session_usage WHERE session_id = ?1 ORDER BY scope, model",
+        )?;
+        let rows = stmt
+            .query_map(params![session_id], |r| {
+                Ok(UsageRow {
+                    scope: r.get(0)?, model: r.get(1)?, input: r.get(2)?,
+                    output: r.get(3)?, cache_read: r.get(4)?, cache_creation: r.get(5)?,
+                })
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// Sessions ranked by output tokens (the best available effort proxy) —
+    /// (session_id, output_tokens, input+output+cache_creation). Cache READS
+    /// are excluded from the total: they dominate numerically but cost little.
+    pub fn top_sessions_by_tokens(&self, limit: i64) -> Result<Vec<(String, i64, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT session_id, SUM(output_tokens),
+                    SUM(input_tokens + output_tokens + cache_creation_tokens)
+             FROM session_usage GROUP BY session_id
+             ORDER BY SUM(output_tokens) DESC LIMIT ?1",
+        )?;
+        let rows = stmt
+            .query_map(params![limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// Replace a (session, scope)'s usage wholesale — the one-time backfill
+    /// re-reads whole files, so it must be idempotent, not additive.
+    pub fn replace_usage(
+        &mut self, session_id: &str, scope: &str,
+        usage: &std::collections::HashMap<String, [i64; 4]>,
+    ) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM session_usage WHERE session_id = ?1 AND scope = ?2", params![session_id, scope])?;
+        for (model, [i, o, cr, cc]) in usage {
+            Self::add_usage_in_conn(&tx, session_id, scope, model, *i, *o, *cr, *cc)?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// The label a session wears in the UI, resolved with the frontend's
@@ -1605,6 +1714,44 @@ mod tests {
         // the session returns (re-synced from byte 0) → flags reattach
         s.apply_delta(sid, &delta("hi again"), &[]).unwrap();
         assert_eq!(s.session_names().unwrap(), vec![(sid.to_string(), "release CI".to_string())]);
+    }
+
+    #[test]
+    fn usage_accumulates_by_scope_and_prunes_with_its_owner() {
+        let mut s = Store::open_in_memory().unwrap();
+        let sid = "s-usage";
+        // main usage adds across two syncs (append-only contract)
+        let mut d = delta("hi");
+        d.usage_by_model.insert("m1".into(), [10, 5, 100, 2]);
+        s.apply_delta(sid, &d, &[]).unwrap();
+        s.apply_delta(sid, &d, &[]).unwrap();
+        // agent usage under its own scope, through the gated path
+        let mut agent_usage = std::collections::HashMap::new();
+        agent_usage.insert("m2".to_string(), [3i64, 7, 0, 0]);
+        assert!(s.apply_agent_chunks(sid, "agent-a", &[], &agent_usage).unwrap());
+        let rows = s.session_usage(sid).unwrap();
+        assert_eq!(rows.len(), 2);
+        let main = rows.iter().find(|r| r.scope == "main").unwrap();
+        assert_eq!((main.input, main.output, main.cache_read, main.cache_creation), (20, 10, 200, 4));
+        let agent = rows.iter().find(|r| r.scope == "agent-a").unwrap();
+        assert_eq!((agent.input, agent.output), (3, 7));
+        // top sessions ranks by output across scopes
+        let top = s.top_sessions_by_tokens(5).unwrap();
+        assert_eq!(top[0].0, sid);
+        assert_eq!(top[0].1, 17, "10 main + 7 agent output");
+        // pruning the agent file subtracts exactly its share
+        s.delete_agent_file("/x/agent-a.jsonl", sid, "agent-a").unwrap();
+        assert!(s.session_usage(sid).unwrap().iter().all(|r| r.scope == "main"));
+        // replace_usage is idempotent (backfill contract)
+        let mut full = std::collections::HashMap::new();
+        full.insert("m1".to_string(), [99i64, 88, 0, 0]);
+        s.replace_usage(sid, "main", &full).unwrap();
+        s.replace_usage(sid, "main", &full).unwrap();
+        let rows = s.session_usage(sid).unwrap();
+        assert_eq!((rows[0].input, rows[0].output), (99, 88));
+        // derived-data delete drops usage on BOTH delete paths
+        s.delete_session_data(sid).unwrap();
+        assert!(s.session_usage(sid).unwrap().is_empty());
     }
 
     #[test]

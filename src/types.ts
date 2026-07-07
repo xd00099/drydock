@@ -77,6 +77,21 @@ export type FileTouch = {
 export type TimelineItem = { text: string; detail: string[]; in_progress: boolean }
 export type CardView = { summary: string; timeline: TimelineItem[]; generated_at: number }
 
+// Live task board from ~/.claude/tasks/<sid>/ (backend cc_data::session_tasks)
+export type TaskView = { id: string; subject: string; active_form: string | null; status: string; blocked_by: string[] }
+export type TasksView = { tasks: TaskView[]; updated_at: number | null }
+
+// Indexed token usage for one session (backend cc_data::session_usage)
+export type ModelUsage = { model: string; scope: string; input: number; output: number; cache_read: number; cache_creation: number }
+export type SessionUsage = { rows: ModelUsage[]; total_output: number; total_tokens: number; agent_output: number }
+
+/** Compact token count: 950, 62k, 3.5M. */
+export function fmtTokens(n: number): string {
+  if (n >= 1e6) return (n / 1e6).toFixed(n >= 10e6 ? 0 : 1) + 'M'
+  if (n >= 1e3) return (n / 1e3).toFixed(n >= 10e3 ? 0 : 1) + 'k'
+  return String(n)
+}
+
 // Read-only capability views for the right panel (from ~/.claude, secrets stripped)
 export type Skill = { name: string; description: string; plugin: string }
 // `builtin` = Drydock's own drydock-artifacts server; `enabled` = whether Drydock

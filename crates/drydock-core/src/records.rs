@@ -6,6 +6,17 @@ pub enum ParsedRecord {
     Malformed,
 }
 
+/// Per-record API usage from an assistant message: what the turn cost in
+/// tokens, by model. None for user/system records and synthetic messages.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Usage {
+    pub model: String,
+    pub input: i64,
+    pub output: i64,
+    pub cache_read: i64,
+    pub cache_creation: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Chain {
     pub kind: String, // "user" | "assistant" | "system" | "attachment"
@@ -23,6 +34,7 @@ pub struct Chain {
     pub slug: Option<String>,
     pub role: Option<String>,
     pub text: Option<String>,
+    pub usage: Option<Usage>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
