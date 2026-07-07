@@ -446,6 +446,7 @@ fn macos_menu(handle: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>
 fn main() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // Serve HTML artifacts from their own isolated `artifact://` origin so
         // they run their JavaScript under a locked-down per-artifact CSP (charts,
         // animations, clicks) instead of inheriting the app's strict CSP, which
@@ -554,6 +555,10 @@ fn main() {
             capabilities::list_skills,
             updates::app_version,
             updates::check_update,
+            updates::install_update,
+            updates::restart_app,
+            updates::stash_tabs,
+            updates::take_stashed_tabs,
             updates::open_releases_page
         ])
         .build(tauri::generate_context!())

@@ -19,6 +19,8 @@ type Props = {
   onHide: (sessionId: string, hide: boolean) => void
   onDelete: (sessionId: string) => void
   onRefresh: () => void // re-pull the snapshot after a folder mutation
+  updateBusyCount: number // claude tabs mid-turn — gates the update restart
+  onRestartForUpdate: () => Promise<void> // stash tabs + relaunch (App owns tabs)
 }
 
 type Group = { path: string; sessions: SessionView[]; latest: number }
@@ -123,7 +125,7 @@ type Naming =
   // click-away blur) must be a no-op, not freeze an AUTO title into an override
   | { kind: 'rename-session'; sid: string; initial: string }
 
-export default function Sidebar({ onHome, sessions, folders, hidden, activeSessionId, onResume, onTranscript, onNewSession, onToggleStar, onHide, onDelete, onRefresh }: Props) {
+export default function Sidebar({ onHome, sessions, folders, hidden, activeSessionId, onResume, onTranscript, onNewSession, onToggleStar, onHide, onDelete, onRefresh, updateBusyCount, onRestartForUpdate }: Props) {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('dd.sidebarCollapsed') === '1')
   // clamp on load AND on window resize: a width persisted on a big monitor must
   // not overflow a smaller window later
@@ -826,7 +828,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
         </div>
       )}
     </div>
-      <VersionFooter />
+      <VersionFooter busyCount={updateBusyCount} onRestartForUpdate={onRestartForUpdate} />
     </div>
       <ResizeHandle
         onDelta={(dx) => setWidth((w) => clampPanelWidth(w + dx))}

@@ -192,6 +192,18 @@ export type Tab = {
   terminal?: boolean
 }
 
+// One tab in the pre-update-restart snapshot (backend updates::RestoreTab).
+// Written right before the updater relaunches the app; read back (once) on the
+// next boot to rebuild the workspace. claude tabs resume their session, shell
+// tabs reopen at their last cwd, transcript tabs reopen read-only.
+export type RestoreTab = {
+  kind: 'claude' | 'shell' | 'transcript'
+  session_id: string | null
+  cwd: string | null
+  title: string | null
+  active: boolean
+}
+
 export function relAge(ms: number | null): string {
   if (!ms) return '-'
   const d = Date.now() - ms

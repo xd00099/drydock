@@ -11,7 +11,7 @@ import BriefingPanel from './BriefingPanel'
 import HomeView from './HomeView'
 import FindBar from './FindBar'
 import { useSessions } from './useSessions'
-import type { Artifact, ArtifactKind, PaneSearch, SessionView, Tab } from './types'
+import type { Artifact, ArtifactKind, PaneSearch, RestoreTab, SessionView, Tab } from './types'
 import { clip, sessionLabel, uuidv4 } from './types'
 
 let nextTabId = 1
@@ -52,6 +52,8 @@ export default function App() {
   activeIdRef.current = activeId
   const sessionsRef = useRef(sessions) // for once-registered attention/focus listeners
   sessionsRef.current = sessions
+  const shellDirsRef = useRef(shellDirs) // for the update-restart stash (built at call time)
+  shellDirsRef.current = shellDirs
   // for the once-registered keydown handler: shortcuts must respect open overlays
   const quitGuardRef = useRef(quitGuard)
   quitGuardRef.current = quitGuard
@@ -133,6 +135,41 @@ export default function App() {
   }
 
   const newShell = () => addTab({ title: 'shell', kind: 'pty', program: null, args: ['-l'], cwd: null, terminal: true })
+
+  // Rebuild the workspace stashed just before an update restart (the backend
+  // deletes the snapshot on read, so this applies exactly once). claude tabs
+  // resume their session — scrollback resets but the conversation is intact;
+  // tabs whose process had already exited come back as read-only transcripts.
+  useEffect(() => {
+    invoke<RestoreTab[] | null>('take_stashed_tabs')
+      .then((saved) => {
+        if (!saved?.length) return
+        let active: number | null = null
+        const restored: Tab[] = []
+        for (const r of saved) {
+          // session ids are spliced single-quoted into a shell -c; our own
+          // uuids are quote-free, so anything else in the snapshot is
+          // malformed — skip it rather than build a broken command
+          if (r.session_id?.includes("'")) continue
+          const id = nextTabId++
+          if (r.kind === 'claude' && r.session_id) {
+            restored.push({ id, title: r.title || 'claude', kind: 'pty', program: null, args: ['-l', '-c', `exec claude --resume '${r.session_id}'`], cwd: r.cwd, sessionId: r.session_id, exited: false })
+          } else if (r.kind === 'transcript' && r.session_id) {
+            restored.push({ id, title: r.title || 'session', kind: 'transcript', program: null, args: [], cwd: null, sessionId: r.session_id, exited: true })
+          } else if (r.kind === 'shell') {
+            restored.push({ id, title: r.title || 'shell', kind: 'pty', program: null, args: ['-l'], cwd: r.cwd, exited: false, terminal: true })
+          } else {
+            continue
+          }
+          if (r.active) active = id
+        }
+        if (!restored.length) return
+        setTabs((prev) => [...prev, ...restored])
+        setActiveId(active ?? restored[restored.length - 1].id)
+      })
+      .catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // A session's process exiting (claude quit / killed) frees its artifacts right
   // away — they're in-memory only, so an ended session shouldn't keep holding
@@ -384,6 +421,34 @@ export default function App() {
     setUnread((u) => { if (!u[activeId]) return u; const n = { ...u }; delete n[activeId]; return n })
   }, [activeId])
 
+  // claude tabs currently mid-turn: the update flow's "restart anyway?" gate.
+  const updateBusyCount = tabs.filter(
+    (t) =>
+      t.kind === 'pty' && !t.terminal && !t.exited && t.sessionId &&
+      sessions.find((s) => s.session_id === t.sessionId)?.live_status === 'busy'
+  ).length
+
+  // The update is installed (bundle already swapped on disk): snapshot the
+  // open tabs for the next launch, then restart into the new version. The
+  // stash is best-effort — a failed snapshot must not strand a half-applied
+  // update, and every session stays reachable from the sidebar regardless.
+  // Built from refs: the install download takes a while and tabs may have
+  // changed since the click.
+  const restartForUpdate = async () => {
+    const snapshot = tabsRef.current
+      .filter((t) => !(t.terminal && t.exited)) // dead shells aren't worth reopening
+      .map((t) => ({
+        kind: t.kind === 'transcript' || t.exited ? ('transcript' as const) : t.terminal ? ('shell' as const) : ('claude' as const),
+        session_id: t.sessionId ?? null,
+        cwd: t.terminal ? shellDirsRef.current[t.id] ?? t.cwd : t.cwd,
+        title: t.title,
+        active: t.id === activeIdRef.current,
+      }))
+      .filter((r) => r.kind === 'shell' || r.session_id) // claude/transcript need a session id
+    await invoke('stash_tabs', { tabs: snapshot }).catch(() => {})
+    await invoke('restart_app').catch(() => {})
+  }
+
   return (
     <div style={{ display: 'flex', width: '100vw', height: '100vh', background: '#10141a' }}>
       <Sidebar
@@ -399,6 +464,8 @@ export default function App() {
         onHide={(sessionId, hide) => invoke('set_hidden', { sessionId, hidden: hide }).then(refresh)}
         onDelete={(sessionId) => invoke('delete_session_permanently', { sessionId }).then(refresh)}
         onRefresh={refresh}
+        updateBusyCount={updateBusyCount}
+        onRestartForUpdate={restartForUpdate}
       />
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
         {/* In-flow (not fixed at a guessed sidebar offset): it always spans
