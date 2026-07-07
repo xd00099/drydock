@@ -78,3 +78,14 @@ body,
 .dd-sessrow .dd-rowbtn { visibility: hidden; }
 .dd-sessrow:hover .dd-rowbtn { visibility: visible; }
 .dd-rowbtn:hover { color: #cfe0f5 !important; }
+
+/* Split screen: an unfocused pane whose session is blocked on you pulses its
+   frame amber (the split-mode sibling of the sidebar/tab dd-attn dot). */
+@keyframes dd-ringpulse {
+  0%, 100% { border-color: #e8a33d; }
+  50% { border-color: rgba(232, 163, 61, 0.3); }
+}
+.dd-attnpane { animation: dd-ringpulse 1.2s ease-in-out infinite; }
+
+/* Pane divider: invisible until hovered so the gutter stays quiet. */
+.dd-divider:hover { background: rgba(127, 176, 255, 0.22); }

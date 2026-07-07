@@ -15,6 +15,9 @@ type Props = {
   cwd: string | null
   sessionId?: string // the claude session id pinned at launch (hooks/artifacts key)
   visible: boolean
+  // Split screen shows several terminals at once; only the focused pane's may
+  // hold the keyboard. Unfocused-but-visible terminals blur (hollow cursor).
+  focused: boolean
   onExit: () => void
   onInteract?: () => void // any user input into the terminal
   onMatches?: (index: number, count: number) => void // ⌘F results (index<0 = count-only)
@@ -129,7 +132,7 @@ function termMatchInfo(term: Terminal, q: string): TermMatchInfo {
 }
 
 const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
-  { id, program, args, cwd, sessionId, visible, onExit, onInteract, onMatches },
+  { id, program, args, cwd, sessionId, visible, focused, onExit, onInteract, onMatches },
   ref,
 ) {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -370,9 +373,18 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
       if (readyRef.current) {
         invoke('pty_resize', { id, cols: termRef.current.cols, rows: termRef.current.rows })
       }
-      termRef.current.focus()
     }
   }, [visible, id])
+
+  // Keyboard follows the focused pane, not visibility: two side-by-side
+  // terminals must not fight over keystrokes. Blurring the unfocused one also
+  // makes its cursor hollow — the visual cue for "typing goes elsewhere".
+  useEffect(() => {
+    const term = termRef.current
+    if (!term) return
+    if (focused && visible) term.focus()
+    else if (!focused) term.blur()
+  }, [focused, visible, id])
 
   return <div ref={hostRef} style={{ width: '100%', height: '100%' }} />
 })

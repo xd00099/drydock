@@ -13,6 +13,11 @@ import FindBar from './FindBar'
 import { useSessions } from './useSessions'
 import type { Artifact, ArtifactKind, PaneSearch, RestoreTab, SessionView, Tab } from './types'
 import { clip, sessionLabel, uuidv4 } from './types'
+import {
+  GUTTER, canSplit, clampRatio, closeStaged, dropOnStage, focusNeighbor, hitTest,
+  layoutRects, pruneStage, setRatio, showTab, stagedIds,
+} from './split'
+import type { DividerRect, DropTarget, Edge, Rect, Stage } from './split'
 
 let nextTabId = 1
 const EMPTY_ARTIFACTS: Artifact[] = [] // stable ref so an artifact-less panel doesn't churn
@@ -24,7 +29,13 @@ const MAX_ARTIFACTS_PER_TAB = 20
 export default function App() {
   const { sessions, hidden, folders, ready: sessionsReady, refresh } = useSessions()
   const [tabs, setTabs] = useState<Tab[]>([])
-  const [activeId, setActiveId] = useState<number | null>(null)
+  // The stage: which tabs are visible (split layout tree) and which pane has
+  // focus. layout === null is classic single-pane mode; `active` drives ALL
+  // per-tab chrome (BriefingPanel, find, sidebar highlight, ⌘W…) exactly as
+  // the old single activeId did. Layout + focus live in ONE state so
+  // close-then-open flows compose through functional updates atomically.
+  const [stage, setStage] = useState<Stage>({ layout: null, active: null })
+  const { layout, active: activeId } = stage
   const [quitGuard, setQuitGuard] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
   // full-window Home overlay (⌘K → "usage & timeline"): global data without
@@ -48,8 +59,14 @@ export default function App() {
   }, [])
   const tabsRef = useRef(tabs)
   tabsRef.current = tabs
-  const activeIdRef = useRef(activeId) // for the once-registered artifact listener
-  activeIdRef.current = activeId
+  const stageRef = useRef(stage) // for pointer-drag handlers registered mid-gesture
+  stageRef.current = stage
+  // staged = every tab visible on stage (all split panes, or just the active
+  // tab). For the once-registered attention/artifact listeners: a pane the
+  // user can SEE needs no notification or unread badge.
+  const staged = stagedIds(stage)
+  const stagedRef = useRef(staged)
+  stagedRef.current = staged
   const sessionsRef = useRef(sessions) // for once-registered attention/focus listeners
   sessionsRef.current = sessions
   const shellDirsRef = useRef(shellDirs) // for the update-restart stash (built at call time)
@@ -67,6 +84,7 @@ export default function App() {
   const openFindRef = useRef(() => {})
   const goHomeRef = useRef(() => {})
   const toggleTranscriptRef = useRef(() => {})
+  const focusNavRef = useRef((_key: string) => {}) // ⌘⌥ arrows: move pane focus
 
   // replaceSession: sweep up stale tabs (exited ptys, superseded transcripts) for that session
   const addTab = (t: Omit<Tab, 'id' | 'exited'> & { exited?: boolean }, replaceSession?: string) => {
@@ -79,7 +97,9 @@ export default function App() {
       ),
       tab,
     ])
-    setActiveId(tab.id)
+    // showTab: in a split, the new tab takes over the focused pane (viewport
+    // semantics) instead of collapsing the layout
+    setStage((st) => showTab(st, tab.id))
   }
 
   // interacting with a preview tab makes it permanent
@@ -94,14 +114,14 @@ export default function App() {
     // the transcript even while the session is running in a tab.
     if (!opts?.transcript) {
       const runningHere = tabs.find((t) => t.sessionId === s.session_id && t.kind === 'pty' && !t.exited)
-      if (runningHere) { setActiveId(runningHere.id); return }
+      if (runningHere) { setStage((st) => showTab(st, runningHere.id)); return }
     }
     const preview = !opts?.permanent
     if (opts?.transcript || s.live_status !== 'ended') {
       // live in another terminal (or transcript explicitly requested): read-only
       // transcript view (counts as exited for the quit guard)
       const open = tabs.find((t) => t.sessionId === s.session_id && t.kind === 'transcript')
-      if (open) { setActiveId(open.id); return }
+      if (open) { setStage((st) => showTab(st, open.id)); return }
       addTab({ title: clip(sessionLabel(s), 24), kind: 'transcript', program: null, args: [], cwd: null, sessionId: s.session_id, exited: true, preview }, s.session_id)
       return
     }
@@ -165,7 +185,8 @@ export default function App() {
         }
         if (!restored.length) return
         setTabs((prev) => [...prev, ...restored])
-        setActiveId(active ?? restored[restored.length - 1].id)
+        const show = active ?? restored[restored.length - 1].id
+        setStage((st) => showTab(st, show))
       })
       .catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -196,11 +217,19 @@ export default function App() {
     const lane = next.filter((t) => !!t.terminal === !!closed?.terminal)
     const fallback = closed?.terminal ? next.filter((t) => !t.terminal) : []
     const landing = lane.length ? lane[lane.length - 1].id : fallback.length ? fallback[fallback.length - 1].id : null
-    // Home has no pane — a find bar there would search nothing. keepFind is for
-    // close-and-replace flows (resume-here): the caller opens a new tab in the
-    // same breath, so the user never actually lands on Home.
-    if (activeId === id && landing === null && !opts?.keepFind) closeFind()
-    setActiveId((a) => (a === id ? landing : a))
+    // Home has no pane — a find bar there would search nothing. keepFind is
+    // for close-and-replace flows (resume-here): activeId/tabs here are the
+    // RENDER's values, so when the caller already restaged in the same
+    // handler this stale check would misfire. A tab closed out of a SPLIT
+    // never lands on Home either: its pane collapses into the sibling, which
+    // takes focus (closeStaged below).
+    const inSplit = layout !== null && staged.includes(id)
+    if (!inSplit && activeId === id && landing === null && !opts?.keepFind) closeFind()
+    setStage((st) => {
+      const r = closeStaged(st, id)
+      if (r.wasStaged) return r.stage
+      return st.active === id ? { layout: null, active: landing } : st
+    })
   }
 
   const activeTab = tabs.find((t) => t.id === activeId)
@@ -229,7 +258,9 @@ export default function App() {
   // transcript from the sidebar or ⌘K.)
   goHomeRef.current = () => {
     closeFind()
-    setActiveId(null)
+    // Home = an empty stage: any split is dismantled (every tab returns to the
+    // deck — nothing closes). The ⌘K Home OVERLAY is the non-destructive peek.
+    setStage({ layout: null, active: null })
   }
   // no active pane on Home — a find bar there would search nothing
   openFindRef.current = () => {
@@ -246,11 +277,267 @@ export default function App() {
     if (!t?.sessionId) return
     if (t.kind === 'transcript') {
       const liveTab = tabs.find((x) => x.sessionId === t.sessionId && x.kind === 'pty' && !x.exited)
-      if (liveTab) setActiveId(liveTab.id)
+      if (liveTab) setStage((st) => showTab(st, liveTab.id))
       return
     }
     const s = sessions.find((x) => x.session_id === t.sessionId)
     if (s) resume(s, { transcript: true })
+  }
+
+  // ---- Split screen: geometry, drag-to-split, dividers, chip menu ----
+
+  // The stage (content area) box, tracked so pane rects can be computed. Panes
+  // are positioned by rect in one flat layer — never re-parented — so
+  // terminals survive any re-layout; their own ResizeObservers re-fit.
+  const contentRef = useRef<HTMLDivElement | null>(null)
+  const [contentSize, setContentSize] = useState<{ w: number; h: number } | null>(null)
+  useEffect(() => {
+    const el = contentRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setContentSize({ w: el.clientWidth, h: el.clientHeight }))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  const stageBox: Rect | null = contentSize
+    ? { x: 8, y: 8, w: Math.max(0, contentSize.w - 16), h: Math.max(0, contentSize.h - 16) }
+    : null
+  const geom = layout !== null && stageBox ? layoutRects(layout, stageBox) : null
+  const paneRect = (id: number | null) => (id === null ? undefined : geom?.panes.find((p) => p.tabId === id)?.rect)
+
+  // A staged tab whose id vanished from `tabs` (e.g. a preview tab on stage
+  // replaced by the next preview, or the exited-tab sweep) must not leave a
+  // dead pane behind. Reconcile whenever the tabs array changes.
+  useEffect(() => {
+    setStage((st) => pruneStage(st, new Set(tabs.map((t) => t.id))))
+    // same hazard for the chip context menu: its tab can be closed (⌘W)
+    // while the menu is open — acting on the dead id would re-inject it
+    setChipMenu((m) => (m && !tabs.some((t) => t.id === m.tabId) ? null : m))
+  }, [tabs])
+
+  // Everything on stage counts as seen: landing in a pane clears its badge.
+  const stagedKey = staged.join(',')
+  useEffect(() => {
+    if (!stagedKey) return
+    const ids = stagedKey.split(',').map(Number)
+    setUnread((u) => {
+      const hit = ids.filter((i) => u[i])
+      if (!hit.length) return u
+      const n = { ...u }
+      for (const i of hit) delete n[i]
+      return n
+    })
+  }, [stagedKey])
+
+  focusNavRef.current = (key: string) => {
+    if (layout === null || !stageBox) return
+    const edge: Edge = key === 'ArrowLeft' ? 'left' : key === 'ArrowRight' ? 'right' : key === 'ArrowUp' ? 'top' : 'bottom'
+    const next = focusNeighbor(layoutRects(layout, stageBox).panes, activeId, edge)
+    if (next !== null) setStage((st) => ({ ...st, active: next }))
+  }
+
+  // Chip drag (pointer events — HTML5 DnD is swallowed by Tauri's webview,
+  // same as the sidebar's drag). Within the tab bar it reorders; over the
+  // stage it shows a hint frame and drops into a split.
+  type ChipDrop = { kind: 'bar'; beforeId: number | null } | { kind: 'stage'; target: DropTarget }
+  const [chipDrag, setChipDrag] = useState<{ tabId: number; label: string } | null>(null)
+  const [dragXY, setDragXY] = useState({ x: 0, y: 0 })
+  const [stageHit, setStageHit] = useState<{ target: DropTarget; hint: Rect } | null>(null)
+  const [insertMark, setInsertMark] = useState<{ beforeId: number | null } | null>(null)
+  const dropRef = useRef<ChipDrop | null>(null) // current target — read at pointerup
+  const suppressClickRef = useRef(false) // a completed drag must not fire the chip's click
+
+  const updateDragTarget = (tabId: number, x: number, y: number) => {
+    // over the tab bar → reorder within the tab's own lane
+    const laneEl = document.elementFromPoint(x, y)?.closest('[data-lane]')
+    if (laneEl) {
+      const dragged = tabsRef.current.find((t) => t.id === tabId)
+      if (laneEl.getAttribute('data-lane') === (dragged?.terminal ? 't' : 's')) {
+        let before: number | null = null
+        for (const c of laneEl.querySelectorAll('[data-tabchip]')) {
+          const r = c.getBoundingClientRect()
+          if (x < r.left + r.width / 2) { before = Number(c.getAttribute('data-tabchip')); break }
+        }
+        setInsertMark({ beforeId: before })
+        setStageHit(null)
+        dropRef.current = { kind: 'bar', beforeId: before }
+        return
+      }
+      setInsertMark(null); setStageHit(null); dropRef.current = null
+      return
+    }
+    // over the stage → split/replace target with a hint frame
+    const c = contentRef.current
+    const cr = c?.getBoundingClientRect()
+    if (c && cr) {
+      const box: Rect = { x: 8, y: 8, w: Math.max(0, cr.width - 16), h: Math.max(0, cr.height - 16) }
+      const st = stageRef.current
+      const panes = st.layout !== null
+        ? layoutRects(st.layout, box).panes
+        : st.active !== null ? [{ tabId: st.active, rect: box }] : []
+      const hit = hitTest(box, panes, x - cr.left, y - cr.top, tabId)
+      setStageHit(hit)
+      setInsertMark(null)
+      dropRef.current = hit ? { kind: 'stage', target: hit.target } : null
+      return
+    }
+    setInsertMark(null); setStageHit(null); dropRef.current = null
+  }
+
+  const performChipDrop = (tabId: number, drop: ChipDrop) => {
+    if (drop.kind === 'bar') {
+      if (drop.beforeId === tabId) return
+      setTabs((p) => {
+        const moved = p.find((t) => t.id === tabId)
+        if (!moved) return p
+        const rest = p.filter((t) => t.id !== tabId)
+        let idx = drop.beforeId === null ? rest.length : rest.findIndex((t) => t.id === drop.beforeId)
+        if (idx < 0) idx = rest.length
+        rest.splice(idx, 0, moved)
+        return rest
+      })
+      return
+    }
+    // the tab may have died mid-gesture (⌘W closes the dragged tab; the drag
+    // survives) — dropping a dead id would plant a leaf no pane renders into
+    if (!tabsRef.current.some((t) => t.id === tabId)) return
+    promote(tabId) // landing on stage is deliberate — a preview tab becomes permanent
+    setStage((st) => dropOnStage(st, tabId, drop.target))
+  }
+
+  /** Arm a chip drag. A plain click stays a click — the drag only starts once
+   *  the pointer travels 5px. Esc or window blur cancels. */
+  const beginChipDrag = (e: React.PointerEvent, tabId: number, label: string) => {
+    if (e.button !== 0) return
+    const sx = e.clientX
+    const sy = e.clientY
+    let live = false
+    const move = (ev: PointerEvent) => {
+      if (!live && Math.hypot(ev.clientX - sx, ev.clientY - sy) > 5) {
+        live = true
+        setChipDrag({ tabId, label })
+        document.body.style.cursor = 'grabbing'
+      }
+      if (!live) return
+      setDragXY({ x: ev.clientX, y: ev.clientY })
+      updateDragTarget(tabId, ev.clientX, ev.clientY)
+    }
+    const finish = (commit: boolean) => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      window.removeEventListener('keydown', key)
+      window.removeEventListener('blur', cancel)
+      if (!live) return
+      document.body.style.cursor = ''
+      const drop = dropRef.current
+      dropRef.current = null
+      setChipDrag(null)
+      setStageHit(null)
+      setInsertMark(null)
+      if (commit) {
+        // the chip's click dispatches right after this pointerup, before any
+        // timer — flag-now, clear-on-next-task suppresses exactly that click
+        suppressClickRef.current = true
+        window.setTimeout(() => { suppressClickRef.current = false }, 0)
+        if (drop) performChipDrop(tabId, drop)
+        return
+      }
+      // Cancelled (Esc/blur) with the button still DOWN: the release — and its
+      // click — haven't happened yet, so arm a one-shot suppressor for that
+      // release. A new pointerdown disarms it first (the old release must have
+      // landed outside the window), so it can't eat a later legitimate click.
+      const onUp = () => {
+        suppressClickRef.current = true
+        window.setTimeout(() => { suppressClickRef.current = false }, 0)
+        disarm()
+      }
+      const onDown = () => disarm()
+      const disarm = () => {
+        window.removeEventListener('pointerup', onUp)
+        window.removeEventListener('pointerdown', onDown, true)
+      }
+      window.addEventListener('pointerup', onUp)
+      window.addEventListener('pointerdown', onDown, true)
+    }
+    const up = () => finish(true)
+    const key = (ev: KeyboardEvent) => { if (ev.key === 'Escape') finish(false) }
+    const cancel = () => finish(false)
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+    window.addEventListener('keydown', key)
+    window.addEventListener('blur', cancel)
+  }
+
+  /** Divider drag: live ratio updates, clamped so both sides stay usable. */
+  // Two quick fine-tune nudges land inside the OS double-click slop, and the
+  // second release synthesizes a dblclick on the divider — which would snap
+  // the just-set ratio back to 50/50. A drag release suppresses dblclick for
+  // one slop window; a clean double-CLICK (no movement) still evens out.
+  const dividerDraggedRef = useRef(false)
+  const beginDividerDrag = (e: React.PointerEvent, d: DividerRect) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    const cr = contentRef.current?.getBoundingClientRect()
+    if (!cr) return
+    const horiz = d.dir === 'row'
+    const start = horiz ? d.box.x : d.box.y
+    const avail = (horiz ? d.box.w : d.box.h) - GUTTER
+    if (avail <= 0) return
+    const sx = e.clientX
+    const sy = e.clientY
+    let moved = false
+    document.body.style.cursor = horiz ? 'col-resize' : 'row-resize'
+    const move = (ev: PointerEvent) => {
+      if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) > 3) moved = true
+      const pos = (horiz ? ev.clientX - cr.left : ev.clientY - cr.top) - start - GUTTER / 2
+      const ratio = clampRatio(pos / avail, avail, d.dir)
+      setStage((st) => (st.layout !== null ? { ...st, layout: setRatio(st.layout, d.path, ratio) } : st))
+    }
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      document.body.style.cursor = ''
+      if (moved) {
+        dividerDraggedRef.current = true
+        window.setTimeout(() => { dividerDraggedRef.current = false }, 500)
+      }
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+
+  // Right-click a chip: split without the drag (drag-only gestures are
+  // invisible until discovered). "Split right/down" puts THAT tab beside the
+  // focused pane.
+  const [chipMenu, setChipMenu] = useState<{ x: number; y: number; tabId: number } | null>(null)
+  useEffect(() => {
+    if (!chipMenu) return
+    const close = () => setChipMenu(null)
+    const onDown = (e: PointerEvent) => {
+      if (!(e.target as HTMLElement | null)?.closest?.('[data-chipmenu]')) close()
+    }
+    const onEsc = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
+    window.addEventListener('pointerdown', onDown)
+    window.addEventListener('keydown', onEsc)
+    window.addEventListener('resize', close)
+    window.addEventListener('scroll', close, true)
+    return () => {
+      window.removeEventListener('pointerdown', onDown)
+      window.removeEventListener('keydown', onEsc)
+      window.removeEventListener('resize', close)
+      window.removeEventListener('scroll', close, true)
+    }
+  }, [chipMenu])
+
+  const splitFromMenu = (tabId: number, edge: Edge) => {
+    setChipMenu(null)
+    // the menu's tab can die under it (⌘W while it's open) — same dead-id
+    // hazard as performChipDrop
+    if (!tabsRef.current.some((t) => t.id === tabId)) return
+    promote(tabId)
+    setStage((st) => {
+      if (st.active === null) return showTab(st, tabId)
+      return dropOnStage(st, tabId, { kind: 'pane', tabId: st.active, zone: edge })
+    })
   }
 
   // Shell tabs are named after their live working directory. Poll the PTYs
@@ -319,6 +606,17 @@ export default function App() {
       if (e.metaKey && e.key === 't') { e.preventDefault(); newShellRef.current() }
       if (e.metaKey && e.key === 'w') { e.preventDefault(); closeActiveRef.current() }
       if (e.metaKey && e.key === 'd') { e.preventDefault(); starActiveRef.current() }
+      // ⌘⌥ arrows: move focus between split panes. The palette guard above
+      // only swallows its listed keys, so re-check here — arrows while the
+      // palette is open belong to the palette.
+      if (
+        !paletteOpenRef.current &&
+        e.metaKey && e.altKey &&
+        ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)
+      ) {
+        e.preventDefault()
+        focusNavRef.current(e.key)
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -351,8 +649,16 @@ export default function App() {
   }, [])
 
   // live (incremental) find as the query changes, the bar opens, or the tab switches
+  const lastFindPaneRef = useRef<number | null>(null)
   useEffect(() => {
     if (!findOpen || activeId == null) return
+    // retargeting to another pane: wipe the departing pane's marks first — in
+    // a split it stays VISIBLE, and two panes must not both show an "active"
+    // match while the counter describes only one of them
+    if (lastFindPaneRef.current !== null && lastFindPaneRef.current !== activeId) {
+      paneSearch.current[lastFindPaneRef.current]?.clear()
+    }
+    lastFindPaneRef.current = activeId
     activeSearch()?.find(findQuery, { dir: 'next', incremental: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [findOpen, findQuery, activeId])
@@ -369,7 +675,8 @@ export default function App() {
       const s = sessionsRef.current.find((x) => x.session_id === p.session_id)
       const label = clip(s ? sessionLabel(s) : 'Claude session', 60)
       if (p.state === 'needs_input') {
-        if (document.hasFocus() && activeIdRef.current === p.pty_id) return
+        // staged, not just active: any pane the user can SEE (split screen)
+        if (document.hasFocus() && stagedRef.current.includes(p.pty_id)) return
         // sound only here: an audible ping always means "blocked on you"
         invoke('notify_user', { title: label, body: p.message || 'Claude needs your input', sound: true }).catch(() => {})
       } else if (p.state === 'done') {
@@ -385,7 +692,7 @@ export default function App() {
   const focusSessionRef = useRef((_sid: string) => {})
   focusSessionRef.current = (sid: string) => {
     const t = tabs.find((x) => x.sessionId === sid && !x.exited) ?? tabs.find((x) => x.sessionId === sid)
-    if (t) { setActiveId(t.id); return }
+    if (t) { setStage((st) => showTab(st, t.id)); return }
     const s = sessions.find((x) => x.session_id === sid)
     if (s) resume(s, { permanent: true })
   }
@@ -410,16 +717,14 @@ export default function App() {
         if (next.length > MAX_ARTIFACTS_PER_TAB) next.splice(0, next.length - MAX_ARTIFACTS_PER_TAB)
         return { ...prev, [p.pty_id]: next }
       })
-      if (p.pty_id !== activeIdRef.current) setUnread((u) => ({ ...u, [p.pty_id]: (u[p.pty_id] ?? 0) + 1 }))
+      // visible on stage = already seen; only badge tabs the user can't see
+      if (!stagedRef.current.includes(p.pty_id)) setUnread((u) => ({ ...u, [p.pty_id]: (u[p.pty_id] ?? 0) + 1 }))
     }).then((u) => { if (cancelled) u(); else un = u })
     return () => { cancelled = true; un?.() }
   }, [])
 
-  // Focusing a tab clears its unread-artifact badge.
-  useEffect(() => {
-    if (activeId == null) return
-    setUnread((u) => { if (!u[activeId]) return u; const n = { ...u }; delete n[activeId]; return n })
-  }, [activeId])
+  // (unread badges clear via the staged-tabs effect above — landing on stage,
+  // focused or not, counts as seen)
 
   // claude tabs currently mid-turn: the update flow's "restart anyway?" gate.
   const updateBusyCount = tabs.filter(
@@ -442,7 +747,7 @@ export default function App() {
         session_id: t.sessionId ?? null,
         cwd: t.terminal ? shellDirsRef.current[t.id] ?? t.cwd : t.cwd,
         title: t.title,
-        active: t.id === activeIdRef.current,
+        active: t.id === stageRef.current.active,
       }))
       .filter((r) => r.kind === 'shell' || r.session_id) // claude/transcript need a session id
     await invoke('stash_tabs', { tabs: snapshot }).catch(() => {})
@@ -475,10 +780,53 @@ export default function App() {
             claude CLI not found in your login shell — resume/new sessions won't start. Install Claude Code or fix your PATH, then restart Drydock. Shell tabs still work.
           </div>
         )}
-        <TabBar tabs={tabs} sessions={sessions} activeId={activeId} shellDirs={shellDirs} unread={unread} onSelect={setActiveId} onClose={closeTab} onNewShell={newShell} onHome={() => goHomeRef.current()} />
-        <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
-          {tabs.map((t) => (
-            <div key={t.id} style={{ position: 'absolute', inset: 8, display: t.id === activeId ? 'block' : 'none' }}>
+        <TabBar
+          tabs={tabs}
+          sessions={sessions}
+          activeId={activeId}
+          stagedIds={staged}
+          shellDirs={shellDirs}
+          unread={unread}
+          draggedId={chipDrag?.tabId ?? null}
+          insertMark={insertMark}
+          onChipPress={beginChipDrag}
+          onChipMenu={(e, id) => { e.preventDefault(); setChipMenu({ x: e.clientX, y: e.clientY, tabId: id }) }}
+          onSelect={(id) => { if (suppressClickRef.current) return; setStage((st) => showTab(st, id)) }}
+          onClose={closeTab}
+          onNewShell={newShell}
+          onHome={() => goHomeRef.current()}
+        />
+        <div ref={contentRef} style={{ flex: 1, position: 'relative', minHeight: 0 }}>
+          {tabs.map((t) => {
+            const onStage = staged.includes(t.id)
+            const r = onStage ? paneRect(t.id) : undefined
+            const sess = t.sessionId ? sessions.find((x) => x.session_id === t.sessionId) : undefined
+            // In a split every pane wears a frame: accent = focused (keyboard
+            // + right panel live there), amber pulse = an unfocused pane whose
+            // session is blocked on you. Single-pane mode keeps today's
+            // frameless inset exactly.
+            const attn = t.id !== activeId && sess?.live_status === 'needs_input'
+            return (
+              <div
+                key={t.id}
+                data-pane={t.id}
+                data-staged={onStage ? '1' : '0'}
+                data-focused={t.id === activeId ? '1' : undefined}
+                className={r && attn ? 'dd-attnpane' : undefined}
+                onPointerDownCapture={
+                  r ? () => setStage((st) => (st.active !== t.id && stagedIds(st).includes(t.id) ? { ...st, active: t.id } : st)) : undefined
+                }
+                style={
+                  r
+                    ? {
+                        position: 'absolute', left: r.x, top: r.y, width: r.w, height: r.h,
+                        boxSizing: 'border-box', display: 'block', overflow: 'hidden', borderRadius: 4,
+                        border: `1px solid ${t.id === activeId ? '#3d5878' : attn ? '#e8a33d' : '#232c3a'}`,
+                        background: '#10141a',
+                      }
+                    : { position: 'absolute', inset: 8, display: onStage ? 'block' : 'none' }
+                }
+              >
               {t.kind === 'pty' ? (
                 <TerminalPane
                   ref={(h) => { paneSearch.current[t.id] = h }}
@@ -487,7 +835,8 @@ export default function App() {
                   args={t.args}
                   cwd={t.cwd}
                   sessionId={t.sessionId}
-                  visible={t.id === activeId}
+                  visible={onStage}
+                  focused={t.id === activeId}
                   onExit={() => markExited(t.id)}
                   onInteract={() => promote(t.id)}
                   onMatches={(index, count) => setFindMatches({ index, count })}
@@ -496,24 +845,58 @@ export default function App() {
                 <TranscriptView
                   ref={(h) => { paneSearch.current[t.id] = h }}
                   sessionId={t.sessionId!}
-                  session={sessions.find((x) => x.session_id === t.sessionId)}
+                  session={sess}
                   onFocusLive={(() => {
                     const liveTab = tabs.find((x) => x.sessionId === t.sessionId && x.kind === 'pty' && !x.exited)
-                    return liveTab ? () => setActiveId(liveTab.id) : null
+                    return liveTab ? () => setStage((st) => showTab(st, liveTab.id)) : null
                   })()}
                   onInteract={() => promote(t.id)}
                   onMatches={(index, count) => setFindMatches({ index, count })}
                   onResumeHere={() => {
                     const s = sessions.find((x) => x.session_id === t.sessionId)
-                    // keepFind only when resume will actually run: a missing
-                    // session means we genuinely land on Home, find and all
-                    closeTab(t.id, { keepFind: !!s })
+                    // Replace IN PLACE: resume first — this pane is focused
+                    // (the button click's pointerdown focused it), so showTab
+                    // swaps THIS leaf to the new tab and addTab's session
+                    // sweep removes the transcript; closeTab after is just
+                    // cleanup. Close-first would collapse the pane and anchor
+                    // the new tab on the SIBLING, evicting the wrong pane —
+                    // and kill the find bar on the way through Home.
                     if (s) resume({ ...s, live_status: 'ended' }, { permanent: true })
+                    // keepFind: closeTab judges "landed on Home" from stale
+                    // render values — when resume ran, we know we didn't
+                    closeTab(t.id, { keepFind: !!s })
                   }}
                 />
               )}
-            </div>
+              </div>
+            )
+          })}
+          {geom?.dividers.map((d) => (
+            <div
+              key={d.path}
+              className="dd-divider"
+              onPointerDown={(e) => beginDividerDrag(e, d)}
+              onDoubleClick={() => {
+                if (dividerDraggedRef.current) return // second release of a fine-tune drag, not a real dblclick
+                setStage((st) => (st.layout !== null ? { ...st, layout: setRatio(st.layout, d.path, 0.5) } : st))
+              }}
+              title="Drag to resize — double-click to even out"
+              style={{
+                position: 'absolute', left: d.rect.x, top: d.rect.y, width: d.rect.w, height: d.rect.h,
+                cursor: d.dir === 'row' ? 'col-resize' : 'row-resize', zIndex: 5,
+              }}
+            />
           ))}
+          {chipDrag && stageHit && (
+            <div
+              data-hint="1"
+              style={{
+                position: 'absolute', left: stageHit.hint.x, top: stageHit.hint.y, width: stageHit.hint.w, height: stageHit.hint.h,
+                background: 'rgba(127,176,255,0.14)', border: '1px solid rgba(127,176,255,0.55)', borderRadius: 4,
+                zIndex: 6, pointerEvents: 'none',
+              }}
+            />
+          )}
           {activeId === null && (
             <HomeView sessions={sessions} sessionsReady={sessionsReady} onFocusSession={(sid) => focusSessionRef.current(sid)} />
           )}
@@ -608,6 +991,53 @@ export default function App() {
           </div>
         </div>
       )}
+      {chipDrag && (
+        // drag ghost: pointer-tracked chip label (no native drag image in Tauri)
+        <div
+          style={{
+            position: 'fixed', left: dragXY.x + 10, top: dragXY.y + 12, zIndex: 95, pointerEvents: 'none',
+            background: '#1d2530', border: '1px solid #2c3647', borderRadius: 5, padding: '3px 8px',
+            color: '#c8cdd5', fontFamily: 'system-ui', fontSize: 12, whiteSpace: 'nowrap',
+          }}
+        >
+          {clip(chipDrag.label, 30)}
+        </div>
+      )}
+      {chipMenu && (() => {
+        // Split items act on the FOCUSED pane; they're inert for the focused
+        // tab itself (a pane can't split with its own tab) and when the
+        // resulting panes would be too small to use.
+        const focusedRect = geom ? paneRect(activeId) : stageBox
+        const usable = (edge: Edge) => activeId !== null && chipMenu.tabId !== activeId && !!focusedRect && canSplit(focusedRect, edge)
+        const item = (label: string, enabled: boolean, run: () => void) => (
+          <div
+            key={label}
+            onClick={enabled ? run : undefined}
+            style={{
+              padding: '5px 12px', fontSize: 12, borderRadius: 4, whiteSpace: 'nowrap',
+              color: enabled ? '#c8cdd5' : '#5b6675', cursor: enabled ? 'pointer' : 'default',
+            }}
+            onPointerEnter={(e) => { if (enabled) (e.currentTarget as HTMLElement).style.background = '#1d2530' }}
+            onPointerLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent' }}
+          >
+            {label}
+          </div>
+        )
+        return (
+          <div
+            data-chipmenu="1"
+            style={{
+              position: 'fixed', left: chipMenu.x, top: chipMenu.y, zIndex: 95,
+              background: '#161c25', border: '1px solid #2c3647', borderRadius: 6, padding: 4,
+              fontFamily: 'system-ui', boxShadow: '0 6px 20px rgba(0,0,0,.45)',
+            }}
+          >
+            {item('Split right', usable('right'), () => splitFromMenu(chipMenu.tabId, 'right'))}
+            {item('Split down', usable('bottom'), () => splitFromMenu(chipMenu.tabId, 'bottom'))}
+            {item('Close tab', true, () => { setChipMenu(null); closeTab(chipMenu.tabId) })}
+          </div>
+        )
+      })()}
     </div>
   )
 }
