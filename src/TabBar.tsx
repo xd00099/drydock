@@ -11,6 +11,7 @@ type Props = {
   onSelect: (id: number) => void
   onClose: (id: number) => void
   onNewShell: () => void
+  onHome: () => void // the sessions-lane ＋: Home is where sessions start
 }
 
 // Name each terminal after its directory's basename; disambiguate repeats with
@@ -35,7 +36,7 @@ const S = {
   plus: { flexShrink: 0, background: 'none', border: 'none', color: '#7d8794', cursor: 'pointer', fontSize: 14 } as const,
 }
 
-export default function TabBar({ tabs, sessions, activeId, shellDirs, unread, onSelect, onClose, onNewShell }: Props) {
+export default function TabBar({ tabs, sessions, activeId, shellDirs, unread, onSelect, onClose, onNewShell, onHome }: Props) {
   const sessionTabs = tabs.filter((t) => !t.terminal)
   const termTabs = tabs.filter((t) => t.terminal)
   const termNames = terminalLabels(termTabs, shellDirs)
@@ -93,6 +94,9 @@ export default function TabBar({ tabs, sessions, activeId, shellDirs, unread, on
             const tip = t.kind === 'transcript' ? `${label} — read-only transcript` : label
             return chip(t, label, t.sessionId ? sessionColor(t.sessionId, 1, s?.hue) : undefined, tip, s?.live_status === 'needs_input', s?.hue)
           })}
+          {/* browser new-tab metaphor: ＋ opens Home (the launchpad), where a
+              session is picked or started — spawning one blind needs a project */}
+          <button onClick={onHome} title="Home — pick or start a session (⌘0)" style={S.plus}>＋</button>
         </div>
       )}
       <div style={{ ...S.lane, borderTop: sessionTabs.length > 0 ? '1px solid #161c25' : undefined }}>

@@ -144,14 +144,26 @@ export default function App() {
     setUnread((d) => { if (!(id in d)) return d; const n = { ...d }; delete n[id]; return n })
   }
 
-  const closeTab = (id: number) => {
+  const closeTab = (id: number, opts?: { keepFind?: boolean }) => {
     setTabs((p) => p.filter((t) => t.id !== id))
     setShellDirs((d) => (id in d ? Object.fromEntries(Object.entries(d).filter(([k]) => Number(k) !== id)) : d))
     delete paneSearch.current[id]
     setArtifactsByTab((d) => { if (!(id in d)) return d; const n = { ...d }; delete n[id]; return n })
     setUnread((d) => { if (!(id in d)) return d; const n = { ...d }; delete n[id]; return n })
+    // Lane-aware selection: closing a tab stays among its own kind (sessions
+    // vs terminals, matching the TabBar lanes). A terminal lane that empties
+    // falls back to a session; a SESSION lane that empties lands on Home even
+    // while shells stay open unselected — Home is where you pick what's next.
+    const closed = tabs.find((t) => t.id === id)
     const next = tabs.filter((t) => t.id !== id)
-    setActiveId((a) => (a === id ? (next.length ? next[next.length - 1].id : null) : a))
+    const lane = next.filter((t) => !!t.terminal === !!closed?.terminal)
+    const fallback = closed?.terminal ? next.filter((t) => !t.terminal) : []
+    const landing = lane.length ? lane[lane.length - 1].id : fallback.length ? fallback[fallback.length - 1].id : null
+    // Home has no pane — a find bar there would search nothing. keepFind is for
+    // close-and-replace flows (resume-here): the caller opens a new tab in the
+    // same breath, so the user never actually lands on Home.
+    if (activeId === id && landing === null && !opts?.keepFind) closeFind()
+    setActiveId((a) => (a === id ? landing : a))
   }
 
   const activeTab = tabs.find((t) => t.id === activeId)
@@ -253,6 +265,11 @@ export default function App() {
         if (e.metaKey && e.key === '0') { e.preventDefault(); setHomeOverlay(false); goHomeRef.current(); return }
         // ⌘K: search wins — drop the overlay so the palette isn't buried
         if (e.metaKey && e.key === 'k') { e.preventDefault(); setHomeOverlay(false); setPaletteOpen(true); return }
+        // Everything else must not act on tabs hidden behind the overlay
+        // (⌘W closing an invisible tab); preventDefault keeps ⌘W from the
+        // native Close Window accelerator, same as the quit-guard branch.
+        if (e.metaKey && ['f', 't', 'T', 'w', 'd'].includes(e.key)) e.preventDefault()
+        return
       }
       if (e.metaKey && e.key === 'k') { e.preventDefault(); setPaletteOpen((v) => !v) }
       // ⌘0: Home — deselect the active tab (tabs stay open; ⌘0 is a view,
@@ -391,7 +408,7 @@ export default function App() {
             claude CLI not found in your login shell — resume/new sessions won't start. Install Claude Code or fix your PATH, then restart Drydock. Shell tabs still work.
           </div>
         )}
-        <TabBar tabs={tabs} sessions={sessions} activeId={activeId} shellDirs={shellDirs} unread={unread} onSelect={setActiveId} onClose={closeTab} onNewShell={newShell} />
+        <TabBar tabs={tabs} sessions={sessions} activeId={activeId} shellDirs={shellDirs} unread={unread} onSelect={setActiveId} onClose={closeTab} onNewShell={newShell} onHome={() => goHomeRef.current()} />
         <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
           {tabs.map((t) => (
             <div key={t.id} style={{ position: 'absolute', inset: 8, display: t.id === activeId ? 'block' : 'none' }}>
@@ -421,7 +438,9 @@ export default function App() {
                   onMatches={(index, count) => setFindMatches({ index, count })}
                   onResumeHere={() => {
                     const s = sessions.find((x) => x.session_id === t.sessionId)
-                    closeTab(t.id)
+                    // keepFind only when resume will actually run: a missing
+                    // session means we genuinely land on Home, find and all
+                    closeTab(t.id, { keepFind: !!s })
                     if (s) resume({ ...s, live_status: 'ended' }, { permanent: true })
                   }}
                 />
