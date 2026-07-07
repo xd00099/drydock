@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { clampPanelWidth, fmtTokens, loadNum, relAge, baseName, type Artifact, type ArtifactKind, type CardView, type FileTouch, type McpServer, type SavedArtifact, type SessionUsage, type Skill, type TasksView, type TimelineItem } from './types'
 import ArtifactView from './ArtifactView'
+import TimeMachine from './TimeMachine'
 import ResizeHandle from './ResizeHandle'
 
 type RightTab = 'briefing' | 'project' | 'preview'
@@ -139,7 +140,7 @@ function DiffStat({ f }: { f: FileTouch }) {
 /// stats — in its own scroll region under a sticky totals header. Rows open the
 /// file's CURRENT location (the resolver's work); files that are gone render
 /// struck-through and explain themselves instead of erroring.
-function FilesChanged({ files, projectPath, sessionId, squeeze }: { files: FileTouch[]; projectPath?: string; sessionId: string | null; squeeze?: boolean }) {
+function FilesChanged({ files, projectPath, sessionId, squeeze, onTimeMachine }: { files: FileTouch[]; projectPath?: string; sessionId: string | null; squeeze?: boolean; onTimeMachine?: (path: string | null) => void }) {
   // collapsible pinned section (same grammar as TASKS and MCP SERVERS);
   // named secOpen: `open` is already this component's file-opening handler
   const [secOpen, setSecOpen] = useState(() => localStorage.getItem('dd.filesOpen') !== '0')
@@ -205,6 +206,16 @@ function FilesChanged({ files, projectPath, sessionId, squeeze }: { files: FileT
         <span style={{ color: '#5b6675', fontSize: 10, whiteSpace: 'nowrap' }}>
           · {files.length} file{files.length === 1 ? '' : 's'}{gone > 0 ? ` · ${gone} gone` : ''}
         </span>
+        <span style={{ flex: 1 }} />
+        {onTimeMachine && (
+          <button
+            onClick={() => onTimeMachine(null)}
+            title="File time machine — checkpoint history of everything this session edited"
+            style={{ ...S.iconBtn, flex: 'none', fontSize: 10, padding: '1px 5px' }}
+          >
+            ⏱
+          </button>
+        )}
       </div>
       {secOpen && (
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 10px 10px' }}>
@@ -257,6 +268,16 @@ function FilesChanged({ files, projectPath, sessionId, squeeze }: { files: FileT
                         {name}
                         {moved && <span style={{ color: '#7fb0ff', marginLeft: 5 }} title={`moved — now at ${f.resolved}`}>↷</span>}
                       </button>
+                      {onTimeMachine && (
+                        <button
+                          className="dd-reveal"
+                          style={{ ...S.iconBtn, border: 'none', fontSize: 10, padding: '1px 3px' }}
+                          title="History of this file (time machine)"
+                          onClick={() => onTimeMachine(f.path)}
+                        >
+                          ↺
+                        </button>
+                      )}
                       {f.resolved && (
                         <button
                           className="dd-reveal"
@@ -354,6 +375,9 @@ function BriefingTab({ sessionId, card, starred, files, tasks, usage, projectPat
   // saw when they started, not the live prop — a mid-edit refresh changing
   // `label` must neither freeze a stale auto title nor block a real commit.
   const [editing, setEditing] = useState<string | null>(null)
+  // time machine overlay: false = closed, string = start at this file,
+  // null = whole-session checkpoint view
+  const [tm, setTm] = useState<string | null | false>(false)
   const commitRename = (value: string) => {
     const initial = editing
     setEditing(null)
@@ -446,7 +470,14 @@ function BriefingTab({ sessionId, card, starred, files, tasks, usage, projectPat
         </button>
       </div>
       <TasksSection view={tasks} />
-      <FilesChanged files={files} projectPath={projectPath} sessionId={sessionId} squeeze={!!tasks && tasks.tasks.length > 0} />
+      <FilesChanged
+        files={files}
+        projectPath={projectPath}
+        sessionId={sessionId}
+        squeeze={!!tasks && tasks.tasks.length > 0}
+        onTimeMachine={(p) => setTm(p)}
+      />
+      {tm !== false && <TimeMachine sessionId={sessionId} initialPath={tm} onClose={() => setTm(false)} />}
     </div>
   )
 }

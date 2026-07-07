@@ -525,6 +525,8 @@ fn main() {
             cc_data::recent_prompts,
             cc_data::session_usage,
             cc_data::usage_overview,
+            cc_data::file_history,
+            cc_data::read_file_version,
             index::create_folder,
             index::rename_folder,
             index::delete_folder,

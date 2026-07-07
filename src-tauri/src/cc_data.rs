@@ -287,9 +287,122 @@ pub fn usage_overview(db: State<'_, AppDb>) -> Result<UsageOverview, String> {
     Ok(UsageOverview { last_computed, total_sessions, daily, models, top_sessions })
 }
 
+// ---- file time machine (~/.claude/file-history/<sid>/<hash>@vN) -----------
+
+#[derive(serde::Serialize)]
+pub struct FileVersionView {
+    pub version: i64,
+    /// blob name (<16-hex>@vN) under file-history/<sid>/; None when CC tracked
+    /// the file but stored no backup for this version
+    pub backup_file: Option<String>,
+    pub ts: Option<i64>, // backupTime, ms
+}
+
+#[derive(serde::Serialize)]
+pub struct FileHistoryView {
+    /// cwd-relative path exactly as the snapshot records it
+    pub path: String,
+    pub versions: Vec<FileVersionView>,
+}
+
+/// Checkpoint index for a session: every file-history-snapshot record in the
+/// transcript, folded into per-file version lists. Read-only; snapshots are
+/// cumulative, so later records may repeat earlier versions (last wins).
+#[tauri::command]
+pub fn file_history(db: State<'_, AppDb>, session_id: String) -> Result<Vec<FileHistoryView>, String> {
+    if !is_session_uuid(&session_id) {
+        return Err("bad session id".into());
+    }
+    let path = {
+        let store = db.0.lock().unwrap();
+        store.transcript_path(&session_id).map_err(|e| e.to_string())?
+    };
+    let Some(path) = path else { return Ok(vec![]) };
+    let Ok(f) = std::fs::File::open(&path) else { return Ok(vec![]) };
+    let blob_dir = crate::index::claude_dir().join("file-history").join(&session_id);
+
+    // path → version → (backup_file, ts); BTreeMaps keep output deterministic
+    let mut files: std::collections::BTreeMap<String, std::collections::BTreeMap<i64, (Option<String>, Option<i64>)>> =
+        Default::default();
+    for line in std::io::BufReader::new(f).lines() {
+        let Ok(line) = line else { continue };
+        if !line.contains("\"file-history-snapshot\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+        if v.get("type").and_then(Value::as_str) != Some("file-history-snapshot") {
+            continue;
+        }
+        let Some(tracked) = v.pointer("/snapshot/trackedFileBackups").and_then(Value::as_object) else { continue };
+        for (rel, info) in tracked {
+            let Some(version) = info.get("version").and_then(Value::as_i64) else { continue };
+            let backup = info.get("backupFileName").and_then(Value::as_str).map(String::from);
+            let ts = info
+                .get("backupTime")
+                .and_then(Value::as_str)
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|d| d.timestamp_millis());
+            files.entry(rel.clone()).or_default().insert(version, (backup, ts));
+        }
+    }
+    Ok(files
+        .into_iter()
+        .map(|(path, versions)| FileHistoryView {
+            path,
+            versions: versions
+                .into_iter()
+                .map(|(version, (backup, ts))| FileVersionView {
+                    version,
+                    // only offer blobs that actually exist on disk
+                    backup_file: backup.filter(|b| blob_dir.join(b).is_file()),
+                    ts,
+                })
+                .collect(),
+        })
+        .filter(|fh| fh.versions.iter().any(|v| v.backup_file.is_some()))
+        .collect())
+}
+
+/// One backed-up file version's raw contents. `file` must be exactly a blob
+/// name CC mints (<hex>@vN) — never a path.
+#[tauri::command]
+pub fn read_file_version(session_id: String, file: String) -> Result<String, String> {
+    if !is_session_uuid(&session_id) {
+        return Err("bad session id".into());
+    }
+    if !is_blob_name(&file) {
+        return Err("bad version file name".into());
+    }
+    let path = crate::index::claude_dir().join("file-history").join(&session_id).join(&file);
+    let md = std::fs::metadata(&path).map_err(|_| "version not on disk".to_string())?;
+    if md.len() > 4_000_000 {
+        return Err("this version is too large to preview (>4 MB)".into());
+    }
+    std::fs::read_to_string(&path).map_err(|_| "couldn't read this version (binary file?)".to_string())
+}
+
+/// <16 hex>@v<digits> — the only shape CC uses for backup blobs.
+fn is_blob_name(s: &str) -> bool {
+    let Some((hash, v)) = s.split_once("@v") else { return false };
+    !hash.is_empty()
+        && hash.len() <= 32
+        && hash.bytes().all(|b| b.is_ascii_hexdigit())
+        && !v.is_empty()
+        && v.bytes().all(|b| b.is_ascii_digit())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blob_name_gate_refuses_paths() {
+        assert!(is_blob_name("0258a693c32ab31b@v12"));
+        assert!(!is_blob_name("../../evil@v1"));
+        assert!(!is_blob_name("0258a693c32ab31b"));
+        assert!(!is_blob_name("0258a693c32ab31b@vx"));
+        assert!(!is_blob_name("@v1"));
+    }
 
     #[test]
     fn session_id_gate_refuses_path_shapes() {
