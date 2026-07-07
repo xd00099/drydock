@@ -7,6 +7,7 @@ import LiveIndicator from './LiveIndicator'
 import VersionFooter from './VersionFooter'
 
 type Props = {
+  onHome: () => void // show the Home view (usage + prompt timeline) in the center
   sessions: SessionView[]
   folders: FolderView[] // user folders, in band order
   hidden: string[] // session ids the user hid from Drydock
@@ -122,7 +123,7 @@ type Naming =
   // click-away blur) must be a no-op, not freeze an AUTO title into an override
   | { kind: 'rename-session'; sid: string; initial: string }
 
-export default function Sidebar({ sessions, folders, hidden, activeSessionId, onResume, onTranscript, onNewSession, onToggleStar, onHide, onDelete, onRefresh }: Props) {
+export default function Sidebar({ onHome, sessions, folders, hidden, activeSessionId, onResume, onTranscript, onNewSession, onToggleStar, onHide, onDelete, onRefresh }: Props) {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('dd.sidebarCollapsed') === '1')
   // clamp on load AND on window resize: a width persisted on a big monitor must
   // not overflow a smaller window later
@@ -526,7 +527,13 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', width, minWidth: width, background: '#0b0e13' }}>
     <div ref={scrollerRef} style={{ ...S.side, width: '100%', minWidth: 0, height: 'auto', flex: 1, borderRight: 'none' }}>
       <div style={S.bar}>
-        <span style={{ flex: 1, fontWeight: 700, color: '#e8edf4' }}>DRYDOCK</span>
+        <span
+          onClick={onHome}
+          title="Home — usage & prompt timeline (⌘0)"
+          style={{ flex: 1, fontWeight: 700, color: '#e8edf4', cursor: 'pointer' }}
+        >
+          DRYDOCK
+        </span>
         <button
           style={{ ...S.btn, display: 'flex', alignItems: 'center', marginRight: 8, color: '#8ea0b5' }}
           title={'New folder…\nOrganize sessions into working groups — drag them in,\nor right-click a session → Move to folder'}

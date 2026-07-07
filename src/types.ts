@@ -92,6 +92,21 @@ export function fmtTokens(n: number): string {
   return String(n)
 }
 
+// Global prompt timeline row (backend cc_data::recent_prompts, history.jsonl)
+export type PromptView = { display: string; project: string; session_id: string; ts: number }
+
+// Global usage overview (backend cc_data::usage_overview)
+export type DailyActivity = { date: string; messages: number; sessions: number; tools: number; tokens: number }
+export type ModelTotals = { model: string; input: number; output: number; cache_read: number; cache_creation: number; cost_usd: number }
+export type TopSession = { session_id: string; label: string; project: string; output_tokens: number; total_tokens: number }
+export type UsageOverview = {
+  last_computed: string | null
+  total_sessions: number | null
+  daily: DailyActivity[]
+  models: ModelTotals[]
+  top_sessions: TopSession[]
+}
+
 // Read-only capability views for the right panel (from ~/.claude, secrets stripped)
 export type Skill = { name: string; description: string; plugin: string }
 // `builtin` = Drydock's own drydock-artifacts server; `enabled` = whether Drydock

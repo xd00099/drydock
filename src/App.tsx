@@ -8,6 +8,7 @@ import TerminalPane from './TerminalPane'
 import TranscriptView from './TranscriptView'
 import SearchPalette from './SearchPalette'
 import BriefingPanel from './BriefingPanel'
+import HomeView from './HomeView'
 import FindBar from './FindBar'
 import { useSessions } from './useSessions'
 import type { Artifact, ArtifactKind, PaneSearch, SessionView, Tab } from './types'
@@ -26,6 +27,9 @@ export default function App() {
   const [activeId, setActiveId] = useState<number | null>(null)
   const [quitGuard, setQuitGuard] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
+  // full-window Home overlay (⌘K → "usage & timeline"): global data without
+  // leaving the active terminal — Esc returns exactly where you were
+  const [homeOverlay, setHomeOverlay] = useState(false)
   const [claudeVersion, setClaudeVersion] = useState<string | null | 'checking'>('checking')
   const [shellDirs, setShellDirs] = useState<Record<number, string>>({})
   // Artifacts a session rendered (right-panel Preview), kept in memory per tab
@@ -53,6 +57,8 @@ export default function App() {
   quitGuardRef.current = quitGuard
   const paletteOpenRef = useRef(paletteOpen)
   paletteOpenRef.current = paletteOpen
+  const homeOverlayRef = useRef(homeOverlay)
+  homeOverlayRef.current = homeOverlay
   const newShellRef = useRef(() => {})
   const closeActiveRef = useRef(() => {})
   const starActiveRef = useRef(() => {})
@@ -234,7 +240,10 @@ export default function App() {
         e.preventDefault()
         return
       }
+      if (homeOverlayRef.current && e.key === 'Escape') { setHomeOverlay(false); return }
       if (e.metaKey && e.key === 'k') { e.preventDefault(); setPaletteOpen((v) => !v) }
+      // ⌘0: Home — deselect the active tab (tabs stay open; ⌘0 is a view, not a close)
+      if (e.metaKey && e.key === '0') { e.preventDefault(); setActiveId(null) }
       // ⌘F: find within the active pane (terminal scrollback or transcript text)
       if (e.metaKey && e.key === 'f') { e.preventDefault(); openFindRef.current() }
       // ⌘⇧T (key is 'T' with shift held): terminal ⇄ transcript for the active session
@@ -346,6 +355,7 @@ export default function App() {
   return (
     <div style={{ display: 'flex', width: '100vw', height: '100vh', background: '#10141a' }}>
       <Sidebar
+        onHome={() => setActiveId(null)}
         sessions={sessions}
         folders={folders}
         hidden={hidden}
@@ -403,10 +413,8 @@ export default function App() {
               )}
             </div>
           ))}
-          {tabs.length === 0 && (
-            <div style={{ color: '#5b6675', fontFamily: 'system-ui', fontSize: 13, padding: 24 }}>
-              Pick a session on the left, or ＋ for a shell.
-            </div>
+          {activeId === null && (
+            <HomeView sessions={sessions} onFocusSession={(sid) => focusSessionRef.current(sid)} />
           )}
           {findOpen && (
             <FindBar
@@ -447,7 +455,34 @@ export default function App() {
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
         onPick={(s, transcript) => resume(s, { transcript })}
+        onOverlay={() => { setPaletteOpen(false); setHomeOverlay(true) }}
       />
+      {homeOverlay && (
+        // full-window, above panes/find (z<90 artifact-expand, <100 quit guard);
+        // own compositing layer so it's clickable over a terminal's WebGL canvas
+        <div
+          ref={(el) => el?.focus()}
+          tabIndex={-1}
+          style={{ position: 'fixed', inset: 0, zIndex: 85, background: '#0b0e13', display: 'flex', flexDirection: 'column', transform: 'translateZ(0)', outline: 'none' }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid #1d2530', fontFamily: 'system-ui' }}>
+            <span style={{ flex: 1, color: '#e8edf4', fontWeight: 600, fontSize: 13 }}>Usage & prompt timeline</span>
+            <button
+              onClick={() => setHomeOverlay(false)}
+              title="Close (Esc)"
+              style={{ background: 'none', border: '1px solid #2c3647', borderRadius: 4, cursor: 'pointer', color: '#9aa3af', fontSize: 12, lineHeight: 1, padding: '2px 6px' }}
+            >
+              ✕
+            </button>
+          </div>
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <HomeView
+              sessions={sessions}
+              onFocusSession={(sid) => { setHomeOverlay(false); focusSessionRef.current(sid) }}
+            />
+          </div>
+        </div>
+      )}
       {quitGuard && (
         // zIndex + own compositing layer: every other overlay has a z-index, but
         // this modal had none, so over a terminal's WebGL canvas WebKit painted it
