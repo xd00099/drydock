@@ -275,6 +275,28 @@ pub(crate) fn resolve_touches(touches: Vec<transcript::FileTouch>, session_root:
         .collect()
 }
 
+/// Merge two files_touched lists in first-touched order (subagent edits fold
+/// into the session's footprint).
+fn merge_touches(mut base: Vec<transcript::FileTouch>, extra: Vec<transcript::FileTouch>) -> Vec<transcript::FileTouch> {
+    for t in extra {
+        match base.iter_mut().find(|b| b.path == t.path) {
+            Some(b) => {
+                b.edits += t.edits;
+                b.writes += t.writes;
+                b.adds += t.adds;
+                b.dels += t.dels;
+                b.created |= t.created;
+                b.last_ts = match (b.last_ts, t.last_ts) {
+                    (Some(a), Some(c)) => Some(a.max(c)),
+                    (a, c) => a.or(c),
+                };
+            }
+            None => base.push(t),
+        }
+    }
+    base
+}
+
 /// Files this session changed (Edit/Write tool calls; errored calls dropped),
 /// each resolved to where it lives now, for the Briefing panel's
 /// "Files changed" section. async: reads the whole transcript and stats/walks
@@ -283,7 +305,37 @@ pub(crate) fn resolve_touches(touches: Vec<transcript::FileTouch>, session_root:
 #[tauri::command(async)]
 pub fn session_files(db: State<'_, AppDb>, session_id: String) -> Result<Vec<FileTouchView>, String> {
     let path = transcript_file(&db, &session_id)?;
-    let touches = transcript::files_touched(&path).map_err(|e| e.to_string())?;
+    let mut touches = transcript::files_touched(&path).map_err(|e| e.to_string())?;
+    // A session's footprint includes what its SUBAGENTS edited. This runs on
+    // every index tick while the panel is open, so the merged agent touches
+    // are cached per session behind a (path,size,mtime) fingerprint — agent
+    // files are append-only, any change re-parses the lot.
+    static AGENT_TOUCHES: std::sync::Mutex<Option<std::collections::HashMap<String, (String, Vec<transcript::FileTouch>)>>> =
+        std::sync::Mutex::new(None);
+    let agents = drydock_core::scanner::scan_session_agents(&crate::index::claude_dir(), &session_id);
+    let fingerprint = agents
+        .iter()
+        .map(|a| format!("{}|{}|{}", a.path.display(), a.size, a.mtime))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let agent_touches = {
+        let mut cache = AGENT_TOUCHES.lock().unwrap();
+        let map = cache.get_or_insert_with(Default::default);
+        match map.get(&session_id) {
+            Some((fp, cached)) if *fp == fingerprint => cached.clone(),
+            _ => {
+                let mut merged: Vec<transcript::FileTouch> = Vec::new();
+                for af in &agents {
+                    if let Ok(extra) = transcript::files_touched_with(&af.path, true) {
+                        merged = merge_touches(merged, extra);
+                    }
+                }
+                map.insert(session_id.clone(), (fingerprint, merged.clone()));
+                merged
+            }
+        }
+    };
+    touches = merge_touches(touches, agent_touches);
     let (session_root, alt_roots) = {
         let store = db.0.lock().unwrap();
         let root = store
@@ -303,6 +355,49 @@ pub fn session_files(db: State<'_, AppDb>, session_id: String) -> Result<Vec<Fil
         (root, alts)
     };
     Ok(resolve_touches(touches, &session_root, &alt_roots))
+}
+
+/// One subagent conversation attached to a session, for the transcript view's
+/// agents strip. `agent_type`/`description` come from the sidecar meta.json
+/// when present (older files carry only some fields).
+#[derive(serde::Serialize)]
+pub struct AgentView {
+    pub agent_id: String,
+    pub agent_type: Option<String>,
+    pub description: Option<String>,
+}
+
+/// The session's subagent conversations, in on-disk (spawn-ish) order.
+/// async: walks project dirs + reads meta files.
+#[tauri::command(async)]
+pub fn session_agents(session_id: String) -> Vec<AgentView> {
+    drydock_core::scanner::scan_session_agents(&crate::index::claude_dir(), &session_id)
+        .into_iter()
+        .map(|af| {
+            let meta_path = af.path.with_file_name(format!("agent-{}.meta.json", af.agent_id));
+            let meta: Option<serde_json::Value> =
+                std::fs::read_to_string(meta_path).ok().and_then(|s| serde_json::from_str(&s).ok());
+            let field = |k: &str| {
+                meta.as_ref()
+                    .and_then(|m| m.get(k))
+                    .and_then(serde_json::Value::as_str)
+                    .map(String::from)
+            };
+            AgentView { agent_id: af.agent_id, agent_type: field("agentType"), description: field("description") }
+        })
+        .collect()
+}
+
+/// Display entries for one subagent transcript (same incremental contract as
+/// session_transcript). The agent file is located by scanning — the frontend's
+/// agent_id is only ever MATCHED against found files, never used as a path.
+#[tauri::command(async)]
+pub fn agent_transcript(session_id: String, agent_id: String, from_offset: u64) -> Result<Page, String> {
+    let af = drydock_core::scanner::scan_session_agents(&crate::index::claude_dir(), &session_id)
+        .into_iter()
+        .find(|a| a.agent_id == agent_id)
+        .ok_or("no such agent transcript for this session")?;
+    transcript::read_page_with(&af.path, from_offset, true).map_err(|e| e.to_string())
 }
 
 /// Open a file in the user's editor (reveal=false) or reveal it in Finder
@@ -356,6 +451,20 @@ pub fn open_path(path: String, reveal: bool, settings: State<'_, crate::settings
 /// it rather than viewing it.
 fn launchable_by_default_app(p: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
+    // extensions macOS `open` treats as ACTIONS, not documents: .terminal /
+    // .command run shell commands, .webloc/.inetloc navigate, .scpt runs
+    // AppleScript, installers install. Transcript-derived paths never get to
+    // trigger those through the default-app fallback (editor path unaffected).
+    const TYPE_ACTIONABLE: [&str; 12] = [
+        "app", "applescript", "command", "dmg", "fileloc", "inetloc", "pkg",
+        "scpt", "scptd", "terminal", "tool", "webloc",
+    ];
+    if p.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| TYPE_ACTIONABLE.contains(&e.to_ascii_lowercase().as_str()))
+    {
+        return false;
+    }
     match std::fs::metadata(p) {
         Ok(m) => m.is_file() && m.permissions().mode() & 0o111 == 0,
         Err(_) => false,
@@ -373,7 +482,10 @@ pub fn export_transcript(app: AppHandle, db: State<'_, AppDb>, session_id: Strin
             .get_session(&session_id)
             .map_err(|e| e.to_string())?
             .ok_or("session not indexed")?;
-        (row.title, row.project_path)
+        // export under the label the user sees (Drydock rename > custom-title
+        // > summary > title), not the raw indexed title
+        let label = store.display_label(&session_id).ok().flatten().unwrap_or(row.title);
+        (label, row.project_path)
     };
     let path = transcript_file(&db, &session_id)?;
     let page = transcript::read_page(&path, 0).map_err(|e| e.to_string())?;
@@ -400,6 +512,7 @@ mod tests {
             tool_use_id: None,
             meta: false,
             error: false,
+            persisted_path: None,
             ts: None,
         }
     }

@@ -1,26 +1,42 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { clampPanelWidth, loadNum, relAge, baseName, type Artifact, type ArtifactKind, type CardView, type FileTouch, type McpServer, type SavedArtifact, type Skill, type TimelineItem } from './types'
+import { clampPanelWidth, fmtTokens, loadNum, relAge, baseName, type Artifact, type ArtifactKind, type CardView, type FileTouch, type McpServer, type SavedArtifact, type SessionUsage, type Skill, type TasksView, type TimelineItem } from './types'
 import ArtifactView from './ArtifactView'
+import TimeMachine from './TimeMachine'
 import ResizeHandle from './ResizeHandle'
 
-type RightTab = 'briefing' | 'skills' | 'mcp' | 'preview'
+type RightTab = 'briefing' | 'project' | 'preview'
 
 type Props = {
   sessionId: string | null // null for a brand-new claude tab with no session id yet
   projectPath?: string // active session's project, for per-project MCP lookup
   starred: boolean
   artifacts: Artifact[] // visual artifacts this tab's session has rendered
+  // resolved display label (Drydock name > custom-title > summary > title);
+  // null when the session isn't indexed yet
+  label?: string | null
   onToggleStar?: () => void
+  // rename the session in Drydock's index (blank clears); absent = unindexed
+  onRename?: (name: string) => void
+  // artifacts arrived while this tab was NOT focused (e.g. Home was showing):
+  // open the Artifacts tab on mount so the badge's click actually lands there
+  initialUnread?: boolean
 }
 
 const TABS: { id: RightTab; label: string }[] = [
   { id: 'briefing', label: 'Briefing' },
-  { id: 'skills', label: 'Skills' },
-  { id: 'mcp', label: 'MCP' },
+  { id: 'project', label: 'Project' }, // skills + MCP, merged: project/environment scope
   { id: 'preview', label: 'Artifacts' }, // id stays 'preview' so saved dd.rightTab keeps working
 ]
+
+// Saved right-tab prefs from before the Skills/MCP merge name tabs that no
+// longer exist; both fold into Project. Anything else unexpected → briefing.
+function loadRightTab(): RightTab {
+  const saved = localStorage.getItem('dd.rightTab')
+  if (saved === 'skills' || saved === 'mcp') return 'project'
+  return saved === 'briefing' || saved === 'project' || saved === 'preview' ? saved : 'briefing'
+}
 
 const loadStrSet = (key: string): Set<string> => {
   try {
@@ -61,6 +77,7 @@ const S = {
     overflow: 'hidden',
   } as const,
   chip: { fontSize: 9, color: '#9aa3af', background: '#1b2230', border: '1px solid #2c3647', borderRadius: 4, padding: '0 5px' } as const,
+  secHead: { color: '#7d8794', fontWeight: 700, fontSize: 10, letterSpacing: 0.8 } as const,
   iconBtn: { background: 'none', border: '1px solid #2c3647', borderRadius: 4, cursor: 'pointer', color: '#9aa3af', fontSize: 12, lineHeight: 1, padding: '2px 6px' } as const,
 }
 
@@ -126,7 +143,11 @@ function DiffStat({ f }: { f: FileTouch }) {
 /// stats — in its own scroll region under a sticky totals header. Rows open the
 /// file's CURRENT location (the resolver's work); files that are gone render
 /// struck-through and explain themselves instead of erroring.
-function FilesChanged({ files, projectPath, sessionId }: { files: FileTouch[]; projectPath?: string; sessionId: string | null }) {
+function FilesChanged({ files, projectPath, sessionId, squeeze, onTimeMachine }: { files: FileTouch[]; projectPath?: string; sessionId: string | null; squeeze?: boolean; onTimeMachine?: (path: string | null) => void }) {
+  // collapsible pinned section (same grammar as TASKS and MCP SERVERS);
+  // named secOpen: `open` is already this component's file-opening handler
+  const [secOpen, setSecOpen] = useState(() => localStorage.getItem('dd.filesOpen') !== '0')
+  const toggleOpen = () => setSecOpen((o) => { localStorage.setItem('dd.filesOpen', o ? '0' : '1'); return !o })
   // Transient error line (editor_cmd broken, file vanished mid-click, …).
   const [err, setErr] = useState<string | null>(null)
   const errTimer = useRef(0)
@@ -175,17 +196,31 @@ function FilesChanged({ files, projectPath, sessionId }: { files: FileTouch[]; p
     })
 
   return (
-    <div style={{ flex: '0 1 auto', maxHeight: '55%', display: 'flex', flexDirection: 'column', borderTop: '1px solid #232c3a', background: '#0d1117' }}>
+    <div style={{ flex: secOpen ? '0 1 auto' : 'none', maxHeight: secOpen ? (squeeze ? '40%' : '55%') : undefined, display: 'flex', flexDirection: 'column', borderTop: '1px solid #232c3a', background: '#0d1117' }}>
       <div style={{ flex: 'none', display: 'flex', alignItems: 'baseline', gap: 8, padding: '8px 12px 6px' }}>
-        <span style={{ color: '#7d8794', fontWeight: 700, fontSize: 10, letterSpacing: 0.8 }}>FILES CHANGED</span>
+        <button onClick={toggleOpen} title={secOpen ? 'Collapse' : 'Expand'} style={{ ...S.groupBtn, width: 'auto', flex: 'none', gap: 5, padding: 0 }}>
+          <span style={{ width: 9, flex: 'none', color: '#4a5462' }}>{secOpen ? '▾' : '▸'}</span>
+          <span style={S.secHead}>FILES CHANGED</span>
+        </button>
         <span style={{ display: 'flex', gap: 6, fontFamily: 'Menlo, monospace', fontSize: 11 }}>
           <span style={{ color: '#5fb98a' }}>+{totAdds.toLocaleString('en-US')}</span>
           <span style={{ color: '#cf6b6b' }}>−{totDels.toLocaleString('en-US')}</span>
         </span>
-        <span style={{ color: '#5b6675', fontSize: 10 }}>
+        <span style={{ color: '#5b6675', fontSize: 10, whiteSpace: 'nowrap' }}>
           · {files.length} file{files.length === 1 ? '' : 's'}{gone > 0 ? ` · ${gone} gone` : ''}
         </span>
+        <span style={{ flex: 1 }} />
+        {onTimeMachine && (
+          <button
+            onClick={() => onTimeMachine(null)}
+            title="File time machine — checkpoint history of everything this session edited"
+            style={{ ...S.iconBtn, flex: 'none', fontSize: 10, padding: '1px 5px' }}
+          >
+            ⏱
+          </button>
+        )}
       </div>
+      {secOpen && (
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 10px 10px' }}>
         {groups.map((g) => {
           const isOpen = !collapsed.has(g.dir)
@@ -236,6 +271,16 @@ function FilesChanged({ files, projectPath, sessionId }: { files: FileTouch[]; p
                         {name}
                         {moved && <span style={{ color: '#7fb0ff', marginLeft: 5 }} title={`moved — now at ${f.resolved}`}>↷</span>}
                       </button>
+                      {onTimeMachine && (
+                        <button
+                          className="dd-reveal"
+                          style={{ ...S.iconBtn, border: 'none', fontSize: 10, padding: '1px 3px' }}
+                          title="History of this file (time machine)"
+                          onClick={() => onTimeMachine(f.path)}
+                        >
+                          ↺
+                        </button>
+                      )}
                       {f.resolved && (
                         <button
                           className="dd-reveal"
@@ -254,7 +299,72 @@ function FilesChanged({ files, projectPath, sessionId }: { files: FileTouch[]; p
           )
         })}
       </div>
-      {err && <div style={{ flex: 'none', color: '#cf6b6b', fontSize: 10, padding: '4px 12px 8px' }}>{err}</div>}
+      )}
+      {secOpen && err && <div style={{ flex: 'none', color: '#cf6b6b', fontSize: 10, padding: '4px 12px 8px' }}>{err}</div>}
+    </div>
+  )
+}
+
+/// Live task board (~/.claude/tasks/<sid>/) as a pinned section between the
+/// card and FILES CHANGED. Renders NOTHING when the session has no board; the
+/// header carries the board's age so a stale "in progress" reads as stale.
+function TasksSection({ view }: { view: TasksView | null }) {
+  const [open, setOpen] = useState(() => localStorage.getItem('dd.tasksOpen') !== '0')
+  const toggleOpen = () => setOpen((o) => { localStorage.setItem('dd.tasksOpen', o ? '0' : '1'); return !o })
+  if (!view || view.tasks.length === 0) return null
+  const total = view.tasks.length
+  const done = view.tasks.filter((t) => t.status === 'completed').length
+  const blocked = view.tasks.filter((t) => t.status !== 'completed' && t.blocked_by.length > 0)
+  const active = view.tasks.find((t) => t.status === 'in_progress')
+  const subjects = new Map(view.tasks.map((t) => [t.id, t.subject]))
+  const glyph = (t: (typeof view.tasks)[number]): [string, string, string] =>
+    t.status === 'completed'
+      ? ['✓', '#4a5462', 'completed']
+      : t.status === 'in_progress'
+        ? ['◐', '#7ec8a0', 'in progress']
+        : t.blocked_by.length > 0
+          ? ['⊘', '#d6b24a', `waiting on: ${t.blocked_by.map((b) => subjects.get(b) ?? `#${b}`).join(', ')}`]
+          : ['○', '#7d8794', 'pending']
+  return (
+    <div style={{ flex: open ? '0 1 auto' : 'none', maxHeight: open ? '40%' : undefined, display: 'flex', flexDirection: 'column', borderTop: '1px solid #232c3a', background: '#0d1117' }}>
+      <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 7, padding: '8px 12px 6px' }}>
+        <button onClick={toggleOpen} title={open ? 'Collapse' : 'Expand'} style={{ ...S.groupBtn, width: 'auto', flex: 'none', gap: 5, padding: 0 }}>
+          <span style={{ width: 9, flex: 'none', color: '#4a5462' }}>{open ? '▾' : '▸'}</span>
+          <span style={S.secHead}>TASKS</span>
+        </button>
+        <span style={{ flex: 'none', color: '#5b6675', fontSize: 10, whiteSpace: 'nowrap' }}>
+          {done}/{total}{blocked.length > 0 ? ` · ${blocked.length} blocked` : ''}
+        </span>
+        <span style={{ flex: 1 }} />
+        {view.updated_at != null && (
+          <span title={'the board\u2019s last change — a stale \u201cin progress\u201d is old news, not live'} style={{ color: '#5b6675', fontSize: 10, whiteSpace: 'nowrap' }}>
+            {relAge(view.updated_at)}
+          </span>
+        )}
+      </div>
+      {open && (
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 12px 10px' }}>
+          {active?.active_form && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+              <span style={{ color: '#7ec8a0', fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>◐ now: {active.active_form}</span>
+              <span style={{ flex: 1, minWidth: 24, height: 3, borderRadius: 2, background: '#1b2230', overflow: 'hidden' }}>
+                <span style={{ display: 'block', height: '100%', width: `${Math.round((done / total) * 100)}%`, background: '#5fb98a' }} />
+              </span>
+            </div>
+          )}
+          {view.tasks.map((t) => {
+            const [g, color, tip] = glyph(t)
+            return (
+              <div key={t.id} title={tip} style={{ display: 'flex', gap: 7, alignItems: 'baseline', padding: '2px 0', fontSize: 11.5 }}>
+                <span style={{ width: 12, flex: 'none', textAlign: 'center', color }}>{g}</span>
+                <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: t.status === 'completed' ? '#5b6675' : t.status === 'in_progress' ? '#e8edf4' : '#9aa3af' }}>
+                  {t.subject}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
@@ -262,7 +372,24 @@ function FilesChanged({ files, projectPath, sessionId }: { files: FileTouch[]; p
 // Two clearly separated sections: the briefing card scrolls on top; "Files
 // changed" is its own visually distinct region pinned below with its own
 // scroll — a long timeline can't bury the file list and vice versa.
-function BriefingTab({ sessionId, card, starred, files, projectPath, onToggleStar }: { sessionId: string | null; card: CardView | null; starred: boolean; files: FileTouch[]; projectPath?: string; onToggleStar?: () => void }) {
+function BriefingTab({ sessionId, card, starred, files, tasks, usage, projectPath, label, onToggleStar, onRename }: { sessionId: string | null; card: CardView | null; starred: boolean; files: FileTouch[]; tasks: TasksView | null; usage: SessionUsage | null; projectPath?: string; label?: string | null; onToggleStar?: () => void; onRename?: (name: string) => void }) {
+  // editing holds the label CAPTURED when the pencil was clicked (null = not
+  // editing): the unchanged-commit guard must compare against what the user
+  // saw when they started, not the live prop — a mid-edit refresh changing
+  // `label` must neither freeze a stale auto title nor block a real commit.
+  const [editing, setEditing] = useState<string | null>(null)
+  // time machine overlay: false = closed, string = start at this file,
+  // null = whole-session checkpoint view
+  const [tm, setTm] = useState<string | null | false>(false)
+  const commitRename = (value: string) => {
+    const initial = editing
+    setEditing(null)
+    const name = value.trim()
+    // unchanged = no-op: a click-away blur must not freeze an AUTO title
+    // (card summary) into a permanent override
+    if (initial === null || name === initial.trim()) return
+    onRename?.(name)
+  }
   if (!sessionId)
     return <div style={{ ...S.muted, padding: 12 }}>No indexed session yet — once this conversation is saved, its briefing card appears here.</div>
   return (
@@ -277,14 +404,57 @@ function BriefingTab({ sessionId, card, starred, files, projectPath, onToggleSta
           >
             ★
           </button>
-          <div style={{ flex: 1, color: '#e8edf4', fontWeight: 600, fontSize: 13, lineHeight: 1.3 }}>{card?.summary || 'Session'}</div>
+          {editing !== null && onRename ? (
+            <input
+              autoFocus
+              defaultValue={editing}
+              maxLength={60}
+              placeholder="Session name — empty clears"
+              style={{ flex: 1, minWidth: 0, background: '#10141a', border: '1px solid #4f7fd9', borderRadius: 4, color: '#e8edf4', fontSize: 13, fontWeight: 600, fontFamily: 'system-ui', padding: '2px 6px', outline: 'none' }}
+              onFocus={(e) => e.currentTarget.select()}
+              onKeyDown={(e) => {
+                // an Enter/Esc confirming an IME composition (pinyin) is part
+                // of typing the name, not a commit/cancel
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return
+                if (e.key === 'Enter') commitRename(e.currentTarget.value)
+                else if (e.key === 'Escape') setEditing(null)
+              }}
+              onBlur={(e) => commitRename(e.currentTarget.value)}
+            />
+          ) : (
+            <div style={{ flex: 1, color: '#e8edf4', fontWeight: 600, fontSize: 13, lineHeight: 1.3 }}>{label || card?.summary || 'Session'}</div>
+          )}
+          {onRename && editing === null && (
+            <button
+              onClick={() => setEditing(label ?? '')}
+              title="Rename session (a Drydock-only name — claude's own session is untouched)"
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#5b6675', fontSize: 12, padding: 0, lineHeight: 1.3 }}
+            >
+              ✎
+            </button>
+          )}
+          {usage && usage.total_tokens > 0 && (
+            <span
+              style={{ ...S.chip, flex: 'none', fontFamily: 'Menlo, monospace', alignSelf: 'flex-start', lineHeight: '15px' }}
+              title={
+                `${usage.total_tokens.toLocaleString('en-US')} tokens (input + output + cache writes; cache reads excluded)\n` +
+                usage.rows.map((r) => `${r.model}${r.scope !== 'main' ? ' (agents)' : ''}: ${fmtTokens(r.input)} in · ${fmtTokens(r.output)} out`).join('\n') +
+                (usage.agent_output > 0 ? `\nsubagents wrote ${fmtTokens(usage.agent_output)} of the output` : '') +
+                '\nfrom transcript usage records — an estimate, not a bill'
+              }
+            >
+              Σ {fmtTokens(usage.total_tokens)}
+            </span>
+          )}
         </div>
         {card ? (
           <>
             {card.timeline.length > 0 ? (
               <ul style={{ margin: 0, padding: 0, listStyle: 'none' }}>
+                {/* one source of "now doing": with a live task board below,
+                    the AI card's own in-progress flags stand down */}
                 {card.timeline.map((it, i) => (
-                  <Item key={i} it={it} />
+                  <Item key={i} it={tasks && tasks.tasks.length > 0 ? { ...it, in_progress: false } : it} />
                 ))}
               </ul>
             ) : (
@@ -302,12 +472,20 @@ function BriefingTab({ sessionId, card, starred, files, projectPath, onToggleSta
           Refresh card
         </button>
       </div>
-      <FilesChanged files={files} projectPath={projectPath} sessionId={sessionId} />
+      <TasksSection view={tasks} />
+      <FilesChanged
+        files={files}
+        projectPath={projectPath}
+        sessionId={sessionId}
+        squeeze={!!tasks && tasks.tasks.length > 0}
+        onTimeMachine={(p) => setTm(p)}
+      />
+      {tm !== false && <TimeMachine sessionId={sessionId} initialPath={tm} onClose={() => setTm(false)} />}
     </div>
   )
 }
 
-function SkillsTab({ projectPath }: { projectPath?: string }) {
+function SkillsSection({ projectPath }: { projectPath?: string }) {
   // Fetched per-mount (~17 file reads) so it stays fresh when plugins change and
   // a transient failure isn't pinned by a module cache. Includes plugin +
   // personal (~/.claude) skills and this project's own (<project>/.claude/skills).
@@ -332,9 +510,17 @@ function SkillsTab({ projectPath }: { projectPath?: string }) {
       return next
     })
 
-  if (state === 'loading') return <div style={S.muted}>loading skills…</div>
-  if (state === 'error') return <div style={S.muted}>couldn’t load skills</div>
-  if (state.length === 0) return <div style={S.muted}>no plugin skills found</div>
+  const header = (
+    <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
+      <span style={S.secHead}>SKILLS</span>
+      {Array.isArray(state) && state.length > 0 && (
+        <span style={{ color: '#5b6675', fontSize: 10 }}>{state.length} · plugin, personal &amp; project</span>
+      )}
+    </div>
+  )
+  if (state === 'loading') return <div>{header}<div style={S.muted}>loading skills…</div></div>
+  if (state === 'error') return <div>{header}<div style={S.muted}>couldn’t load skills</div></div>
+  if (state.length === 0) return <div>{header}<div style={S.muted}>no plugin skills found</div></div>
 
   const groups = new Map<string, Skill[]>()
   for (const s of state) {
@@ -343,7 +529,7 @@ function SkillsTab({ projectPath }: { projectPath?: string }) {
   }
   return (
     <div>
-      <div style={{ color: '#5b6675', fontSize: 10, marginBottom: 8 }}>{state.length} skills · plugin, personal &amp; project</div>
+      {header}
       {[...groups.entries()].map(([plugin, list]) => {
         const open = expanded.has(plugin)
         return (
@@ -395,7 +581,22 @@ function Toggle({ on, busy, onClick, title }: { on: boolean; busy: boolean; onCl
   )
 }
 
-function McpTab({ projectPath }: { projectPath?: string }) {
+// `claude mcp list` spawns the CLI (seconds, not ms), and this whole panel
+// remounts on every center-tab switch (key={activeTab.id} in App) — so the last
+// health check is cached per project across remounts and only re-run once stale.
+const MCP_RECHECK_MS = 60_000
+const mcpStatusCache = new Map<string, { status: Record<string, { st: string; raw: string }>; checkedAt: number }>()
+// The in-flight check, so concurrent remounts JOIN one `claude mcp list`
+// spawn instead of racing several during the cold multi-second window.
+const mcpCheckInFlight = new Map<string, Promise<unknown>>()
+// Last server list per project: seeds the section on remount so the header
+// (rollup dot, count) doesn't blink out while list_mcp_servers re-resolves.
+const mcpServersCache = new Map<string, McpServer[]>()
+
+// Worst-first, so the section header can report health even while collapsed.
+const STATUS_RANK: Record<string, number> = { failed: 4, pending: 3, unknown: 2, checking: 1, connected: 0 }
+
+function McpSection({ projectPath }: { projectPath?: string }) {
   const [servers, setServers] = useState<McpServer[] | null>(null)
   // null = never checked (dots show "checking"); {} = checked, no statuses
   const [status, setStatus] = useState<Record<string, { st: string; raw: string }> | null>(null)
@@ -404,11 +605,14 @@ function McpTab({ projectPath }: { projectPath?: string }) {
   const [checkErr, setCheckErr] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [busy, setBusy] = useState<Set<string>>(new Set())
+  // Collapsed still shows the rollup dot + age; the 60s re-check keeps running.
+  const [secOpen, setSecOpen] = useState(() => localStorage.getItem('dd.mcpOpen') !== '0')
   // Result-application guard: bumped whenever projectPath changes, so a check
   // still in flight for the OLD project can't label the new one. Also the
   // "one check at a time" latch (state lags; a ref doesn't).
   const epochRef = useRef(0)
   const inFlightRef = useRef(false)
+  const cacheKey = projectPath ?? ''
 
   const runCheck = useCallback((hasExternal: boolean) => {
     const epoch = epochRef.current
@@ -420,11 +624,26 @@ function McpTab({ projectPath }: { projectPath?: string }) {
     if (inFlightRef.current) return
     inFlightRef.current = true
     setChecking(true)
-    invoke<[string, string, string][]>('mcp_status', { projectPath: projectPath ?? null })
-      .then((triples) => {
+    // join the check another instance already started for this project — a
+    // remount mid-check must not spawn a second concurrent CLI process
+    let check = mcpCheckInFlight.get(cacheKey)
+    if (!check) {
+      check = invoke<[string, string, string][]>('mcp_status', { projectPath: projectPath ?? null })
+        .then((triples) => {
+          // single writer per spawn; joiners read the cache in their .then
+          mcpStatusCache.set(cacheKey, {
+            status: Object.fromEntries(triples.map(([n, st, raw]) => [n, { st, raw }])),
+            checkedAt: Date.now(),
+          })
+        })
+        .finally(() => mcpCheckInFlight.delete(cacheKey))
+      mcpCheckInFlight.set(cacheKey, check)
+    }
+    check
+      .then(() => {
         if (epochRef.current !== epoch) return
-        setStatus(Object.fromEntries(triples.map(([n, st, raw]) => [n, { st, raw }])))
-        setCheckedAt(Date.now())
+        const c = mcpStatusCache.get(cacheKey)
+        if (c) { setStatus(c.status); setCheckedAt(c.checkedAt) }
         setCheckErr(null)
       })
       .catch((e) => {
@@ -435,7 +654,7 @@ function McpTab({ projectPath }: { projectPath?: string }) {
         inFlightRef.current = false
         if (epochRef.current === epoch) setChecking(false)
       })
-  }, [projectPath])
+  }, [projectPath, cacheKey])
 
   useEffect(() => {
     epochRef.current++
@@ -445,15 +664,24 @@ function McpTab({ projectPath }: { projectPath?: string }) {
     // anyway, and its finally() harmlessly re-clears this)
     inFlightRef.current = false
     setServers(null)
-    setStatus(null)
-    setCheckedAt(null)
     setCheckErr(null)
     setChecking(false)
+    // seed from the caches so a remount shows last-known health immediately
+    const cached = mcpStatusCache.get(projectPath ?? '')
+    setStatus(cached?.status ?? null)
+    setCheckedAt(cached?.checkedAt ?? null)
+    setServers(mcpServersCache.get(projectPath ?? '') ?? null)
     invoke<McpServer[]>('list_mcp_servers', { projectPath: projectPath ?? null })
       .then((list) => {
         if (epochRef.current !== epoch) return
+        mcpServersCache.set(projectPath ?? '', list)
         setServers(list)
-        runCheck(list.some((s) => !s.builtin))
+        // a cached check stands in for the mount-time one only while it's
+        // fresh AND covers every external server — a just-added server must
+        // trigger a real check, not wear "not in the output" for a minute
+        const covered = !!cached && list.every((s) => s.builtin || cached.status[s.name] !== undefined)
+        if (!cached || !covered || Date.now() - cached.checkedAt >= MCP_RECHECK_MS)
+          runCheck(list.some((s) => !s.builtin))
       })
       .catch(() => {
         if (epochRef.current !== epoch) return
@@ -464,11 +692,22 @@ function McpTab({ projectPath }: { projectPath?: string }) {
 
   // A dot is only as honest as its age: re-check every minute while this tab
   // stays open (a dead server otherwise kept its green from panel-mount time).
+  // The FIRST tick honors the cached check's age — a 59s-old seed re-checks in
+  // ~1s, not 60 — so remounting can never stretch staleness past one TTL.
   const hasExternal = !!servers?.some((s) => !s.builtin)
+  const checkedAtRef = useRef<number | null>(null)
+  checkedAtRef.current = checkedAt
   useEffect(() => {
     if (!hasExternal) return
-    const t = window.setInterval(() => runCheck(true), 60_000)
-    return () => window.clearInterval(t)
+    const first = checkedAtRef.current == null
+      ? MCP_RECHECK_MS
+      : Math.max(0, checkedAtRef.current + MCP_RECHECK_MS - Date.now())
+    let iv = 0
+    const t = window.setTimeout(() => {
+      runCheck(true)
+      iv = window.setInterval(() => runCheck(true), MCP_RECHECK_MS)
+    }, first)
+    return () => { window.clearTimeout(t); if (iv) window.clearInterval(iv) }
   }, [hasExternal, runCheck])
 
   const toggleExpand = (name: string) =>
@@ -478,7 +717,11 @@ function McpTab({ projectPath }: { projectPath?: string }) {
     setBusy((prev) => new Set(prev).add(s.name))
     try {
       await invoke('set_mcp_enabled', { name: s.name, enabled: !s.enabled })
-      setServers((prev) => prev && prev.map((x) => (x.name === s.name ? { ...x, enabled: !x.enabled } : x)))
+      setServers((prev) => {
+        const next = prev && prev.map((x) => (x.name === s.name ? { ...x, enabled: !x.enabled } : x))
+        if (next) mcpServersCache.set(cacheKey, next) // keep the remount seed honest
+        return next
+      })
     } catch (e) {
       console.error(e)
     } finally {
@@ -502,6 +745,9 @@ function McpTab({ projectPath }: { projectPath?: string }) {
         : { status: 'unknown', title: 'Off — new sessions won’t get the render tool' }
     if (status === null) return { status: 'checking', title: 'Checking…' }
     const e = status[s.name]
+    // not in the (possibly cache-seeded) map while a check runs: it's being
+    // checked right now, not "missing from the output"
+    if (!e && checking) return { status: 'checking', title: 'Checking…' }
     const st = e?.st ?? 'unknown'
     const what = e?.raw
       ? e.raw
@@ -509,30 +755,67 @@ function McpTab({ projectPath }: { projectPath?: string }) {
     return { status: st, title: checkedAt ? `${what}\nchecked ${ageText(checkedAt)}` : what }
   }
 
-  const proj = projectPath ? baseName(projectPath) : undefined
+  // Header rollup: the WORST status across enabled servers, so the collapsed
+  // section still reports health at a glance — a red server can't be buried.
+  // Disabled servers don't count: they're not offered to new sessions anyway.
+  const dots = (servers ?? []).filter((s) => s.enabled).map((s) => dotFor(s).status)
+  const failed = dots.filter((d) => d === 'failed').length
+  const worst = dots.length
+    ? dots.reduce((a, b) => ((STATUS_RANK[b] ?? 0) > (STATUS_RANK[a] ?? 0) ? b : a))
+    : null
+
+  const toggleOpen = () =>
+    setSecOpen((o) => { localStorage.setItem('dd.mcpOpen', o ? '0' : '1'); return !o })
+
+  // Pinned-section layout, same recipe as FILES CHANGED: seam on top, darker
+  // ground, own scroll, bounded height — skills can never bury a dead server.
   return (
-    <div>
-      {proj && (
-        <div style={{ color: '#7d8794', marginBottom: 4 }}>
-          for project: <span style={{ color: '#c8cdd5' }}>{proj}</span>
-        </div>
-      )}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-        <span style={{ flex: 1, color: '#5b6675', fontSize: 10, lineHeight: 1.4 }}>
-          ● health via `claude mcp list` ·{' '}
-          {!hasExternal ? 'no external servers' : checking ? 'checking…' : checkedAt ? `checked ${ageText(checkedAt)}` : 'not checked yet'}
+    <div style={{ flex: secOpen ? '0 1 auto' : 'none', maxHeight: secOpen ? '55%' : undefined, display: 'flex', flexDirection: 'column', borderTop: '1px solid #232c3a', background: '#0d1117' }}>
+      <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 7, padding: '8px 12px 6px' }}>
+        {/* label and age SHRINK (ellipsize) at narrow widths; the dot, the
+            count, and ↻ are flex:none so the signal + the cure never clip */}
+        <button onClick={toggleOpen} title={secOpen ? 'Collapse' : 'Expand'} style={{ ...S.groupBtn, width: 'auto', flex: '0 1 auto', minWidth: 0, gap: 5, padding: 0 }}>
+          <span style={{ width: 9, flex: 'none', color: '#4a5462' }}>{secOpen ? '▾' : '▸'}</span>
+          <span style={{ ...S.secHead, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>MCP SERVERS</span>
+        </button>
+        {worst && (
+          <StatusDot
+            status={worst}
+            title={`worst across enabled servers: ${worst}${checkedAt ? ` · checked ${ageText(checkedAt)}` : ''}\nhealth via \`claude mcp list\``}
+          />
+        )}
+        {servers !== null && servers.length > 0 && (
+          <span style={{ flex: 'none', color: '#5b6675', fontSize: 10, whiteSpace: 'nowrap' }}>
+            {servers.length}{failed > 0 ? ` · ${failed} failed` : ''}
+          </span>
+        )}
+        <span style={{ flex: 1 }} />
+        {/* compact age ('2m'), full wording in the tooltip; turns into a red
+            'check failed' when the refresh errors — visible even collapsed,
+            so the rollup dot can't silently advertise stale health */}
+        <span
+          title={
+            checkErr
+              ? `${checkErr}\nlast good check: ${checkedAt ? ageText(checkedAt) : 'never'}`
+              : checkedAt ? `health checked ${ageText(checkedAt)}` : undefined
+          }
+          style={{ color: checkErr ? '#cf6b6b' : '#5b6675', fontSize: 10, whiteSpace: 'nowrap', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}
+        >
+          {checking ? 'checking…' : checkErr ? 'check failed' : hasExternal && checkedAt ? relAge(checkedAt) : ''}
         </span>
         {hasExternal && (
           <button
             onClick={() => runCheck(true)}
             disabled={checking}
             title="Re-check server health now"
-            style={{ ...S.iconBtn, fontSize: 10, padding: '1px 5px', opacity: checking ? 0.4 : 1, cursor: checking ? 'default' : 'pointer' }}
+            style={{ ...S.iconBtn, flex: 'none', fontSize: 10, padding: '1px 5px', opacity: checking ? 0.4 : 1, cursor: checking ? 'default' : 'pointer' }}
           >
             ↻
           </button>
         )}
       </div>
+      {secOpen && (
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 12px 10px' }}>
       {checkErr && (
         <div title={checkErr} style={{ color: '#cf6b6b', fontSize: 10, marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {checkErr}
@@ -542,7 +825,7 @@ function McpTab({ projectPath }: { projectPath?: string }) {
       {servers === null ? (
         <div style={S.muted}>loading…</div>
       ) : servers.length === 0 ? (
-        <div style={S.muted}>no MCP servers configured{proj ? ' for this project' : ''}</div>
+        <div style={S.muted}>no MCP servers configured{projectPath ? ' for this project' : ''}</div>
       ) : (
         servers.map((s) => {
           const open = expanded.has(s.name)
@@ -585,6 +868,31 @@ function McpTab({ projectPath }: { projectPath?: string }) {
           )
         })
       )}
+      </div>
+      )}
+    </div>
+  )
+}
+
+// The merged project/environment tab: what new sessions launched from this
+// project get. Browse-y lists (skills) scroll on top; the short, actionable
+// MCP section is pinned below with its own scroll — the same arrangement as
+// briefing card over FILES CHANGED.
+function ProjectTab({ projectPath }: { projectPath?: string }) {
+  const proj = projectPath ? baseName(projectPath) : undefined
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+      {/* pinned above the scroll: the scope must stay visible however far the
+          skills list is scrolled — both sections below answer to it */}
+      {proj && (
+        <div style={{ flex: 'none', padding: '12px 12px 0', color: '#7d8794' }}>
+          for project: <span style={{ color: '#c8cdd5' }}>{proj}</span>
+        </div>
+      )}
+      <div style={{ flex: '1 1 auto', minHeight: 0, overflowY: 'auto', padding: proj ? '8px 12px 12px' : 12 }}>
+        <SkillsSection projectPath={projectPath} />
+      </div>
+      <McpSection projectPath={projectPath} />
     </div>
   )
 }
@@ -778,14 +1086,16 @@ function PreviewTab({ artifacts, sessionId }: { artifacts: Artifact[]; sessionId
   )
 }
 
-export default function BriefingPanel({ sessionId, projectPath, starred, artifacts, onToggleStar }: Props) {
+export default function BriefingPanel({ sessionId, projectPath, starred, artifacts, label, onToggleStar, onRename, initialUnread }: Props) {
   const [card, setCard] = useState<CardView | null>(null)
   const [files, setFiles] = useState<FileTouch[]>([])
+  const [tasks, setTasks] = useState<TasksView | null>(null)
+  const [usage, setUsage] = useState<SessionUsage | null>(null)
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('dd.briefingCollapsed') === '1')
   // clamp on load AND on window resize: a width persisted (or auto-widened) on a
   // big monitor must not overflow a smaller window later
   const [width, setWidth] = useState(() => clampPanelWidth(loadNum('dd.briefingWidth', 252)))
-  const [tab, setTab] = useState<RightTab>(() => (localStorage.getItem('dd.rightTab') as RightTab) || 'briefing')
+  const [tab, setTab] = useState<RightTab>(() => (initialUnread ? 'preview' : loadRightTab()))
   const widthRef = useRef(width)
   widthRef.current = width
   useEffect(() => {
@@ -795,10 +1105,13 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
   }, [])
 
   const refresh = useCallback(() => {
-    if (!sessionId) { setCard(null); setFiles([]); return } // a session-less new tab has no card
+    if (!sessionId) { setCard(null); setFiles([]); setTasks(null); setUsage(null); return } // a session-less new tab has no card
     invoke<CardView | null>('get_card', { sessionId }).then(setCard).catch(console.error)
     // no transcript file yet (radar stub / expired) → just no files section
     invoke<FileTouch[]>('session_files', { sessionId }).then(setFiles).catch(() => setFiles([]))
+    // both refresh on the same index-updated tick that moves the transcript
+    invoke<TasksView>('session_tasks', { sessionId }).then(setTasks).catch(() => setTasks(null))
+    invoke<SessionUsage>('session_usage', { sessionId }).then(setUsage).catch(() => setUsage(null))
   }, [sessionId])
   useEffect(() => {
     refresh()
@@ -858,17 +1171,14 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
           </div>
         </div>
 
-        {/* Preview and Briefing manage their own layout (edge-to-edge / split
-            sections); Skills and MCP scroll inside padding. */}
+        {/* Every tab manages its own layout: Preview edge-to-edge, Briefing and
+            Project as scrolling-top / pinned-bottom section stacks. */}
         {tab === 'preview' ? (
           <PreviewTab artifacts={artifacts} sessionId={sessionId} />
         ) : tab === 'briefing' ? (
-          <BriefingTab sessionId={sessionId} card={card} starred={starred} files={files} projectPath={projectPath} onToggleStar={onToggleStar} />
+          <BriefingTab sessionId={sessionId} card={card} starred={starred} files={files} tasks={tasks} usage={usage} projectPath={projectPath} label={label} onToggleStar={onToggleStar} onRename={onRename} />
         ) : (
-          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 12 }}>
-            {tab === 'skills' && <SkillsTab projectPath={projectPath} />}
-            {tab === 'mcp' && <McpTab projectPath={projectPath} />}
-          </div>
+          <ProjectTab projectPath={projectPath} />
         )}
       </div>
     </div>

@@ -2,6 +2,12 @@ export type SessionView = {
   session_id: string
   project_path: string
   title: string
+  // where `title` came from; 'custom-title' means the USER named the session
+  // (claude -n / /rename) and that name outranks even the card summary
+  title_source: string
+  // rename made in Drydock's own UI (stored in Drydock's index, never in
+  // ~/.claude) — outranks every other source, including claude's custom-title
+  name: string | null
   summary: string | null // AI ~5-word title from the card; rendered over `title`
   latest_recap: string | null
   last_message_at: number | null
@@ -47,6 +53,8 @@ export type TEntry = {
   tool_use_id: string | null
   meta: boolean // caveat/command noise — rendered dimmed
   error: boolean // tool_result with is_error
+  // full output on disk for spilled (>50K) tool results — offer to open it
+  persisted_path: string | null
   ts: number | null
 }
 export type TranscriptPage = { entries: TEntry[]; next_offset: number; reset: boolean }
@@ -68,6 +76,45 @@ export type FileTouch = {
 
 export type TimelineItem = { text: string; detail: string[]; in_progress: boolean }
 export type CardView = { summary: string; timeline: TimelineItem[]; generated_at: number }
+
+// Live task board from ~/.claude/tasks/<sid>/ (backend cc_data::session_tasks)
+export type TaskView = { id: string; subject: string; active_form: string | null; status: string; blocked_by: string[] }
+export type TasksView = { tasks: TaskView[]; updated_at: number | null }
+
+// Indexed token usage for one session (backend cc_data::session_usage)
+export type ModelUsage = { model: string; scope: string; input: number; output: number; cache_read: number; cache_creation: number }
+export type SessionUsage = { rows: ModelUsage[]; total_output: number; total_tokens: number; agent_output: number }
+
+/** Compact token count: 950, 62k, 3.5M. */
+export function fmtTokens(n: number): string {
+  if (n >= 1e6) return (n / 1e6).toFixed(n >= 10e6 ? 0 : 1) + 'M'
+  if (n >= 1e3) return (n / 1e3).toFixed(n >= 10e3 ? 0 : 1) + 'k'
+  return String(n)
+}
+
+// One session's entry in the Home "what happened" digest (backend
+// cc_data::recap_digest). `label` is a genuine short name or null — never the
+// recap, so it can't echo `summary`. `timeline` arrives parsed.
+export type RecapEntry = {
+  session_id: string
+  project_path: string
+  label: string | null
+  summary: string
+  timeline: TimelineItem[]
+  last_message_at: number
+}
+
+// Global usage overview (backend cc_data::usage_overview)
+export type DailyActivity = { date: string; messages: number; sessions: number; tools: number; tokens: number }
+export type ModelTotals = { model: string; input: number; output: number; cache_read: number; cache_creation: number; cost_usd: number }
+export type TopSession = { session_id: string; label: string; project: string; output_tokens: number; total_tokens: number }
+export type UsageOverview = {
+  last_computed: string | null
+  total_sessions: number | null
+  daily: DailyActivity[]
+  models: ModelTotals[]
+  top_sessions: TopSession[]
+}
 
 // Read-only capability views for the right panel (from ~/.claude, secrets stripped)
 export type Skill = { name: string; description: string; plugin: string }
@@ -98,9 +145,20 @@ export type Artifact = { id: string; title: string; kind: ArtifactKind; content:
 // at render time, so the gallery dedups against the in-memory list.
 export type SavedArtifact = { file: string; title: string; kind: string; created_ms: number; seq: number; path: string | null }
 
-/** Display label for a session: AI summary when present, else its raw title. */
-export function sessionLabel(s: SessionView): string {
+/** The label a session would wear WITHOUT a Drydock rename — i.e. what
+ *  "Clear name" restores: claude custom-title > card summary > title. */
+export function sessionAutoLabel(s: SessionView): string {
+  if (s.title_source === 'custom-title' && s.title.trim()) return s.title
   return s.summary && s.summary.trim() ? s.summary : s.title
+}
+
+/** Display label for a session. Precedence: a Drydock rename > a claude-side
+ *  user name (claude -n / /rename) > the AI card summary > the indexed title.
+ *  User-set names always beat generated ones; Drydock's own rename beats
+ *  claude's because it was set later and deliberately, in this app. */
+export function sessionLabel(s: SessionView): string {
+  if (s.name && s.name.trim()) return s.name
+  return sessionAutoLabel(s)
 }
 
 /** RFC-4122 v4 UUID via WebCrypto. Used to pin a *new* claude session's id at

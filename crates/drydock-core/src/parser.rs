@@ -13,6 +13,7 @@ pub fn parse_line(line: &str) -> ParsedRecord {
             kind: k.to_string(),
             session_id: str_field(&v, "sessionId"),
             ai_title: str_field(&v, "aiTitle"),
+            custom_title: str_field(&v, "customTitle"),
             last_prompt: str_field(&v, "lastPrompt"),
         }),
         other => ParsedRecord::Unknown { raw_type: other.map(|s| s.to_string()) },
@@ -46,7 +47,28 @@ fn parse_chain(kind: &str, v: &Value) -> Chain {
         slug: str_field(v, "slug"),
         role: message.and_then(|m| m.get("role")).and_then(Value::as_str).map(String::from),
         text,
+        usage: parse_usage(message),
     }
+}
+
+/// Token usage off an assistant message. Synthetic messages (context
+/// summaries etc.) carry the literal model "<synthetic>" and no real cost.
+fn parse_usage(message: Option<&Value>) -> Option<crate::records::Usage> {
+    let m = message?;
+    let model = m.get("model").and_then(Value::as_str)?;
+    if model.is_empty() || model == "<synthetic>" {
+        return None;
+    }
+    let u = m.get("usage")?;
+    let n = |k: &str| u.get(k).and_then(Value::as_i64).unwrap_or(0);
+    Some(crate::records::Usage {
+        message_id: m.get("id").and_then(Value::as_str).map(String::from),
+        model: model.to_string(),
+        input: n("input_tokens"),
+        output: n("output_tokens"),
+        cache_read: n("cache_read_input_tokens"),
+        cache_creation: n("cache_creation_input_tokens"),
+    })
 }
 
 /// Extract human text from a content value: plain string, or array of blocks.

@@ -6,6 +6,21 @@ pub enum ParsedRecord {
     Malformed,
 }
 
+/// Per-record API usage from an assistant message: what the turn cost in
+/// tokens, by model. None for user/system records and synthetic messages.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Usage {
+    /// message.id — Claude Code writes ONE LINE PER CONTENT BLOCK, each
+    /// repeating the same id and the same full-turn usage object; counting
+    /// must dedupe on this or every tool-using turn is summed 2-3x.
+    pub message_id: Option<String>,
+    pub model: String,
+    pub input: i64,
+    pub output: i64,
+    pub cache_read: i64,
+    pub cache_creation: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Chain {
     pub kind: String, // "user" | "assistant" | "system" | "attachment"
@@ -23,15 +38,20 @@ pub struct Chain {
     pub slug: Option<String>,
     pub role: Option<String>,
     pub text: Option<String>,
+    pub usage: Option<Usage>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct State {
-    pub kind: String, // "ai-title" | "last-prompt" | "permission-mode" | "mode" | "file-history-snapshot" | "queue-operation"
+    pub kind: String, // one of STATE_KINDS
     pub session_id: Option<String>,
     pub ai_title: Option<String>,
+    /// User-assigned session name (`claude -n` / `/rename`) — outranks every
+    /// generated title.
+    pub custom_title: Option<String>,
     pub last_prompt: Option<String>,
 }
 
 pub const CHAIN_KINDS: [&str; 4] = ["user", "assistant", "system", "attachment"];
-pub const STATE_KINDS: [&str; 6] = ["ai-title", "last-prompt", "permission-mode", "mode", "file-history-snapshot", "queue-operation"];
+pub const STATE_KINDS: [&str; 7] =
+    ["ai-title", "custom-title", "last-prompt", "permission-mode", "mode", "file-history-snapshot", "queue-operation"];

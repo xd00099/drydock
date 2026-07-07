@@ -10,6 +10,14 @@ pub struct SessionView {
     pub session_id: String,
     pub project_path: String,
     pub title: String,
+    /// Where `title` came from (custom-title | ai-title | recap | slug |
+    /// first-prompt | session-id). A custom-title is user-set and outranks
+    /// even the card summary in the UI.
+    pub title_source: String,
+    /// A rename made in Drydock's own UI (stored beside starred/hidden, never
+    /// in ~/.claude). Outranks EVERY other source, including claude's own
+    /// custom-title — the frontend disclosure lives in the row tooltip.
+    pub name: Option<String>,
     /// AI summary from the card (~5 words); the sidebar renders it over `title`.
     pub summary: Option<String>,
     pub latest_recap: Option<String>,
@@ -106,13 +114,26 @@ struct FlagsBackup {
     /// (session_id, folder_id) memberships.
     #[serde(default)]
     folder_sessions: Vec<(String, String)>,
+    /// (session_id, name) Drydock-side renames.
+    #[serde(default)] // older backups predate this field
+    names: Vec<(String, String)>,
 }
 
 fn backup_path(app: &AppHandle) -> PathBuf {
     app.path().app_data_dir().expect("no app data dir").join("flags-backup.json")
 }
 
+/// write_backup is a no-op until restore_backup has run once this app run.
+/// Without this gate, a rename/star/hide made while the initial sync is still
+/// rebuilding a fresh drydock.db would serialize the NEAR-EMPTY store over
+/// flags-backup.json — destroying the very backup restore_backup was about to
+/// read, and with it every name/star/flag from before the rebuild.
+static BACKUP_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn write_backup(app: &AppHandle, store: &Store) {
+    if !BACKUP_READY.load(std::sync::atomic::Ordering::SeqCst) {
+        return; // the store still has it; the first post-restore mutation persists everything
+    }
     let stars: Vec<String> = store
         .list_sessions()
         .map(|v| v.into_iter().filter(|s| s.starred).map(|s| s.session_id).collect())
@@ -123,8 +144,15 @@ fn write_backup(app: &AppHandle, store: &Store) {
         .map(|v| v.into_iter().map(|f| (f.folder_id, f.name)).collect())
         .unwrap_or_default();
     let folder_sessions = store.folder_memberships().unwrap_or_default();
-    if let Ok(json) = serde_json::to_string(&FlagsBackup { stars, hidden, folders, folder_sessions }) {
-        let _ = std::fs::write(backup_path(app), json);
+    let names = store.session_names().unwrap_or_default();
+    if let Ok(json) = serde_json::to_string(&FlagsBackup { stars, hidden, folders, folder_sessions, names }) {
+        // atomic replace (tmp + rename): a crash mid-write must leave the OLD
+        // complete backup, never a truncated one that restore can't parse
+        let dest = backup_path(app);
+        let tmp = dest.with_extension("json.tmp");
+        if std::fs::write(&tmp, json).is_ok() {
+            let _ = std::fs::rename(&tmp, &dest);
+        }
     }
 }
 
@@ -163,6 +191,16 @@ fn restore_backup(app: &AppHandle, store: &mut Store) {
             let _ = store.set_session_folder(sid, Some(fid));
         }
     }
+    // Names: like hidden/memberships, restored WITHOUT a session-exists check
+    // (a not-yet-synced session must get its name back when it returns) and
+    // never clobbering a rename made since the backup was written.
+    let named_now: std::collections::HashSet<String> =
+        store.session_names().unwrap_or_default().into_iter().map(|(sid, _)| sid).collect();
+    for (sid, name) in &b.names {
+        if !named_now.contains(sid) {
+            let _ = store.set_session_name(sid, name);
+        }
+    }
 }
 
 fn db_path(app: &AppHandle) -> PathBuf {
@@ -193,9 +231,29 @@ pub fn start(app: &AppHandle) -> anyhow::Result<()> {
             let restore_db = db_for_restore.clone();
             let emit = emit_handle.clone();
             if let Err(e) = drydock_core::watcher::watch_with(&claude, &db, move |_report| {
-                if !restored.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                // mark restored only on SUCCESS: if the open loses a lock race
+                // this callback, the next sync retries — a skipped restore
+                // must not silently disable backups for the whole run
+                if !restored.load(std::sync::atomic::Ordering::SeqCst) {
                     if let Ok(mut s) = Store::open(&restore_db) {
                         restore_backup(&restore_handle, &mut s);
+                        // only now may mutations overwrite the backup file;
+                        // persist the merged (restored + any new) state once
+                        BACKUP_READY.store(true, std::sync::atomic::Ordering::SeqCst);
+                        write_backup(&restore_handle, &s);
+                        restored.store(true, std::sync::atomic::Ordering::SeqCst);
+                        // one-time usage backfill, AFTER the first sync: sync
+                        // offsets sit at EOF then, so replace_usage's full-file
+                        // sums can't be double-counted by the incremental path
+                        if s.meta_get("usage_backfill").ok().flatten().as_deref() != Some("v2") {
+                            match drydock_core::sync::backfill_usage(&mut s, &claude_dir()) {
+                                Ok(n) => {
+                                    let _ = s.meta_set("usage_backfill", "v2"); // v2: message.id dedupe + offset-bounded reads
+                                    eprintln!("drydock: usage backfill covered {n} transcripts");
+                                }
+                                Err(e) => eprintln!("drydock: usage backfill failed (retries next run): {e:#}"),
+                            }
+                        }
                     }
                 }
                 let _ = emit.emit("index-updated", ());
@@ -261,6 +319,8 @@ pub fn sessions_snapshot(
         store.folder_memberships().map_err(|e| e.to_string())?.into_iter().collect();
     let hues: std::collections::HashMap<String, f64> =
         store.session_hues().map_err(|e| e.to_string())?.into_iter().collect();
+    let names: std::collections::HashMap<String, String> =
+        store.session_names().map_err(|e| e.to_string())?.into_iter().collect();
     let sessions = store
         .list_sessions()
         .map_err(|e| e.to_string())?
@@ -268,6 +328,7 @@ pub fn sessions_snapshot(
         .map(|r| {
             let attn = waiting.get(&r.session_id).filter(|_| r.live_status != "ended");
             SessionView {
+                name: names.get(&r.session_id).cloned(),
                 summary: summaries.get(&r.session_id).cloned(),
                 live_status: if attn.is_some() { "needs_input".to_string() } else { r.live_status },
                 attention: attn.map(|w| w.message.clone()),
@@ -276,6 +337,7 @@ pub fn sessions_snapshot(
                 session_id: r.session_id,
                 project_path: r.project_path,
                 title: r.title,
+                title_source: r.title_source,
                 latest_recap: r.latest_recap,
                 last_message_at: r.last_message_at,
                 starred: r.starred,
@@ -306,6 +368,16 @@ pub fn set_starred(app: AppHandle, db: State<'_, AppDb>, session_id: String, sta
 pub fn set_hidden(app: AppHandle, db: State<'_, AppDb>, session_id: String, hidden: bool) -> Result<(), String> {
     let store = db.0.lock().unwrap();
     store.set_session_hidden(&session_id, hidden).map_err(|e| e.to_string())?;
+    write_backup(&app, &store);
+    Ok(())
+}
+
+/// Rename a session in Drydock. The name lives in Drydock's own index (beside
+/// starred/hidden) — the ~/.claude transcript is never touched. Blank clears.
+#[tauri::command]
+pub fn set_session_name(app: AppHandle, db: State<'_, AppDb>, session_id: String, name: String) -> Result<(), String> {
+    let store = db.0.lock().unwrap();
+    store.set_session_name(&session_id, &name).map_err(|e| e.to_string())?;
     write_backup(&app, &store);
     Ok(())
 }
@@ -395,6 +467,17 @@ fn is_safe_transcript(p: &std::path::Path, claude: &std::path::Path, session_id:
         && p.file_stem().and_then(|s| s.to_str()) == Some(session_id)
 }
 
+/// A sidecar dir is safe to delete only if it's `<claude>/projects/<proj>/<id>`
+/// — the session's own uuid-named directory (subagents/tool-results/workflows
+/// live inside it). Same posture as is_safe_transcript: exact-name match under
+/// projects, or refuse.
+fn is_safe_sidecar_dir(p: &std::path::Path, claude: &std::path::Path, session_id: &str) -> bool {
+    p.starts_with(claude.join("projects"))
+        && p.is_dir()
+        && p.file_name().and_then(|s| s.to_str()) == Some(session_id)
+        && p.parent().is_some_and(|proj| proj.parent() == Some(&claude.join("projects")))
+}
+
 fn remove_session(store: &mut Store, claude: &std::path::Path, session_id: &str) -> Result<(), String> {
     if let Some(path) = store.transcript_path(session_id).map_err(|e| e.to_string())? {
         let p = PathBuf::from(&path);
@@ -405,6 +488,18 @@ fn remove_session(store: &mut Store, claude: &std::path::Path, session_id: &str)
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // already gone
             Err(e) => return Err(format!("could not delete transcript: {e}")),
+        }
+    }
+    // sweep the session's sidecar dirs too (subagents, tool-results, workflows)
+    // — leaving them would let the watcher re-index orphan agent files, and
+    // "delete permanently" should mean all of it. Best-effort per dir, behind
+    // the same style of exact-match guard as the transcript delete.
+    if let Ok(projects) = std::fs::read_dir(claude.join("projects")) {
+        for proj in projects.flatten() {
+            let side = proj.path().join(session_id);
+            if is_safe_sidecar_dir(&side, claude, session_id) {
+                let _ = std::fs::remove_dir_all(&side);
+            }
         }
     }
     store.delete_session(session_id).map_err(|e| e.to_string())
@@ -470,5 +565,14 @@ mod tests {
         std::fs::remove_file(&file).unwrap(); // file vanished out from under us
         remove_session(&mut store, tmp.path(), SID).unwrap(); // still drops the index row
         assert!(store.get_session(SID).unwrap().is_none());
+    }
+
+    #[test]
+    fn old_backup_json_without_names_still_parses() {
+        // flags-backup.json written before the rename feature has no `names`
+        let b: FlagsBackup =
+            serde_json::from_str(r#"{"stars":["a"],"hidden":[],"folders":[],"folder_sessions":[]}"#).unwrap();
+        assert!(b.names.is_empty());
+        assert_eq!(b.stars, vec!["a"]);
     }
 }

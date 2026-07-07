@@ -32,6 +32,9 @@ pub struct Entry {
     pub meta: bool,
     /// tool_result with is_error, for red styling.
     pub error: bool,
+    /// Full output on disk (tool results >50K chars are spilled by Claude Code
+    /// to <session>/tool-results/*.txt); the view offers to open it.
+    pub persisted_path: Option<String>,
     pub ts: Option<i64>,
 }
 
@@ -140,14 +143,26 @@ fn result_snippet(content: Option<&Value>) -> String {
     }
 }
 
+/// A spilled-output path must be absolute, traversal-free, and inside a
+/// `tool-results` sidecar dir. (The open affordance additionally refuses
+/// executables and type-actionable files at open time.)
+fn is_plausible_spill_path(p: &str) -> bool {
+    let path = Path::new(p);
+    path.is_absolute()
+        && path.components().all(|c| !matches!(c, std::path::Component::ParentDir))
+        && path
+            .components()
+            .any(|c| matches!(c, std::path::Component::Normal(s) if s == "tool-results"))
+}
+
 fn entry(kind: &str, text: String, ts: Option<i64>) -> Entry {
-    Entry { kind: kind.to_string(), text, tool: None, tool_use_id: None, meta: false, error: false, ts }
+    Entry { kind: kind.to_string(), text, tool: None, tool_use_id: None, meta: false, error: false, persisted_path: None, ts }
 }
 
 /// Parse one raw record into display entries (usually 0–3: an assistant record
 /// can carry thinking + text + tool calls).
-fn entries_from_record(v: &Value, out: &mut Vec<Entry>) {
-    if v.get("isSidechain").and_then(Value::as_bool).unwrap_or(false) {
+fn entries_from_record(v: &Value, include_sidechain: bool, out: &mut Vec<Entry>) {
+    if !include_sidechain && v.get("isSidechain").and_then(Value::as_bool).unwrap_or(false) {
         return; // subagent traffic renders in its own transcript, not here
     }
     let ts = ts_ms(v);
@@ -179,6 +194,18 @@ fn entries_from_record(v: &Value, out: &mut Vec<Entry>) {
                     }
                 }
                 Some(Value::Array(blocks)) => {
+                    // spilled full output: trustworthy only when the record has
+                    // exactly ONE tool_result to attribute it to, and only when
+                    // the path LOOKS like a tool-results spill — transcript
+                    // content is attacker-influenced, so an arbitrary absolute
+                    // path must never ride into the UI's "open" affordance
+                    let persisted = v
+                        .pointer("/toolUseResult/persistedOutputPath")
+                        .and_then(Value::as_str)
+                        .filter(|p| is_plausible_spill_path(p))
+                        .filter(|_| {
+                            blocks.iter().filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result")).count() == 1
+                        });
                     for b in blocks {
                         match b.get("type").and_then(Value::as_str) {
                             Some("text") => {
@@ -208,6 +235,7 @@ fn entries_from_record(v: &Value, out: &mut Vec<Entry>) {
                                 let mut e = entry("tool_result", result_snippet(b.get("content")), ts);
                                 e.tool_use_id = b.get("tool_use_id").and_then(Value::as_str).map(String::from);
                                 e.error = b.get("is_error").and_then(Value::as_bool).unwrap_or(false);
+                                e.persisted_path = persisted.map(String::from);
                                 out.push(e);
                             }
                             _ => {} // images, future block types
@@ -225,6 +253,12 @@ fn entries_from_record(v: &Value, out: &mut Vec<Entry>) {
 /// complete new line. A file shorter than the offset was rewritten: start over
 /// (reset=true). Malformed lines are skipped.
 pub fn read_page(path: &Path, from_offset: u64) -> std::io::Result<Page> {
+    read_page_with(path, from_offset, false)
+}
+
+/// `include_sidechain: true` renders a SUBAGENT transcript file, where every
+/// record carries isSidechain (a main transcript keeps excluding those).
+pub fn read_page_with(path: &Path, from_offset: u64, include_sidechain: bool) -> std::io::Result<Page> {
     let size = std::fs::metadata(path)?.len();
     let (start, reset) = if from_offset > size { (0, true) } else { (from_offset, false) };
 
@@ -240,7 +274,7 @@ pub fn read_page(path: &Path, from_offset: u64) -> std::io::Result<Page> {
     let mut entries = Vec::new();
     for line in text.lines() {
         if let Ok(v) = serde_json::from_str::<Value>(line) {
-            entries_from_record(&v, &mut entries);
+            entries_from_record(&v, include_sidechain, &mut entries);
         }
     }
     Ok(Page { entries, next_offset: start + consumed as u64, reset })
@@ -320,12 +354,18 @@ struct PendingTouch {
 /// Parses records directly (not via display entries) so paths are never
 /// truncated and the result records' `toolUseResult` diffs are reachable.
 pub fn files_touched(path: &Path) -> std::io::Result<Vec<FileTouch>> {
+    files_touched_with(path, false)
+}
+
+/// `include_sidechain: true` counts a SUBAGENT transcript's edits — used to
+/// aggregate a session's full footprint across its agent sidecar files.
+pub fn files_touched_with(path: &Path, include_sidechain: bool) -> std::io::Result<Vec<FileTouch>> {
     let text = std::fs::read_to_string(path)?;
     let mut pending: Vec<PendingTouch> = Vec::new();
     let mut by_id: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for line in text.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
-        if v.get("isSidechain").and_then(Value::as_bool).unwrap_or(false) {
+        if !include_sidechain && v.get("isSidechain").and_then(Value::as_bool).unwrap_or(false) {
             continue; // a subagent's edits belong to its own transcript
         }
         let kind = v.get("type").and_then(Value::as_str).unwrap_or("");
@@ -462,6 +502,35 @@ mod tests {
                 "compact",
             ]
         );
+    }
+
+    #[test]
+    fn spilled_tool_result_carries_its_persisted_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("s.jsonl");
+        // one tool_result + persistedOutputPath → attached
+        let single = serde_json::json!({
+            "type": "user", "uuid": "u1", "timestamp": "2026-07-01T00:00:00.000Z",
+            "toolUseResult": {"persistedOutputPath": "/Users/dev/.claude/projects/p/s/tool-results/abc.txt"},
+            "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "<persisted-output>\nOutput too large…"}
+            ]}
+        });
+        // two tool_results in one record → ambiguous, attach to neither
+        let ambiguous = serde_json::json!({
+            "type": "user", "uuid": "u2", "timestamp": "2026-07-01T00:00:01.000Z",
+            "toolUseResult": {"persistedOutputPath": "/tmp/other.txt"},
+            "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t2", "content": "a"},
+                {"type": "tool_result", "tool_use_id": "t3", "content": "b"}
+            ]}
+        });
+        std::fs::write(&p, format!("{single}\n{ambiguous}\n")).unwrap();
+        let page = read_page(&p, 0).unwrap();
+        let results: Vec<&Entry> = page.entries.iter().filter(|e| e.kind == "tool_result").collect();
+        assert_eq!(results[0].persisted_path.as_deref(), Some("/Users/dev/.claude/projects/p/s/tool-results/abc.txt"));
+        assert_eq!(results[1].persisted_path, None);
+        assert_eq!(results[2].persisted_path, None);
     }
 
     #[test]

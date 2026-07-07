@@ -279,14 +279,18 @@ pub fn mcp_servers(project_path: Option<&str>) -> Vec<McpServer> {
 // ---- live status (claude mcp list) --------------------------------------
 
 /// Map one server's trailing status text to a stable token the UI styles.
+/// Failure/pending markers are checked BEFORE the connected ones: since
+/// 2.1.181 the CLI emits degraded lines like "! Connected · tools fetch
+/// failed", which contain the word "connected" but describe an unusable
+/// server — matching "connected" first painted those green.
 fn classify_status(rest: &str) -> &'static str {
     let lower = rest.to_ascii_lowercase();
-    if rest.contains('✓') || lower.contains("connected") {
-        "connected"
-    } else if rest.contains('✗') || lower.contains("failed") {
-        "failed"
-    } else if rest.contains('⏸') || lower.contains("pending") {
+    if rest.contains('⏸') || lower.contains("pending") {
         "pending"
+    } else if rest.contains('✗') || lower.contains("failed") || lower.contains("error") {
+        "failed"
+    } else if rest.contains('✓') || lower.contains("connected") {
+        "connected"
     } else {
         "unknown"
     }
@@ -308,7 +312,10 @@ pub fn parse_mcp_list(output: &str) -> Vec<(String, String, String)> {
         if name.is_empty() || name.contains(char::is_whitespace) {
             continue;
         }
-        out.push((name.to_string(), classify_status(rest).to_string(), rest.trim().to_string()));
+        // classify from the STATUS segment only (after the last " - "): a
+        // detail like "npx error-recovery-server" must not trip the keywords
+        let status_seg = rest.rsplit_once(" - ").map(|(_, s)| s).unwrap_or(rest);
+        out.push((name.to_string(), classify_status(status_seg).to_string(), rest.trim().to_string()));
     }
     out
 }
@@ -477,6 +484,27 @@ mod tests {
         assert_eq!(brief, vec![("github", "connected"), ("sentry", "failed"), ("local-fs", "pending")]);
         // the raw CLI text rides along for the UI tooltip
         assert_eq!(got[1].2, "npx -y @sentry/mcp-server - ✗ Failed to connect");
+    }
+
+    #[test]
+    fn status_keywords_in_the_detail_do_not_misclassify() {
+        // "error"/"connected" inside the COMMAND text must not decide the dot —
+        // only the segment after the last " - " is the status
+        let got = parse_mcp_list("recover: npx error-recovery-server - ✓ Connected");
+        assert_eq!(got[0].1, "connected");
+        let got = parse_mcp_list("relay: npx connected-relay - ✗ Failed to connect");
+        assert_eq!(got[0].1, "failed");
+    }
+
+    #[test]
+    fn degraded_connected_lines_are_not_green() {
+        // 2.1.181+: connected transport, broken tools listing — must not read
+        // as healthy just because the word "Connected" appears
+        let got = parse_mcp_list("broken: npx broken-server - ! Connected · tools fetch failed");
+        assert_eq!(got[0].1, "failed");
+        // and 2.1.154+ pending-approval phrasing without the ⏸ glyph
+        let got = parse_mcp_list("newsrv: ./server.js - Pending approval (project .mcp.json)");
+        assert_eq!(got[0].1, "pending");
     }
 
     #[test]

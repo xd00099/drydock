@@ -11,9 +11,11 @@ type Props = {
   open: boolean
   onClose: () => void
   onPick: (s: SessionView, transcript: boolean) => void
+  // open the Home overlay (usage + recap log) without leaving the tab
+  onOverlay?: () => void
 }
 
-export default function SearchPalette({ open, onClose, onPick }: Props) {
+export default function SearchPalette({ open, onClose, onPick, onOverlay }: Props) {
   const [q, setQ] = useState('')
   const [resp, setResp] = useState<SearchResponse>({ results: [], semantic: 'unavailable' })
   const [sel, setSel] = useState(0)
@@ -44,7 +46,7 @@ export default function SearchPalette({ open, onClose, onPick }: Props) {
   if (!open) return null
   const results = resp.results
   return (
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', display: 'flex', justifyContent: 'center', paddingTop: 80, zIndex: 50 }}>
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', display: 'flex', justifyContent: 'center', paddingTop: 80, zIndex: 95 }}>
       <div onClick={(e) => e.stopPropagation()} style={{ width: 640, maxHeight: '70vh', background: '#161c25', borderRadius: 10, overflow: 'hidden', display: 'flex', flexDirection: 'column', fontFamily: 'system-ui', fontSize: 13, color: '#c8cdd5' }}>
         <input
           ref={inputRef}
@@ -76,6 +78,19 @@ export default function SearchPalette({ open, onClose, onPick }: Props) {
           <div style={{ padding: '4px 14px', color: '#5b6675', fontSize: 11 }}>
             {resp.semantic === 'indexing' ? 'semantic index catching up — keyword results' : 'keyword search'}
           </div>
+        )}
+        {/* Command row — pinned on empty query, or when explicitly asked for
+            by keyword. NEVER interleaved with session results and NEVER part
+            of the arrow-key selection: typing = searching sessions, always. */}
+        {onOverlay && (q === '' || /^(usage|recaps?|log|timeline|home)/i.test(q.trim())) && (
+          <button
+            onClick={onOverlay}
+            style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid #1d2530', color: '#9aa3af', cursor: 'pointer', padding: '7px 14px', fontSize: 12, fontFamily: 'system-ui' }}
+          >
+            <span style={{ color: '#5a7fb0' }}>◱</span>
+            <span style={{ flex: 1 }}>Usage &amp; recap log</span>
+            <span style={{ color: '#4a5462', fontSize: 10 }}>overlay · ⌘0 for Home</span>
+          </button>
         )}
         <div ref={listRef} style={{ overflowY: 'auto' }}>
           {results.map((r, i) => (

@@ -157,10 +157,11 @@ pub fn init(app: &AppHandle) -> tauri::Result<()> {
 }
 
 fn session_label(app: &AppHandle, session_id: &str) -> String {
+    // same precedence as the sidebar (Drydock name > custom-title > card
+    // summary > title) — a renamed session must read the same in the tray
     let title = app
         .try_state::<crate::index::AppDb>()
-        .and_then(|db| db.0.lock().unwrap().get_session(session_id).ok().flatten())
-        .map(|r| r.title);
+        .and_then(|db| db.0.lock().unwrap().display_label(session_id).ok().flatten());
     match title {
         Some(t) if !t.trim().is_empty() => t,
         _ => session_id.chars().take(8).collect(),

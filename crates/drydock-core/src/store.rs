@@ -21,11 +21,22 @@ pub struct SessionRow {
     pub git_branch: Option<String>,
     pub cli_version: Option<String>,
     pub ai_title: Option<String>,
+    pub custom_title: Option<String>,
     pub slug: Option<String>,
     pub starred: bool,
     pub hidden: bool,
     pub live_status: String,
     pub live_pid: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageRow {
+    pub scope: String,
+    pub model: String,
+    pub input: i64,
+    pub output: i64,
+    pub cache_read: i64,
+    pub cache_creation: i64,
 }
 
 /// One user-created sidebar folder, in band order.
@@ -43,6 +54,10 @@ pub struct SyncState {
     pub mtime: i64,
     /// Hex of the last <=64 bytes before byte_offset; None for pre-migration rows.
     pub tail_hex: Option<String>,
+    /// message.id of the last usage-counted record: a multi-block turn can
+    /// straddle two sync batches, and its repeated usage lines must not be
+    /// re-counted at the start of the next batch.
+    pub last_usage_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -54,6 +69,26 @@ pub struct Card {
     pub timeline: String,
     pub generated_at: i64,
     pub at_message_count: i64,
+}
+
+/// One row of the Home "what happened" digest: a session's distilled recap,
+/// filed under the day it was last active.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecapRow {
+    pub session_id: String,
+    pub project_path: String,
+    /// A genuine short name (Drydock name > custom title > AI title > slug);
+    /// None when the session has none. Deliberately NOT `title`: title
+    /// resolution falls back to the recap itself, and a label that echoes
+    /// `summary` says nothing twice.
+    pub label: Option<String>,
+    /// Card summary, else latest_recap. Sessions with neither are omitted —
+    /// the digest is a log of summarized work, not a session list.
+    pub summary: String,
+    /// The card's timeline JSON (shape owned by the app layer); '[]' when the
+    /// session has a recap but no card yet.
+    pub timeline: String,
+    pub last_message_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -84,7 +119,7 @@ CREATE TABLE IF NOT EXISTS sessions(
   last_message_at INTEGER,
   message_count INTEGER NOT NULL DEFAULT 0,
   user_message_count INTEGER NOT NULL DEFAULT 0,
-  git_branch TEXT, cli_version TEXT, ai_title TEXT, slug TEXT,
+  git_branch TEXT, cli_version TEXT, ai_title TEXT, custom_title TEXT, slug TEXT,
   starred INTEGER NOT NULL DEFAULT 0,
   hidden INTEGER NOT NULL DEFAULT 0,
   live_status TEXT NOT NULL DEFAULT 'ended',
@@ -96,21 +131,46 @@ CREATE TABLE IF NOT EXISTS chunks(
   seq INTEGER NOT NULL,
   role TEXT NOT NULL,
   text TEXT NOT NULL,
-  ts INTEGER
+  ts INTEGER,
+  agent_id TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_chunks_session ON chunks(session_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_session_seq ON chunks(session_id, seq);
 CREATE TABLE IF NOT EXISTS sync_state(
   file_path TEXT PRIMARY KEY,
   session_id TEXT NOT NULL,
   byte_offset INTEGER NOT NULL,
   mtime INTEGER NOT NULL,
-  tail_hex TEXT
+  tail_hex TEXT,
+  is_agent INTEGER NOT NULL DEFAULT 0,
+  last_usage_id TEXT
 );
 -- Sessions the user hid from Drydock (kept in its own table so re-syncs, which
 -- recompute the ghost `hidden` column, can't clobber the user's choice).
 CREATE TABLE IF NOT EXISTS hidden_sessions(
   session_id TEXT PRIMARY KEY,
   hidden_at INTEGER NOT NULL
+);
+-- User renames made in Drydock's UI. A Drydock-side override (we never write
+-- ~/.claude), in its own table for the same reason as hidden_sessions: re-syncs
+-- rewrite session rows and must never clobber the user's names. No FK: a name
+-- outlives transcript expiry and reattaches when the session returns.
+CREATE TABLE IF NOT EXISTS session_names(
+  session_id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  named_at INTEGER NOT NULL
+);
+-- Token usage per session, summed from transcript assistant records. scope =
+-- 'main' for the session's own transcript, or the agent_id for a subagent
+-- sidecar (so pruning one agent file can subtract exactly its share).
+CREATE TABLE IF NOT EXISTS session_usage(
+  session_id TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  model TEXT NOT NULL,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (session_id, scope, model)
 );
 -- User-created sidebar folders ('working groups') and their members. Own
 -- tables for the same reason as hidden_sessions: re-syncs rewrite session
@@ -163,9 +223,15 @@ CREATE TABLE IF NOT EXISTS cards(
 /// Additive migrations for DBs created by older Drydock versions.
 /// ALTER fails harmlessly when the column already exists (fresh SCHEMA has it).
 fn migrate(conn: &Connection) {
+    let _ = conn.execute("ALTER TABLE sync_state ADD COLUMN last_usage_id TEXT", []);
     let _ = conn.execute("ALTER TABLE sessions ADD COLUMN live_status TEXT NOT NULL DEFAULT 'ended'", []);
     let _ = conn.execute("ALTER TABLE sessions ADD COLUMN live_pid INTEGER", []);
     let _ = conn.execute("ALTER TABLE sync_state ADD COLUMN tail_hex TEXT", []);
+    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN custom_title TEXT", []);
+    let _ = conn.execute("ALTER TABLE chunks ADD COLUMN agent_id TEXT", []);
+    let _ = conn.execute("ALTER TABLE sync_state ADD COLUMN is_agent INTEGER NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_session_seq ON chunks(session_id, seq)", []);
+    let _ = conn.execute("DROP INDEX IF EXISTS idx_chunks_session", []);
     // Project-level pins were removed; drop the table on existing DBs.
     let _ = conn.execute("DROP TABLE IF EXISTS pins", []);
     // Cards moved from {goal,state,next_step} to {summary,timeline}. The old
@@ -287,6 +353,7 @@ impl Store {
             last_prompt: d.last_prompt.clone().or_else(|| existing.as_ref().and_then(|e| e.last_prompt.clone())),
             latest_recap: d.latest_recap.clone().or_else(|| existing.as_ref().and_then(|e| e.latest_recap.clone())),
             ai_title: d.ai_title.clone().or_else(|| existing.as_ref().and_then(|e| e.ai_title.clone())),
+            custom_title: d.custom_title.clone().or_else(|| existing.as_ref().and_then(|e| e.custom_title.clone())),
             slug: d.slug.clone().or_else(|| existing.as_ref().and_then(|e| e.slug.clone())),
             last_message_at: match (d.last_message_at, existing.as_ref().and_then(|e| e.last_message_at)) {
                 (Some(a), Some(b)) => Some(a.max(b)),
@@ -304,8 +371,8 @@ impl Store {
         tx.execute(
             "INSERT INTO sessions(session_id, project_path, title, title_source, latest_recap,
                first_prompt, last_prompt, last_message_at, message_count, user_message_count,
-               git_branch, cli_version, ai_title, slug, hidden)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
+               git_branch, cli_version, ai_title, custom_title, slug, hidden)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
              ON CONFLICT(session_id) DO UPDATE SET
                project_path=excluded.project_path, title=excluded.title,
                title_source=excluded.title_source, latest_recap=excluded.latest_recap,
@@ -313,14 +380,15 @@ impl Store {
                last_message_at=excluded.last_message_at, message_count=excluded.message_count,
                user_message_count=excluded.user_message_count, git_branch=excluded.git_branch,
                cli_version=excluded.cli_version, ai_title=excluded.ai_title,
-               slug=excluded.slug, hidden=excluded.hidden",
+               custom_title=excluded.custom_title, slug=excluded.slug, hidden=excluded.hidden",
             params![
                 session_id, merged.project_path.clone().unwrap_or_default(), title, title_source,
                 merged.latest_recap, merged.first_prompt, merged.last_prompt, merged.last_message_at,
                 merged.message_count, merged.user_message_count, merged.git_branch,
-                merged.cli_version, merged.ai_title, merged.slug, hidden as i64
+                merged.cli_version, merged.ai_title, merged.custom_title, merged.slug, hidden as i64
             ],
         )?;
+
 
         let next_seq: i64 = tx.query_row(
             "SELECT COALESCE(MAX(seq), -1) + 1 FROM chunks WHERE session_id = ?1",
@@ -345,7 +413,7 @@ impl Store {
         Ok(conn.query_row(
             "SELECT session_id, project_path, title, title_source, latest_recap, first_prompt,
                     last_prompt, last_message_at, message_count, user_message_count, git_branch,
-                    cli_version, ai_title, slug, starred, hidden, live_status, live_pid
+                    cli_version, ai_title, custom_title, slug, starred, hidden, live_status, live_pid
              FROM sessions WHERE session_id = ?1",
             params![session_id],
             |r| Ok(SessionRow {
@@ -353,9 +421,9 @@ impl Store {
                 title_source: r.get(3)?, latest_recap: r.get(4)?, first_prompt: r.get(5)?,
                 last_prompt: r.get(6)?, last_message_at: r.get(7)?, message_count: r.get(8)?,
                 user_message_count: r.get(9)?, git_branch: r.get(10)?, cli_version: r.get(11)?,
-                ai_title: r.get(12)?, slug: r.get(13)?,
-                starred: r.get::<_, i64>(14)? != 0, hidden: r.get::<_, i64>(15)? != 0,
-                live_status: r.get(16)?, live_pid: r.get(17)?,
+                ai_title: r.get(12)?, custom_title: r.get(13)?, slug: r.get(14)?,
+                starred: r.get::<_, i64>(15)? != 0, hidden: r.get::<_, i64>(16)? != 0,
+                live_status: r.get(17)?, live_pid: r.get(18)?,
             }),
         ).optional()?)
     }
@@ -403,7 +471,24 @@ impl Store {
         Ok(())
     }
 
+    /// Remove a session the USER deleted: everything goes, including the
+    /// user-flag tables (hidden/name/folder) — an explicit delete is the one
+    /// declaration that a session's flags shouldn't ever come back.
     pub fn delete_session(&mut self, session_id: &str) -> Result<()> {
+        self.delete_session_inner(session_id, true)
+    }
+
+    /// Remove a session's DERIVED data only (chunks, card, sync state, hues,
+    /// row) — the watcher's reparse/expiry paths. The user-flag tables
+    /// (hidden_sessions, session_names, folder_sessions) SURVIVE, honoring
+    /// their schema contract: a truncated/rewritten transcript is immediately
+    /// re-indexed as the same session, and an expired one may return — the
+    /// user's names, hidden flags and filings must reattach, not vanish.
+    pub fn delete_session_data(&mut self, session_id: &str) -> Result<()> {
+        self.delete_session_inner(session_id, false)
+    }
+
+    fn delete_session_inner(&mut self, session_id: &str, purge_flags: bool) -> Result<()> {
         let tx = self.conn.transaction()?;
         tx.execute("DELETE FROM chunks_fts WHERE session_id = ?1", params![session_id])?;
         tx.execute(
@@ -413,10 +498,89 @@ impl Store {
         tx.execute("DELETE FROM chunks WHERE session_id = ?1", params![session_id])?;
         tx.execute("DELETE FROM cards WHERE session_id = ?1", params![session_id])?;
         tx.execute("DELETE FROM sync_state WHERE session_id = ?1", params![session_id])?;
-        tx.execute("DELETE FROM hidden_sessions WHERE session_id = ?1", params![session_id])?;
-        tx.execute("DELETE FROM folder_sessions WHERE session_id = ?1", params![session_id])?;
+        tx.execute("DELETE FROM session_usage WHERE session_id = ?1", params![session_id])?;
+        if purge_flags {
+            tx.execute("DELETE FROM hidden_sessions WHERE session_id = ?1", params![session_id])?;
+            tx.execute("DELETE FROM session_names WHERE session_id = ?1", params![session_id])?;
+            tx.execute("DELETE FROM folder_sessions WHERE session_id = ?1", params![session_id])?;
+        }
         tx.execute("DELETE FROM session_hues WHERE session_id = ?1", params![session_id])?;
         tx.execute("DELETE FROM sessions WHERE session_id = ?1", params![session_id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Append a SUBAGENT transcript's chunks: searchable (FTS + embeddings)
+    /// under the parent session, but tagged with agent_id so get_chunks —
+    /// which feeds the transcript fallback, the enricher's card context and
+    /// the card-search backfill — never mixes agent traffic into the parent's
+    /// own conversation.
+    /// Returns false (writing nothing) unless the parent is a REAL indexed
+    /// session. The check lives inside the write transaction on purpose: a
+    /// radar STUB must not adopt agent content (stub cleanup would strand it),
+    /// and a concurrent delete_session_permanently must not race a
+    /// check-then-act gap into re-inserting chunks for a dead session. The
+    /// caller skips recording sync state when this returns false.
+    pub fn apply_agent_chunks(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        chunks: &[Chunk],
+        usage: &std::collections::HashMap<String, [i64; 4]>,
+    ) -> Result<bool> {
+        let tx = self.conn.transaction()?;
+        let parent_real: bool = tx
+            .query_row(
+                "SELECT 1 FROM sessions WHERE session_id = ?1 AND title_source != 'radar-stub'",
+                params![session_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !parent_real {
+            return Ok(false);
+        }
+        let next_seq: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(seq), -1) + 1 FROM chunks WHERE session_id = ?1",
+            params![session_id], |r| r.get(0),
+        )?;
+        for (i, c) in chunks.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO chunks(session_id, seq, role, text, ts, agent_id) VALUES (?1,?2,?3,?4,?5,?6)",
+                params![session_id, next_seq + i as i64, c.role, c.text, c.ts, agent_id],
+            )?;
+            let chunk_rowid = tx.last_insert_rowid();
+            tx.execute(
+                "INSERT INTO chunks_fts(text, chunk_id, session_id) VALUES (?1, ?2, ?3)",
+                params![c.text, chunk_rowid, session_id],
+            )?;
+        }
+        // the agent's tokens land under its own scope, same gate/tx: a stub
+        // must not adopt cost any more than content
+        for (model, [i, o, cr, cc]) in usage {
+            Self::add_usage_in_conn(&tx, session_id, agent_id, model, *i, *o, *cr, *cc)?;
+        }
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Drop one subagent file's derived data (its chunks + its sync row) —
+    /// the parent session stays intact. Used when CC prunes an agent file.
+    pub fn delete_agent_file(&mut self, file_path: &str, session_id: &str, agent_id: &str) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "DELETE FROM chunks_fts WHERE chunk_id IN
+               (SELECT chunk_id FROM chunks WHERE session_id = ?1 AND agent_id = ?2)",
+            params![session_id, agent_id],
+        )?;
+        tx.execute(
+            "DELETE FROM chunk_embeddings WHERE chunk_id IN
+               (SELECT chunk_id FROM chunks WHERE session_id = ?1 AND agent_id = ?2)",
+            params![session_id, agent_id],
+        )?;
+        tx.execute("DELETE FROM chunks WHERE session_id = ?1 AND agent_id = ?2", params![session_id, agent_id])?;
+        tx.execute("DELETE FROM session_usage WHERE session_id = ?1 AND scope = ?2", params![session_id, agent_id])?;
+        tx.execute("DELETE FROM sync_state WHERE file_path = ?1", params![file_path])?;
         tx.commit()?;
         Ok(())
     }
@@ -426,20 +590,27 @@ impl Store {
             params![session_id], |r| r.get(0))?)
     }
 
-    pub fn set_sync_state(&mut self, file_path: &str, session_id: &str, byte_offset: i64, mtime: i64, tail_hex: Option<&str>) -> Result<()> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_sync_state(&mut self, file_path: &str, session_id: &str, byte_offset: i64, mtime: i64, tail_hex: Option<&str>, last_usage_id: Option<&str>) -> Result<()> {
+        self.set_sync_state_kind(file_path, session_id, byte_offset, mtime, tail_hex, false, last_usage_id)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_sync_state_kind(&mut self, file_path: &str, session_id: &str, byte_offset: i64, mtime: i64, tail_hex: Option<&str>, is_agent: bool, last_usage_id: Option<&str>) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO sync_state(file_path, session_id, byte_offset, mtime, tail_hex) VALUES (?1,?2,?3,?4,?5)
+            "INSERT INTO sync_state(file_path, session_id, byte_offset, mtime, tail_hex, is_agent, last_usage_id) VALUES (?1,?2,?3,?4,?5,?6,?7)
              ON CONFLICT(file_path) DO UPDATE SET session_id=excluded.session_id,
-               byte_offset=excluded.byte_offset, mtime=excluded.mtime, tail_hex=excluded.tail_hex",
-            params![file_path, session_id, byte_offset, mtime, tail_hex])?;
+               byte_offset=excluded.byte_offset, mtime=excluded.mtime, tail_hex=excluded.tail_hex,
+               is_agent=excluded.is_agent, last_usage_id=excluded.last_usage_id",
+            params![file_path, session_id, byte_offset, mtime, tail_hex, is_agent as i64, last_usage_id])?;
         Ok(())
     }
 
     pub fn get_sync_state(&self, file_path: &str) -> Result<Option<SyncState>> {
         Ok(self.conn.query_row(
-            "SELECT session_id, byte_offset, mtime, tail_hex FROM sync_state WHERE file_path = ?1",
+            "SELECT session_id, byte_offset, mtime, tail_hex, last_usage_id FROM sync_state WHERE file_path = ?1",
             params![file_path],
-            |r| Ok(SyncState { session_id: r.get(0)?, byte_offset: r.get(1)?, mtime: r.get(2)?, tail_hex: r.get(3)? }),
+            |r| Ok(SyncState { session_id: r.get(0)?, byte_offset: r.get(1)?, mtime: r.get(2)?, tail_hex: r.get(3)?, last_usage_id: r.get(4)? }),
         ).optional()?)
     }
 
@@ -463,10 +634,30 @@ impl Store {
                 )?;
             }
         }
-        tx.execute(
-            "DELETE FROM sessions WHERE live_status = 'ended' AND title_source = 'radar-stub'",
-            [],
-        )?;
+        // ended stubs cascade like any delete: agent sidecar chunks can attach
+        // to a stub (race), and a bare row delete would strand them forever
+        let dead: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT session_id FROM sessions WHERE live_status = 'ended' AND title_source = 'radar-stub'",
+            )?;
+            let ids = stmt.query_map([], |r| r.get(0))?.collect::<Result<Vec<String>, _>>()?;
+            ids
+        };
+        for sid in &dead {
+            tx.execute("DELETE FROM chunks_fts WHERE session_id = ?1", params![sid])?;
+            tx.execute(
+                "DELETE FROM chunk_embeddings WHERE chunk_id IN (SELECT chunk_id FROM chunks WHERE session_id = ?1)",
+                params![sid],
+            )?;
+            tx.execute("DELETE FROM chunks WHERE session_id = ?1", params![sid])?;
+            tx.execute("DELETE FROM sync_state WHERE session_id = ?1", params![sid])?;
+            tx.execute("DELETE FROM session_hues WHERE session_id = ?1", params![sid])?;
+            // a stub that dies transcript-less can never reattach a name —
+            // without this, renaming a stub leaves an orphan row carried into
+            // every backup forever
+            tx.execute("DELETE FROM session_names WHERE session_id = ?1", params![sid])?;
+            tx.execute("DELETE FROM sessions WHERE session_id = ?1", params![sid])?;
+        }
         tx.commit()?;
         Ok(())
     }
@@ -476,7 +667,10 @@ impl Store {
     /// shows in the transcript nor feeds back into the next card generation.
     pub fn get_chunks(&self, session_id: &str) -> Result<Vec<Chunk>> {
         let mut stmt = self.conn.prepare(
-            "SELECT role, text, ts FROM chunks WHERE session_id = ?1 AND role != 'card' ORDER BY seq",
+            // agent chunks are search-only: the transcript fallback and the
+            // enricher's card context must see the parent conversation alone
+            "SELECT role, text, ts FROM chunks
+             WHERE session_id = ?1 AND role != 'card' AND agent_id IS NULL ORDER BY seq",
         )?;
         let rows: Vec<Chunk> = stmt
             .query_map(params![session_id], |r| {
@@ -591,7 +785,8 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT c.chunk_id, c.text FROM chunks c
              LEFT JOIN chunk_embeddings e ON e.chunk_id = c.chunk_id
-             WHERE e.chunk_id IS NULL ORDER BY c.chunk_id LIMIT ?1",
+             WHERE e.chunk_id IS NULL
+             ORDER BY (c.agent_id IS NOT NULL) ASC, c.chunk_id ASC LIMIT ?1",
         )?;
         let rows: Vec<(i64, String)> = stmt
             .query_map(params![limit], |r| Ok((r.get(0)?, r.get(1)?)))?
@@ -671,6 +866,182 @@ impl Store {
         Ok(rows)
     }
 
+    /// Rename a session from Drydock's UI. The name is a Drydock-side override
+    /// (never written to ~/.claude); a blank/whitespace name clears it. Capped
+    /// server-side (the UI's maxLength only guards the honest path).
+    pub fn set_session_name(&self, session_id: &str, name: &str) -> Result<()> {
+        let trimmed: String = name.trim().chars().take(200).collect();
+        let trimmed = trimmed.trim();
+        if trimmed.is_empty() {
+            self.conn.execute("DELETE FROM session_names WHERE session_id = ?1", params![session_id])?;
+        } else {
+            let now = chrono::Utc::now().timestamp_millis();
+            self.conn.execute(
+                "INSERT INTO session_names(session_id, name, named_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(session_id) DO UPDATE SET name = ?2, named_at = ?3",
+                params![session_id, trimmed, now],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn session_names(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare("SELECT session_id, name FROM session_names")?;
+        let rows: Vec<(String, String)> =
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    fn add_usage_in_conn(
+        conn: &Connection, session_id: &str, scope: &str, model: &str,
+        input: i64, output: i64, cache_read: i64, cache_creation: i64,
+    ) -> Result<()> {
+        conn.execute(
+            "INSERT INTO session_usage(session_id, scope, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
+             VALUES (?1,?2,?3,?4,?5,?6,?7)
+             ON CONFLICT(session_id, scope, model) DO UPDATE SET
+               input_tokens = input_tokens + excluded.input_tokens,
+               output_tokens = output_tokens + excluded.output_tokens,
+               cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+               cache_creation_tokens = cache_creation_tokens + excluded.cache_creation_tokens",
+            params![session_id, scope, model, input, output, cache_read, cache_creation],
+        )?;
+        Ok(())
+    }
+
+    /// One session's token usage, per scope+model (scope 'main' = its own
+    /// transcript, else a subagent's id).
+    pub fn session_usage(&self, session_id: &str) -> Result<Vec<UsageRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT scope, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+             FROM session_usage WHERE session_id = ?1 ORDER BY scope, model",
+        )?;
+        let rows = stmt
+            .query_map(params![session_id], |r| {
+                Ok(UsageRow {
+                    scope: r.get(0)?, model: r.get(1)?, input: r.get(2)?,
+                    output: r.get(3)?, cache_read: r.get(4)?, cache_creation: r.get(5)?,
+                })
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// Add a batch's token sums to a (session, scope) — the incremental path.
+    pub fn add_usage(&mut self, session_id: &str, scope: &str, usage: &std::collections::HashMap<String, [i64; 4]>) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        for (model, [i, o, cr, cc]) in usage {
+            Self::add_usage_in_conn(&tx, session_id, scope, model, *i, *o, *cr, *cc)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// True for an indexed, non-stub session (the same gate agent chunks use).
+    pub fn is_real_session(&self, session_id: &str) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT 1 FROM sessions WHERE session_id = ?1 AND title_source != 'radar-stub'",
+                params![session_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    /// Sessions ranked by output tokens (the best available effort proxy) —
+    /// (session_id, output_tokens, input+output+cache_creation). Cache READS
+    /// are excluded from the total: they dominate numerically but cost little.
+    /// Hidden sessions (ghosts AND user-hidden) and radar stubs are excluded —
+    /// Home must not resurface what the sidebar deliberately doesn't show.
+    pub fn top_sessions_by_tokens(&self, limit: i64) -> Result<Vec<(String, i64, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT u.session_id, SUM(u.output_tokens),
+                    SUM(u.input_tokens + u.output_tokens + u.cache_creation_tokens)
+             FROM session_usage u
+             JOIN sessions s ON s.session_id = u.session_id
+             WHERE s.hidden = 0 AND s.title_source != 'radar-stub'
+               AND u.session_id NOT IN (SELECT session_id FROM hidden_sessions)
+             GROUP BY u.session_id
+             ORDER BY SUM(u.output_tokens) DESC LIMIT ?1",
+        )?;
+        let rows = stmt
+            .query_map(params![limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// Replace a (session, scope)'s usage wholesale — the one-time backfill
+    /// re-reads whole files, so it must be idempotent, not additive.
+    pub fn replace_usage(
+        &mut self, session_id: &str, scope: &str,
+        usage: &std::collections::HashMap<String, [i64; 4]>,
+    ) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM session_usage WHERE session_id = ?1 AND scope = ?2", params![session_id, scope])?;
+        for (model, [i, o, cr, cc]) in usage {
+            Self::add_usage_in_conn(&tx, session_id, scope, model, *i, *o, *cr, *cc)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The label a session wears in the UI, resolved with the frontend's
+    /// precedence: Drydock name > claude custom-title > card summary > title.
+    /// For backend surfaces that show labels (menu-bar tray, export) so they
+    /// can't drift from what the sidebar shows.
+    pub fn display_label(&self, session_id: &str) -> Result<Option<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT COALESCE(
+               NULLIF(TRIM((SELECT name FROM session_names WHERE session_id = s.session_id)), ''),
+               CASE WHEN s.title_source = 'custom-title' THEN NULLIF(TRIM(s.title), '') END,
+               NULLIF(TRIM((SELECT summary FROM cards WHERE session_id = s.session_id)), ''),
+               s.title)
+             FROM sessions s WHERE s.session_id = ?1",
+        )?;
+        let label: Option<String> = stmt.query_row(params![session_id], |r| r.get(0)).optional()?;
+        Ok(label)
+    }
+
+    /// Newest-first page of the Home digest: every visible session with a real
+    /// recap. Excludes hidden sessions and radar stubs with the same gates as
+    /// top_sessions_by_tokens — Home must not resurface what the sidebar hides.
+    /// `before` is a keyset cursor — the exact (last_message_at, session_id) of
+    /// the last row already shown; the page resumes strictly after it in scan
+    /// order. A timestamp-only cursor would wedge when a whole page ties on one
+    /// millisecond (bulk imports): the pair can't.
+    pub fn recap_digest(&self, before: Option<(i64, &str)>, limit: i64) -> Result<Vec<RecapRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.session_id, s.project_path,
+                    COALESCE(
+                      NULLIF(TRIM((SELECT name FROM session_names WHERE session_id = s.session_id)), ''),
+                      NULLIF(TRIM(s.custom_title), ''),
+                      NULLIF(TRIM(s.ai_title), ''),
+                      NULLIF(TRIM(s.slug), '')),
+                    COALESCE(NULLIF(TRIM(c.summary), ''), NULLIF(TRIM(s.latest_recap), '')),
+                    COALESCE(c.timeline, '[]'),
+                    s.last_message_at
+             FROM sessions s LEFT JOIN cards c ON c.session_id = s.session_id
+             WHERE s.hidden = 0 AND s.title_source != 'radar-stub'
+               AND s.session_id NOT IN (SELECT session_id FROM hidden_sessions)
+               AND s.last_message_at IS NOT NULL
+               AND (?1 IS NULL OR s.last_message_at < ?1
+                    OR (s.last_message_at = ?1 AND s.session_id > ?2))
+               AND COALESCE(NULLIF(TRIM(c.summary), ''), NULLIF(TRIM(s.latest_recap), '')) IS NOT NULL
+             ORDER BY s.last_message_at DESC, s.session_id LIMIT ?3",
+        )?;
+        let rows = stmt
+            .query_map(params![before.map(|b| b.0), before.map(|b| b.1), limit.clamp(1, 200)], |r| {
+                Ok(RecapRow {
+                    session_id: r.get(0)?, project_path: r.get(1)?, label: r.get(2)?,
+                    summary: r.get(3)?, timeline: r.get(4)?, last_message_at: r.get(5)?,
+                })
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
     // ---- session hues (semantic colors) -----------------------------------
 
     /// Sessions whose hue is missing, or computed from fewer embedded chunks
@@ -680,6 +1051,7 @@ impl Store {
             "SELECT q.sid FROM (
                SELECT c.session_id AS sid, COUNT(e.chunk_id) AS n
                FROM chunks c JOIN chunk_embeddings e ON e.chunk_id = c.chunk_id
+               WHERE c.agent_id IS NULL
                GROUP BY c.session_id
              ) q LEFT JOIN session_hues h ON h.session_id = q.sid
              WHERE h.session_id IS NULL OR h.embedded_chunks != q.n
@@ -697,7 +1069,7 @@ impl Store {
     pub fn session_embedding_mean(&self, session_id: &str) -> Result<Option<(Vec<f32>, i64)>> {
         let mut stmt = self.conn.prepare(
             "SELECT e.embedding FROM chunks c JOIN chunk_embeddings e ON e.chunk_id = c.chunk_id
-             WHERE c.session_id = ?1",
+             WHERE c.session_id = ?1 AND c.agent_id IS NULL",
         )?;
         let mut mean: Vec<f32> = Vec::new();
         let mut n = 0i64;
@@ -727,7 +1099,8 @@ impl Store {
     pub fn all_session_embedding_means(&self) -> Result<Vec<(String, Vec<f32>)>> {
         let mut stmt = self.conn.prepare(
             "SELECT c.session_id, e.embedding
-             FROM chunks c JOIN chunk_embeddings e ON e.chunk_id = c.chunk_id",
+             FROM chunks c JOIN chunk_embeddings e ON e.chunk_id = c.chunk_id
+             WHERE c.agent_id IS NULL",
         )?;
         let mut acc: std::collections::HashMap<String, (Vec<f32>, i64)> = std::collections::HashMap::new();
         for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?)))?.flatten() {
@@ -858,16 +1231,25 @@ impl Store {
         Ok(self
             .conn
             .query_row(
-                "SELECT file_path FROM sync_state WHERE session_id = ?1",
+                // agent sidecar rows share the parent's session_id — the
+                // session's transcript is the one non-agent row
+                "SELECT file_path FROM sync_state WHERE session_id = ?1 AND is_agent = 0",
                 params![session_id],
                 |r| r.get(0),
             )
             .optional()?)
     }
 
-    pub fn all_synced_paths(&self) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare("SELECT file_path FROM sync_state ORDER BY file_path")?;
-        let rows: Vec<String> = stmt.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
+    /// (file_path, session_id, is_agent) for every synced file — deletion
+    /// mirroring needs to know whether a vanished path was a whole session's
+    /// transcript or just one subagent sidecar file.
+    pub fn all_synced_paths(&self) -> Result<Vec<(String, String, bool)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT file_path, session_id, is_agent FROM sync_state ORDER BY file_path",
+        )?;
+        let rows: Vec<(String, String, bool)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0)))?
+            .collect::<Result<_, _>>()?;
         Ok(rows)
     }
 }
@@ -1035,7 +1417,7 @@ mod tests {
         s.apply_delta("11111111-1111-1111-1111-111111111111", &delta("hello"), &[
             Chunk { role: "user".into(), text: "t".into(), ts: None },
         ]).unwrap();
-        s.set_sync_state("/tmp/f.jsonl", "11111111-1111-1111-1111-111111111111", 10, 99, None).unwrap();
+        s.set_sync_state("/tmp/f.jsonl", "11111111-1111-1111-1111-111111111111", 10, 99, None, None).unwrap();
         s.delete_session("11111111-1111-1111-1111-111111111111").unwrap();
         assert!(s.get_session("11111111-1111-1111-1111-111111111111").unwrap().is_none());
         assert_eq!(s.chunk_count("11111111-1111-1111-1111-111111111111").unwrap(), 0);
@@ -1045,15 +1427,29 @@ mod tests {
     #[test]
     fn sync_state_roundtrip() {
         let mut s = mem();
-        s.set_sync_state("/a/b.jsonl", "sid", 1234, 5678, Some("deadbeef")).unwrap();
+        s.set_sync_state("/a/b.jsonl", "sid", 1234, 5678, Some("deadbeef"), Some("msg_1")).unwrap();
         let st = s.get_sync_state("/a/b.jsonl").unwrap().unwrap();
         assert_eq!((st.byte_offset, st.mtime), (1234, 5678));
         assert_eq!(st.tail_hex.as_deref(), Some("deadbeef"));
-        assert_eq!(s.all_synced_paths().unwrap(), vec!["/a/b.jsonl".to_string()]);
+        assert_eq!(st.last_usage_id.as_deref(), Some("msg_1"));
+        assert_eq!(
+            s.all_synced_paths().unwrap(),
+            vec![("/a/b.jsonl".to_string(), "sid".to_string(), false)]
+        );
 
         // tail_hex is optional (pre-migration rows carry NULL)
-        s.set_sync_state("/a/b.jsonl", "sid", 2000, 5679, None).unwrap();
+        s.set_sync_state("/a/b.jsonl", "sid", 2000, 5679, None, None).unwrap();
         assert_eq!(s.get_sync_state("/a/b.jsonl").unwrap().unwrap().tail_hex, None);
+    }
+
+    #[test]
+    fn transcript_path_never_returns_an_agent_sidecar() {
+        let mut s = mem();
+        // agent row synced FIRST (path sorts first too) — must still lose
+        s.set_sync_state_kind("/p/a/sid/subagents/agent-x.jsonl", "sid", 10, 1, None, true, None).unwrap();
+        assert_eq!(s.transcript_path("sid").unwrap(), None, "agent-only session has no transcript");
+        s.set_sync_state("/p/b/sid.jsonl", "sid", 20, 2, None, None).unwrap();
+        assert_eq!(s.transcript_path("sid").unwrap().as_deref(), Some("/p/b/sid.jsonl"));
     }
 
     fn live(sid: &str, status: &str, pid: u32, cwd: Option<&str>) -> crate::radar::LiveSession {
@@ -1354,5 +1750,230 @@ mod tests {
         s.set_session_hidden(sid, true).unwrap();
         s.delete_session(sid).unwrap();
         assert!(s.hidden_session_ids().unwrap().is_empty());
+    }
+
+    #[test]
+    fn session_names_set_rename_clear_and_survive_resync() {
+        let mut s = Store::open_in_memory().unwrap();
+        let sid = "s-named";
+        s.apply_delta(sid, &delta("hi"), &[]).unwrap();
+        assert!(s.session_names().unwrap().is_empty());
+
+        s.set_session_name(sid, "  release pipeline  ").unwrap();
+        assert_eq!(s.session_names().unwrap(), vec![(sid.to_string(), "release pipeline".to_string())], "stored trimmed");
+
+        // rename replaces (upsert, not a second row)
+        s.set_session_name(sid, "release CI").unwrap();
+        assert_eq!(s.session_names().unwrap(), vec![(sid.to_string(), "release CI".to_string())]);
+
+        // a re-sync rewriting the session row must not clobber the name
+        s.apply_delta(sid, &delta("more"), &[]).unwrap();
+        assert_eq!(s.session_names().unwrap().len(), 1);
+
+        // blank clears the override
+        s.set_session_name(sid, "   ").unwrap();
+        assert!(s.session_names().unwrap().is_empty());
+
+        // a USER delete drops the name (an explicit delete means "gone")
+        s.set_session_name(sid, "gone").unwrap();
+        s.delete_session(sid).unwrap();
+        assert!(s.session_names().unwrap().is_empty());
+    }
+
+    #[test]
+    fn sync_driven_reparse_preserves_names_hidden_and_folders() {
+        // The watcher deletes-and-reparses a session when its file is
+        // truncated/rewritten, and mirrors deletions when files vanish. Those
+        // are DATA events, not user intent: names, hidden flags and folder
+        // filings must survive and reattach when the session returns.
+        let mut s = Store::open_in_memory().unwrap();
+        let sid = "s-reparse";
+        s.apply_delta(sid, &delta("hi"), &[]).unwrap();
+        s.set_session_name(sid, "release CI").unwrap();
+        s.set_session_hidden(sid, true).unwrap();
+        s.create_folder("f1", "infra").unwrap();
+        s.set_session_folder(sid, Some("f1")).unwrap();
+
+        // truncate-reparse / vanished-transcript path
+        s.delete_session_data(sid).unwrap();
+        assert!(s.get_session(sid).unwrap().is_none(), "row and derived data gone");
+        assert_eq!(s.session_names().unwrap().len(), 1, "name survives");
+        assert_eq!(s.hidden_session_ids().unwrap(), vec![sid.to_string()], "hidden survives");
+        assert_eq!(s.folder_memberships().unwrap().len(), 1, "filing survives");
+
+        // the session returns (re-synced from byte 0) → flags reattach
+        s.apply_delta(sid, &delta("hi again"), &[]).unwrap();
+        assert_eq!(s.session_names().unwrap(), vec![(sid.to_string(), "release CI".to_string())]);
+    }
+
+    #[test]
+    fn usage_accumulates_by_scope_and_prunes_with_its_owner() {
+        let mut s = Store::open_in_memory().unwrap();
+        let sid = "s-usage";
+        // main usage adds across two syncs (append-only contract)
+        s.apply_delta(sid, &delta("hi"), &[]).unwrap();
+        let mut m = std::collections::HashMap::new();
+        m.insert("m1".to_string(), [10i64, 5, 100, 2]);
+        s.add_usage(sid, "main", &m).unwrap();
+        s.add_usage(sid, "main", &m).unwrap();
+        // agent usage under its own scope, through the gated path
+        let mut agent_usage = std::collections::HashMap::new();
+        agent_usage.insert("m2".to_string(), [3i64, 7, 0, 0]);
+        assert!(s.apply_agent_chunks(sid, "agent-a", &[], &agent_usage).unwrap());
+        let rows = s.session_usage(sid).unwrap();
+        assert_eq!(rows.len(), 2);
+        let main = rows.iter().find(|r| r.scope == "main").unwrap();
+        assert_eq!((main.input, main.output, main.cache_read, main.cache_creation), (20, 10, 200, 4));
+        let agent = rows.iter().find(|r| r.scope == "agent-a").unwrap();
+        assert_eq!((agent.input, agent.output), (3, 7));
+        // top sessions ranks by output across scopes
+        let top = s.top_sessions_by_tokens(5).unwrap();
+        assert_eq!(top[0].0, sid);
+        assert_eq!(top[0].1, 17, "10 main + 7 agent output");
+        // pruning the agent file subtracts exactly its share
+        s.delete_agent_file("/x/agent-a.jsonl", sid, "agent-a").unwrap();
+        assert!(s.session_usage(sid).unwrap().iter().all(|r| r.scope == "main"));
+        // replace_usage is idempotent (backfill contract)
+        let mut full = std::collections::HashMap::new();
+        full.insert("m1".to_string(), [99i64, 88, 0, 0]);
+        s.replace_usage(sid, "main", &full).unwrap();
+        s.replace_usage(sid, "main", &full).unwrap();
+        let rows = s.session_usage(sid).unwrap();
+        assert_eq!((rows[0].input, rows[0].output), (99, 88));
+        // derived-data delete drops usage on BOTH delete paths
+        s.delete_session_data(sid).unwrap();
+        assert!(s.session_usage(sid).unwrap().is_empty());
+    }
+
+    #[test]
+    fn session_name_is_capped_server_side() {
+        let mut s = Store::open_in_memory().unwrap();
+        let sid = "s-cap";
+        s.apply_delta(sid, &delta("hi"), &[]).unwrap();
+        s.set_session_name(sid, &"x".repeat(100_000)).unwrap();
+        let stored = &s.session_names().unwrap()[0].1;
+        assert!(stored.chars().count() <= 200, "cap ignores the frontend's honesty");
+    }
+
+    /// A session touched at `ts` whose only summary source is its recap.
+    fn recapped(recap: &str, ts: i64) -> SessionDelta {
+        SessionDelta {
+            project_path: Some("/Users/dev/work".into()),
+            latest_recap: Some(recap.into()),
+            last_message_at: Some(ts),
+            message_count: 4,
+            user_message_count: 2,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn recap_digest_filters_orders_and_pages() {
+        let mut s = mem();
+        s.apply_delta("s-old", &recapped("built the parser", 1000), &[]).unwrap();
+        s.apply_delta("s-mid", &recapped("fixed the radar", 2000), &[]).unwrap();
+        s.apply_delta("s-new", &recapped("shipped the digest", 3000), &[]).unwrap();
+        // user-hidden: recap or not, Home must not resurface it
+        s.apply_delta("s-hid", &recapped("secret work", 2500), &[]).unwrap();
+        s.set_session_hidden("s-hid", true).unwrap();
+        // ghost (0 real user messages → hidden flag): excluded
+        let mut ghost = recapped("ghost recap", 2600);
+        ghost.user_message_count = 0;
+        s.apply_delta("s-ghost", &ghost, &[]).unwrap();
+        // no recap and no card: a session list entry, not a log entry
+        s.apply_delta("s-bare", &delta("just a prompt"), &[]).unwrap();
+
+        let rows = s.recap_digest(None, 10).unwrap();
+        let ids: Vec<&str> = rows.iter().map(|r| r.session_id.as_str()).collect();
+        assert_eq!(ids, ["s-new", "s-mid", "s-old"], "newest first, hidden/ghost/recapless out");
+        assert_eq!(rows[0].summary, "shipped the digest");
+        assert_eq!(rows[0].timeline, "[]", "no card yet — empty timeline, not an error");
+
+        // keyset cursor resumes strictly after the given (ts, sid) row
+        let page = s.recap_digest(Some((2000, "s-mid")), 10).unwrap();
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].session_id, "s-old");
+        let page = s.recap_digest(Some((3000, "s-new")), 10).unwrap();
+        assert_eq!(page[0].session_id, "s-mid");
+        assert_eq!(s.recap_digest(None, 2).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn recap_digest_pages_through_a_tie_group_wider_than_the_page() {
+        let mut s = mem();
+        // 35 sessions stamped with the SAME millisecond (a bulk import), plus
+        // one genuinely older row that a timestamp-only cursor could never reach
+        for i in 0..35 {
+            s.apply_delta(&format!("s-tie-{i:02}"), &recapped("tied work", 5000), &[]).unwrap();
+        }
+        s.apply_delta("s-past", &recapped("older work", 4000), &[]).unwrap();
+
+        // drive the frontend's exact loop: page of 30, cursor = last row shown
+        let mut seen = std::collections::HashSet::new();
+        let mut cursor: Option<(i64, String)> = None;
+        loop {
+            let page = s
+                .recap_digest(cursor.as_ref().map(|(t, sid)| (*t, sid.as_str())), 30)
+                .unwrap();
+            if page.is_empty() {
+                break;
+            }
+            for r in &page {
+                assert!(seen.insert(r.session_id.clone()), "row served twice: {}", r.session_id);
+            }
+            let last = page.last().unwrap();
+            cursor = Some((last.last_message_at, last.session_id.clone()));
+            if page.len() < 30 {
+                break;
+            }
+        }
+        assert_eq!(seen.len(), 36, "every row reachable — no tie-group livelock");
+        assert!(seen.contains("s-past"), "rows older than the tie group are reachable");
+    }
+
+    #[test]
+    fn recap_digest_label_is_a_real_name_never_the_recap() {
+        let mut s = mem();
+        // recap-only session: its TITLE resolves to the recap, but the digest
+        // label must be None — a label that echoes the summary says nothing.
+        s.apply_delta("s-plain", &recapped("wired the store", 1000), &[]).unwrap();
+        // name sources, in precedence order
+        let mut titled = recapped("titled work", 2000);
+        titled.ai_title = Some("Radar fix".into());
+        titled.slug = Some("radar-fix-slug".into());
+        s.apply_delta("s-ai", &titled, &[]).unwrap();
+        let mut custom = recapped("custom work", 3000);
+        custom.custom_title = Some("My session".into());
+        custom.ai_title = Some("loses to custom".into());
+        s.apply_delta("s-custom", &custom, &[]).unwrap();
+        s.apply_delta("s-named", &recapped("named work", 4000), &[]).unwrap();
+        s.set_session_name("s-named", "camera pipeline").unwrap();
+
+        let rows = s.recap_digest(None, 10).unwrap();
+        let by_id: std::collections::HashMap<&str, &RecapRow> =
+            rows.iter().map(|r| (r.session_id.as_str(), r)).collect();
+        assert_eq!(by_id["s-plain"].label, None);
+        assert_eq!(by_id["s-ai"].label.as_deref(), Some("Radar fix"));
+        assert_eq!(by_id["s-custom"].label.as_deref(), Some("My session"));
+        assert_eq!(by_id["s-named"].label.as_deref(), Some("camera pipeline"));
+    }
+
+    #[test]
+    fn recap_digest_prefers_card_summary_and_carries_its_timeline() {
+        let mut s = mem();
+        s.apply_delta("s-card", &recapped("raw recap text", 1000), &[]).unwrap();
+        let tl = r#"[{"text":"did a thing","detail":[],"in_progress":true}]"#;
+        s.put_card("s-card", "distilled summary", tl, "distilled summary did a thing", 4).unwrap();
+        // empty card summary: fall back to the recap but keep the card timeline
+        s.apply_delta("s-blank", &recapped("fallback recap", 2000), &[]).unwrap();
+        s.put_card("s-blank", "", tl, "x", 4).unwrap();
+
+        let rows = s.recap_digest(None, 10).unwrap();
+        let by_id: std::collections::HashMap<&str, &RecapRow> =
+            rows.iter().map(|r| (r.session_id.as_str(), r)).collect();
+        assert_eq!(by_id["s-card"].summary, "distilled summary");
+        assert_eq!(by_id["s-card"].timeline, tl);
+        assert_eq!(by_id["s-blank"].summary, "fallback recap");
+        assert_eq!(by_id["s-blank"].timeline, tl);
     }
 }

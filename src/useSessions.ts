@@ -5,8 +5,12 @@ import type { Snapshot } from './types'
 
 export function useSessions() {
   const [snap, setSnap] = useState<Snapshot>({ sessions: [], hidden: [], folders: [] })
+  // false until the first snapshot lands: "session not in the list" means
+  // "expired/deleted" only once there IS a list — consumers must not render
+  // missing-session treatments off the initial empty state
+  const [ready, setReady] = useState(false)
   const refresh = useCallback(() => {
-    invoke<Snapshot>('sessions_snapshot').then(setSnap).catch(console.error)
+    invoke<Snapshot>('sessions_snapshot').then((s) => { setSnap(s); setReady(true) }).catch(console.error)
   }, [])
   useEffect(() => {
     refresh()
@@ -16,5 +20,5 @@ export function useSessions() {
     listen('index-updated', refresh).then((u) => { if (cancelled) u(); else un = u })
     return () => { cancelled = true; un?.() }
   }, [refresh])
-  return { ...snap, refresh }
+  return { ...snap, ready, refresh }
 }

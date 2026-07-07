@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { FolderView, SessionView } from './types'
-import { clampPanelWidth, clip, loadNum, relAge, sessionColor, sessionLabel, shortPath, uuidv4 } from './types'
+import { clampPanelWidth, clip, loadNum, relAge, sessionAutoLabel, sessionColor, sessionLabel, shortPath, uuidv4 } from './types'
 import ResizeHandle from './ResizeHandle'
 import LiveIndicator from './LiveIndicator'
 import VersionFooter from './VersionFooter'
 
 type Props = {
+  onHome: () => void // show the Home view (recap log + usage) in the center
   sessions: SessionView[]
   folders: FolderView[] // user folders, in band order
   hidden: string[] // session ids the user hid from Drydock
@@ -113,10 +114,16 @@ type Drag =
   | { kind: 'folder'; id: string; name: string }
 
 // Inline name editor state: creating a folder (optionally filing a dragged
-// session into it on commit) or renaming an existing one.
-type Naming = { kind: 'create'; sid: string | null } | { kind: 'rename'; id: string }
+// session into it on commit), renaming a folder, or renaming a session
+// (a Drydock-side override — the ~/.claude transcript is never written).
+type Naming =
+  | { kind: 'create'; sid: string | null }
+  | { kind: 'rename'; id: string }
+  // `initial` = the label shown when editing began: an unchanged commit (e.g.
+  // click-away blur) must be a no-op, not freeze an AUTO title into an override
+  | { kind: 'rename-session'; sid: string; initial: string }
 
-export default function Sidebar({ sessions, folders, hidden, activeSessionId, onResume, onTranscript, onNewSession, onToggleStar, onHide, onDelete, onRefresh }: Props) {
+export default function Sidebar({ onHome, sessions, folders, hidden, activeSessionId, onResume, onTranscript, onNewSession, onToggleStar, onHide, onDelete, onRefresh }: Props) {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('dd.sidebarCollapsed') === '1')
   // clamp on load AND on window resize: a width persisted on a big monitor must
   // not overflow a smaller window later
@@ -135,6 +142,10 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
   const [confirmDel, setConfirmDel] = useState<SessionView | null>(null)
   const [confirmDelFolder, setConfirmDelFolder] = useState<{ f: FolderView; count: number } | null>(null)
   const [naming, setNaming] = useState<Naming | null>(null)
+  // Controlled editor text: the sidebar re-sorts on every index tick, and a
+  // moved/remounted <input defaultValue> would lose what the user typed —
+  // state survives the move (autoFocus re-fires on remount).
+  const [draft, setDraft] = useState('')
 
   // ---- drag state (pointer events; HTML5 DnD is swallowed by Tauri's
   // webview drag-drop handling, and its native drag image can't be styled) ----
@@ -247,7 +258,7 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
   const performDrop = (d: Drag, target: string | null) => {
     if (!target) return
     if (d.kind === 'session') {
-      if (target === 'newfolder') { setNaming({ kind: 'create', sid: d.sid }); return }
+      if (target === 'newfolder') { setDraft(''); setNaming({ kind: 'create', sid: d.sid }); return }
       if (target.startsWith('folder:')) fileSession(d.sid, target.slice('folder:'.length))
       return
     }
@@ -348,6 +359,25 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
     const isDragging = drag?.kind === 'session' && drag.sid === s.session_id
     const sub = showProject ? shortPath(s.project_path) : s.latest_recap
     const inFolder = s.folder_id && folderIds.has(s.folder_id) ? folders.find((f) => f.id === s.folder_id)?.name : null
+    // Renaming: swap the row for the inline editor (a div, not the row button
+    // — an input nested in a button fights it for focus and clicks).
+    if (naming?.kind === 'rename-session' && naming.sid === s.session_id) {
+      return (
+        <div
+          key={s.session_id}
+          style={{ ...S.row, display: 'flex', alignItems: 'center', gap: 4, cursor: 'default', borderLeftColor: sessionColor(s.session_id, 1, s.hue), background: sessionColor(s.session_id, 0.1, s.hue) }}
+        >
+          <LiveIndicator status={s.live_status} />
+          {nameEditor('Session name — empty clears')}
+        </div>
+      )
+    }
+    // Tooltip discloses a Drydock rename so a divergent claude-side /rename
+    // later reads as deliberate, not as an index bug. The disclosed title is
+    // exactly what "Clear name" would restore.
+    const renamed = s.name && s.name.trim()
+      ? `\nrenamed in Drydock — auto title: ${sessionAutoLabel(s)}`
+      : ''
     return (
       <button
         key={s.session_id}
@@ -356,7 +386,7 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
         onClick={dragSafe(() => onResume(s))}
         onPointerDown={(e) => beginPress(e, { kind: 'session', sid: s.session_id, label: sessionLabel(s), fromFolder: s.folder_id })}
         onContextMenu={(e) => { e.preventDefault(); if (dragRef.current) return; setMenu({ x: e.clientX, y: e.clientY, s, view: 'main' }) }}
-        title={`${s.attention ? `⚠ ${s.attention}\n` : ''}${s.title}${s.starred && inFolder ? `\nin folder “${inFolder}”` : ''}\n${s.session_id}\n(right-click for options · drag into a folder)`}
+        title={`${s.attention ? `⚠ ${s.attention}\n` : ''}${s.title}${renamed}${s.starred && inFolder ? `\nin folder “${inFolder}”` : ''}\n${s.session_id}\n(right-click for options · drag into a folder)`}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
           <LiveIndicator status={s.live_status} />
@@ -387,14 +417,15 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
     )
   }
 
-  // Inline folder-name editor (create at the band top / rename in a header).
-  const nameEditor = (defaultValue: string) => (
+  // Inline name editor (folder create/rename, session rename).
+  const nameEditor = (placeholder = 'Folder name') => (
     <input
       style={S.nameInput}
       autoFocus
-      defaultValue={defaultValue}
+      value={draft}
+      onChange={(e) => setDraft(e.currentTarget.value)}
       maxLength={60}
-      placeholder="Folder name"
+      placeholder={placeholder}
       onFocus={(e) => e.currentTarget.select()}
       onKeyDown={(e) => {
         // an Enter/Esc that confirms an IME composition (e.g. pinyin) is part
@@ -412,6 +443,12 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
     const name = value.trim()
     const n = naming
     setNaming(null)
+    if (n.kind === 'rename-session') {
+      // unchanged = no-op; EMPTY is meaningful here (clears the override)
+      if (name === n.initial.trim()) return
+      invoke('set_session_name', { sessionId: n.sid, name }).then(onRefresh).catch(console.error)
+      return
+    }
     if (!name) return // empty commit = cancel (matches Esc)
     if (n.kind === 'create') {
       invoke('create_folder', { folderId: uuidv4(), name, sessionId: n.sid })
@@ -459,7 +496,7 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
             </button>
             <FolderGlyph />
             {renaming ? (
-              nameEditor(f.name)
+              nameEditor()
             ) : (
               <span
                 style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'pointer', color: '#dfe5ee' }}
@@ -490,11 +527,18 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', width, minWidth: width, background: '#0b0e13' }}>
     <div ref={scrollerRef} style={{ ...S.side, width: '100%', minWidth: 0, height: 'auto', flex: 1, borderRight: 'none' }}>
       <div style={S.bar}>
-        <span style={{ flex: 1, fontWeight: 700, color: '#e8edf4' }}>DRYDOCK</span>
+        <span
+          onClick={onHome}
+          title="Home — recap log & usage (⌘0)"
+          style={{ flex: 1, fontWeight: 700, color: '#e8edf4', cursor: 'pointer' }}
+        >
+          DRYDOCK
+        </span>
         <button
           style={{ ...S.btn, display: 'flex', alignItems: 'center', marginRight: 8, color: '#8ea0b5' }}
           title={'New folder…\nOrganize sessions into working groups — drag them in,\nor right-click a session → Move to folder'}
           onClick={() => {
+            setDraft('')
             setNaming({ kind: 'create', sid: null })
             // the name input appears at the top of the folders band — make sure
             // it's on screen even when the list is scrolled deep
@@ -546,7 +590,7 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
           {naming?.kind === 'create' && (
             <div style={{ ...S.head, gap: 6 }}>
               <FolderGlyph />
-              {nameEditor('')}
+              {nameEditor()}
             </div>
           )}
           {folders.map((f, i) => folderBlock(f, i))}
@@ -605,6 +649,24 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
                 <button style={S.menuItem} {...menuHover} onClick={() => { onToggleStar(menu.s); setMenu(null) }}>
                   {menu.s.starred ? 'Unstar' : 'Star'}
                 </button>
+                <button
+                  style={S.menuItem}
+                  {...menuHover}
+                  title="Drydock-only name — the claude session itself is untouched"
+                  onClick={() => { setDraft(sessionLabel(menu.s)); setNaming({ kind: 'rename-session', sid: menu.s.session_id, initial: sessionLabel(menu.s) }); setMenu(null) }}
+                >
+                  Rename session…
+                </button>
+                {menu.s.name && menu.s.name.trim() && (
+                  <button
+                    style={S.menuItem}
+                    {...menuHover}
+                    title="Back to the automatic title (card summary / claude's own name)"
+                    onClick={() => { invoke('set_session_name', { sessionId: menu.s.session_id, name: '' }).then(onRefresh).catch(console.error); setMenu(null) }}
+                  >
+                    Clear name
+                  </button>
+                )}
                 <button style={S.menuItem} {...menuHover} onClick={() => { onTranscript(menu.s); setMenu(null) }}>
                   View transcript
                 </button>
@@ -650,7 +712,7 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
                 <button
                   style={{ ...S.menuItem, borderTop: folders.length ? '1px solid #2c3647' : 'none', borderRadius: 0 }}
                   {...menuHover}
-                  onClick={() => { setNaming({ kind: 'create', sid: menu.s.session_id }); setMenu(null) }}
+                  onClick={() => { setDraft(''); setNaming({ kind: 'create', sid: menu.s.session_id }); setMenu(null) }}
                 >
                   New folder…
                 </button>
@@ -664,7 +726,7 @@ export default function Sidebar({ sessions, folders, hidden, activeSessionId, on
         <>
           <div style={{ position: 'fixed', inset: 0, zIndex: 59 }} onClick={() => setFolderMenu(null)} onContextMenu={(e) => { e.preventDefault(); setFolderMenu(null) }} />
           <div style={{ ...S.menu, left: Math.min(folderMenu.x, window.innerWidth - 200), top: Math.min(folderMenu.y, window.innerHeight - 170) }}>
-            <button style={S.menuItem} {...menuHover} onClick={() => { setNaming({ kind: 'rename', id: folderMenu.f.id }); setFolderMenu(null) }}>
+            <button style={S.menuItem} {...menuHover} onClick={() => { setDraft(folderMenu.f.name); setNaming({ kind: 'rename', id: folderMenu.f.id }); setFolderMenu(null) }}>
               Rename
             </button>
             <button
