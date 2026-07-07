@@ -386,7 +386,9 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
     else if (!focused) term.blur()
   }, [focused, visible, id])
 
-  return <div ref={hostRef} style={{ width: '100%', height: '100%' }} />
+  // Opaque: confines a split pane's session tint to its thin mat, and hides
+  // the cell-remainder strip xterm leaves (the grid snaps to whole cells).
+  return <div ref={hostRef} style={{ width: '100%', height: '100%', background: '#10141a' }} />
 })
 
 export default TerminalPane

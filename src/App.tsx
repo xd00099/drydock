@@ -12,7 +12,7 @@ import HomeView from './HomeView'
 import FindBar from './FindBar'
 import { useSessions } from './useSessions'
 import type { Artifact, ArtifactKind, PaneSearch, RestoreTab, SessionView, Tab } from './types'
-import { clip, sessionLabel, uuidv4 } from './types'
+import { baseName, clip, sessionColor, sessionLabel, uuidv4 } from './types'
 import {
   GUTTER, canSplit, clampRatio, closeStaged, dropOnStage, focusNeighbor, hitTest,
   layoutRects, pruneStage, setRatio, showTab, stagedIds,
@@ -61,12 +61,29 @@ export default function App() {
   tabsRef.current = tabs
   const stageRef = useRef(stage) // for pointer-drag handlers registered mid-gesture
   stageRef.current = stage
-  // staged = every tab visible on stage (all split panes, or just the active
-  // tab). For the once-registered attention/artifact listeners: a pane the
-  // user can SEE needs no notification or unread badge.
+  // Zoom: the focused pane temporarily fills the stage; the split waits
+  // beneath, untouched. The same gesture restores it — and so does anything
+  // that mutates the tree (drop, close, ⌘0) or moves focus off the zoomed
+  // pane: a changed stage must be SEEN, and a stale zoomTab must never
+  // re-trigger later when its pane happens to regain focus.
+  const [zoomTab, setZoomTab] = useState<number | null>(null)
+  const zoomOn = layout !== null && zoomTab !== null && zoomTab === activeId
+  useEffect(() => { setZoomTab(null) }, [layout])
+  useEffect(() => { setZoomTab((p) => (p !== null && p !== activeId ? null : p)) }, [activeId])
+  const chipDragLiveRef = useRef(false) // a live chip drag owns the stage: no zooming mid-gesture
+  const toggleZoomRef = useRef<(id: number) => void>(() => {})
+  toggleZoomRef.current = (id) => {
+    if (stageRef.current.layout !== null && !chipDragLiveRef.current) setZoomTab((p) => (p === id ? null : id))
+  }
+  // staged = every tab in the layout; visible = what the user can actually
+  // SEE (a zoom hides the sibling panes). The once-registered attention and
+  // artifact listeners key off VISIBLE — only a pane the user can see needs
+  // no notification or unread badge. A zoom-hidden session that blocks on
+  // you must ping exactly like an unstaged one.
   const staged = stagedIds(stage)
-  const stagedRef = useRef(staged)
-  stagedRef.current = staged
+  const visible = zoomOn && activeId !== null ? [activeId] : staged
+  const visibleRef = useRef(visible)
+  visibleRef.current = visible
   const sessionsRef = useRef(sessions) // for once-registered attention/focus listeners
   sessionsRef.current = sessions
   const shellDirsRef = useRef(shellDirs) // for the update-restart stash (built at call time)
@@ -301,7 +318,11 @@ export default function App() {
   const stageBox: Rect | null = contentSize
     ? { x: 8, y: 8, w: Math.max(0, contentSize.w - 16), h: Math.max(0, contentSize.h - 16) }
     : null
-  const geom = layout !== null && stageBox ? layoutRects(layout, stageBox) : null
+  const geom = layout !== null && stageBox
+    ? zoomOn
+      ? { panes: [{ tabId: activeId as number, rect: stageBox }], dividers: [] as DividerRect[] }
+      : layoutRects(layout, stageBox)
+    : null
   const paneRect = (id: number | null) => (id === null ? undefined : geom?.panes.find((p) => p.tabId === id)?.rect)
 
   // A staged tab whose id vanished from `tabs` (e.g. a preview tab on stage
@@ -314,8 +335,9 @@ export default function App() {
     setChipMenu((m) => (m && !tabs.some((t) => t.id === m.tabId) ? null : m))
   }, [tabs])
 
-  // Everything on stage counts as seen: landing in a pane clears its badge.
-  const stagedKey = staged.join(',')
+  // Everything the user can SEE counts as seen: landing in a (visible) pane
+  // clears its badge. Zoom-hidden panes keep accruing until revealed.
+  const stagedKey = visible.join(',')
   useEffect(() => {
     if (!stagedKey) return
     const ids = stagedKey.split(',').map(Number)
@@ -327,6 +349,15 @@ export default function App() {
       return n
     })
   }, [stagedKey])
+
+  // Focus history: lets "Split right" on the FOCUSED tab's own chip pick a
+  // partner (the tab you were just looking at) — a pane can't split with its
+  // own tab, since a tab's content mounts exactly once.
+  const mruRef = useRef<number[]>([])
+  useEffect(() => {
+    if (activeId === null) return
+    mruRef.current = [activeId, ...mruRef.current.filter((x) => x !== activeId)].slice(0, 12)
+  }, [activeId])
 
   focusNavRef.current = (key: string) => {
     if (layout === null || !stageBox) return
@@ -408,14 +439,21 @@ export default function App() {
    *  the pointer travels 5px. Esc or window blur cancels. */
   const beginChipDrag = (e: React.PointerEvent, tabId: number, label: string) => {
     if (e.button !== 0) return
+    // Cancel the pointerdown default: otherwise WebKit anchors a text
+    // selection at the chip and paints it across the whole app as the drag
+    // travels (the chip's own userSelect:none only covers its label).
+    e.preventDefault()
     const sx = e.clientX
     const sy = e.clientY
     let live = false
     const move = (ev: PointerEvent) => {
       if (!live && Math.hypot(ev.clientX - sx, ev.clientY - sy) > 5) {
         live = true
+        chipDragLiveRef.current = true
         setChipDrag({ tabId, label })
+        setZoomTab(null) // drops target the real split — reveal it first
         document.body.style.cursor = 'grabbing'
+        document.body.style.userSelect = 'none'
       }
       if (!live) return
       setDragXY({ x: ev.clientX, y: ev.clientY })
@@ -427,7 +465,9 @@ export default function App() {
       window.removeEventListener('keydown', key)
       window.removeEventListener('blur', cancel)
       if (!live) return
+      chipDragLiveRef.current = false
       document.body.style.cursor = ''
+      document.body.style.userSelect = ''
       const drop = dropRef.current
       dropRef.current = null
       setChipDrag(null)
@@ -486,6 +526,7 @@ export default function App() {
     const sy = e.clientY
     let moved = false
     document.body.style.cursor = horiz ? 'col-resize' : 'row-resize'
+    document.body.style.userSelect = 'none'
     const move = (ev: PointerEvent) => {
       if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) > 3) moved = true
       const pos = (horiz ? ev.clientX - cr.left : ev.clientY - cr.top) - start - GUTTER / 2
@@ -495,7 +536,9 @@ export default function App() {
     const up = () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
+      window.removeEventListener('blur', up)
       document.body.style.cursor = ''
+      document.body.style.userSelect = ''
       if (moved) {
         dividerDraggedRef.current = true
         window.setTimeout(() => { dividerDraggedRef.current = false }, 500)
@@ -503,12 +546,19 @@ export default function App() {
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
+    // window deactivation mid-drag would strand the cursor/user-select
+    // overrides (same rationale as the chip drag's blur cancel)
+    window.addEventListener('blur', up)
   }
 
   // Right-click a chip: split without the drag (drag-only gestures are
   // invisible until discovered). "Split right/down" puts THAT tab beside the
   // focused pane.
   const [chipMenu, setChipMenu] = useState<{ x: number; y: number; tabId: number } | null>(null)
+  // Keyboard shortcuts (⌘W, ⌘0, ⇧⌘⏎, ⌘⌥ arrows) can reshape the stage under
+  // an open menu — its items would shift or change meaning beneath a click
+  // already in flight. A reshaped stage closes the menu.
+  useEffect(() => { setChipMenu(null) }, [layout, activeId, zoomTab])
   useEffect(() => {
     if (!chipMenu) return
     const close = () => setChipMenu(null)
@@ -606,6 +656,13 @@ export default function App() {
       if (e.metaKey && e.key === 't') { e.preventDefault(); newShellRef.current() }
       if (e.metaKey && e.key === 'w') { e.preventDefault(); closeActiveRef.current() }
       if (e.metaKey && e.key === 'd') { e.preventDefault(); starActiveRef.current() }
+      // ⇧⌘Return: zoom toggle — the focused pane fills the stage, the split
+      // waits beneath (the palette owns Enter while it's open)
+      if (!paletteOpenRef.current && e.metaKey && e.shiftKey && e.key === 'Enter') {
+        e.preventDefault()
+        const a = stageRef.current.active
+        if (a !== null) toggleZoomRef.current(a)
+      }
       // ⌘⌥ arrows: move focus between split panes. The palette guard above
       // only swallows its listed keys, so re-check here — arrows while the
       // palette is open belong to the palette.
@@ -676,7 +733,7 @@ export default function App() {
       const label = clip(s ? sessionLabel(s) : 'Claude session', 60)
       if (p.state === 'needs_input') {
         // staged, not just active: any pane the user can SEE (split screen)
-        if (document.hasFocus() && stagedRef.current.includes(p.pty_id)) return
+        if (document.hasFocus() && visibleRef.current.includes(p.pty_id)) return
         // sound only here: an audible ping always means "blocked on you"
         invoke('notify_user', { title: label, body: p.message || 'Claude needs your input', sound: true }).catch(() => {})
       } else if (p.state === 'done') {
@@ -718,7 +775,7 @@ export default function App() {
         return { ...prev, [p.pty_id]: next }
       })
       // visible on stage = already seen; only badge tabs the user can't see
-      if (!stagedRef.current.includes(p.pty_id)) setUnread((u) => ({ ...u, [p.pty_id]: (u[p.pty_id] ?? 0) + 1 }))
+      if (!visibleRef.current.includes(p.pty_id)) setUnread((u) => ({ ...u, [p.pty_id]: (u[p.pty_id] ?? 0) + 1 }))
     }).then((u) => { if (cancelled) u(); else un = u })
     return () => { cancelled = true; un?.() }
   }, [])
@@ -790,6 +847,11 @@ export default function App() {
           draggedId={chipDrag?.tabId ?? null}
           insertMark={insertMark}
           onChipPress={beginChipDrag}
+          onChipDouble={(id) => {
+            // the double-click's own two clicks already staged + focused the
+            // tab (showTab); if they were drag-suppressed, don't zoom either
+            if (!suppressClickRef.current && stageRef.current.active === id) toggleZoomRef.current(id)
+          }}
           onChipMenu={(e, id) => { e.preventDefault(); setChipMenu({ x: e.clientX, y: e.clientY, tabId: id }) }}
           onSelect={(id) => { if (suppressClickRef.current) return; setStage((st) => showTab(st, id)) }}
           onClose={closeTab}
@@ -806,6 +868,9 @@ export default function App() {
             // session is blocked on you. Single-pane mode keeps today's
             // frameless inset exactly.
             const attn = t.id !== activeId && sess?.live_status === 'needs_input'
+            // Zoomed: staged panes without a rect stay mounted but hidden —
+            // same display:none contract as unstaged tabs.
+            const shown = onStage && (layout === null || r !== undefined)
             return (
               <div
                 key={t.id}
@@ -821,10 +886,22 @@ export default function App() {
                     ? {
                         position: 'absolute', left: r.x, top: r.y, width: r.w, height: r.h,
                         boxSizing: 'border-box', display: 'block', overflow: 'hidden', borderRadius: 4,
-                        border: `1px solid ${t.id === activeId ? '#3d5878' : attn ? '#e8a33d' : '#232c3a'}`,
-                        background: '#10141a',
+                        // Session-color chrome: the frame plus a thin tinted
+                        // mat wear the session's color so panes read as THEIR
+                        // session at a glance; shells keep the neutral steel.
+                        // Focus = full-strength border; the attn pulse
+                        // overrides border-color via the dd-attnpane animation.
+                        padding: 3,
+                        border: `2px solid ${
+                          t.sessionId
+                            ? sessionColor(t.sessionId, t.id === activeId ? 1 : 0.45, sess?.hue)
+                            : t.id === activeId ? '#3d5878' : '#232c3a'
+                        }`,
+                        background: t.sessionId
+                          ? sessionColor(t.sessionId, t.id === activeId ? 0.12 : 0.06, sess?.hue)
+                          : '#10141a',
                       }
-                    : { position: 'absolute', inset: 8, display: onStage ? 'block' : 'none' }
+                    : { position: 'absolute', inset: 8, display: shown ? 'block' : 'none' }
                 }
               >
               {t.kind === 'pty' ? (
@@ -835,7 +912,7 @@ export default function App() {
                   args={t.args}
                   cwd={t.cwd}
                   sessionId={t.sessionId}
-                  visible={onStage}
+                  visible={shown}
                   focused={t.id === activeId}
                   onExit={() => markExited(t.id)}
                   onInteract={() => promote(t.id)}
@@ -1004,15 +1081,43 @@ export default function App() {
         </div>
       )}
       {chipMenu && (() => {
-        // Split items act on the FOCUSED pane; they're inert for the focused
-        // tab itself (a pane can't split with its own tab) and when the
-        // resulting panes would be too small to use.
-        const focusedRect = geom ? paneRect(activeId) : stageBox
-        const usable = (edge: Edge) => activeId !== null && chipMenu.tabId !== activeId && !!focusedRect && canSplit(focusedRect, edge)
-        const item = (label: string, enabled: boolean, run: () => void) => (
+        // Split items act on the FOCUSED pane. A pane can't split with its
+        // own tab (a tab's content mounts exactly once) — so on the focused
+        // tab's chip they split with the previously viewed tab instead, and
+        // the label names it so the outcome is never a surprise.
+        // Gate against the REAL tree: while zoomed, geom shows one full-stage
+        // pane, but the split executes on the underlying layout — validating
+        // the zoomed rect would wave through sub-minimum sliver panes.
+        const focusedRect = layout !== null
+          ? (stageBox ? layoutRects(layout, stageBox).panes.find((p) => p.tabId === activeId)?.rect : undefined)
+          : stageBox
+        const self = chipMenu.tabId === activeId
+        const partnerId = self
+          ? mruRef.current.find((x) => x !== activeId && tabs.some((t) => t.id === x))
+            ?? tabs.find((t) => t.id !== activeId)?.id ?? null
+          : chipMenu.tabId
+        const partner = tabs.find((t) => t.id === partnerId)
+        const partnerLabel = partner
+          ? partner.terminal
+            ? (shellDirs[partner.id] ? baseName(shellDirs[partner.id]) : 'shell')
+            : (() => {
+                const s = partner.sessionId ? sessions.find((x) => x.session_id === partner.sessionId) : undefined
+                return s ? sessionLabel(s) : partner.title
+              })()
+          : null
+        const usable = (edge: Edge) => activeId !== null && partnerId !== null && !!focusedRect && canSplit(focusedRect, edge)
+        const splitTip = activeId === null
+          ? 'nothing on stage to split against'
+          : partnerId === null
+            ? 'no other tab to place beside this one'
+            : 'window too small to split'
+        const splitLabel = (dir: string) => (self && partnerLabel ? `Split ${dir} with “${clip(partnerLabel, 18)}”` : `Split ${dir}`)
+        const inSplit = layout !== null && staged.includes(chipMenu.tabId)
+        const item = (label: string, enabled: boolean, run: () => void, tip?: string) => (
           <div
             key={label}
             onClick={enabled ? run : undefined}
+            title={enabled ? undefined : tip}
             style={{
               padding: '5px 12px', fontSize: 12, borderRadius: 4, whiteSpace: 'nowrap',
               color: enabled ? '#c8cdd5' : '#5b6675', cursor: enabled ? 'pointer' : 'default',
@@ -1032,8 +1137,19 @@ export default function App() {
               fontFamily: 'system-ui', boxShadow: '0 6px 20px rgba(0,0,0,.45)',
             }}
           >
-            {item('Split right', usable('right'), () => splitFromMenu(chipMenu.tabId, 'right'))}
-            {item('Split down', usable('bottom'), () => splitFromMenu(chipMenu.tabId, 'bottom'))}
+            {item(splitLabel('right'), usable('right'), () => splitFromMenu(partnerId!, 'right'), splitTip)}
+            {item(splitLabel('down'), usable('bottom'), () => splitFromMenu(partnerId!, 'bottom'), splitTip)}
+            {inSplit && item(zoomOn && self ? 'Restore split (⇧⌘⏎)' : 'Zoom pane (⇧⌘⏎)', true, () => {
+              setChipMenu(null)
+              setStage((st) => showTab(st, chipMenu.tabId))
+              toggleZoomRef.current(chipMenu.tabId)
+            })}
+            {inSplit && item('Remove from split', true, () => {
+              // the pane leaves the stage; the TAB survives in the deck
+              // (✕ / Close tab is the one that kills it)
+              setChipMenu(null)
+              setStage((st) => closeStaged(st, chipMenu.tabId).stage)
+            })}
             {item('Close tab', true, () => { setChipMenu(null); closeTab(chipMenu.tabId) })}
           </div>
         )

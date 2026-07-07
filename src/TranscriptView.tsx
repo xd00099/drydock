@@ -469,7 +469,9 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
         const a = (ev.target as HTMLElement).closest?.('a')
         if (a) ev.preventDefault()
       }}
-      style={{ position: 'relative', height: '100%', display: 'flex', flexDirection: 'column', color: '#c8cdd5', fontFamily: 'system-ui', fontSize: 13 }}
+      // opaque: a split pane's session tint stays in the pane's thin mat —
+      // never washing the reading surface (or shifting it with focus)
+      style={{ position: 'relative', height: '100%', display: 'flex', flexDirection: 'column', background: '#10141a', color: '#c8cdd5', fontFamily: 'system-ui', fontSize: 13 }}
     >
       <div style={{ padding: '6px 10px', background: '#161c25', display: 'flex', alignItems: 'center', gap: 10 }}>
         <span style={{ flexShrink: 0 }}>

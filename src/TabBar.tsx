@@ -13,6 +13,7 @@ type Props = {
   draggedId: number | null
   insertMark: { beforeId: number | null } | null // reorder slot in the dragged tab's lane
   onChipPress: (e: React.PointerEvent, id: number, label: string) => void
+  onChipDouble: (id: number) => void
   onChipMenu: (e: React.MouseEvent, id: number) => void
   onSelect: (id: number) => void
   onClose: (id: number) => void
@@ -45,7 +46,7 @@ const S = {
   mark: { flexShrink: 0, width: 2, height: 16, background: '#7fb0ff', borderRadius: 1 } as const,
 }
 
-export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs, unread, draggedId, insertMark, onChipPress, onChipMenu, onSelect, onClose, onNewShell, onHome }: Props) {
+export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs, unread, draggedId, insertMark, onChipPress, onChipDouble, onChipMenu, onSelect, onClose, onNewShell, onHome }: Props) {
   const sessionTabs = tabs.filter((t) => !t.terminal)
   const termTabs = tabs.filter((t) => t.terminal)
   const termNames = terminalLabels(termTabs, shellDirs)
@@ -67,6 +68,7 @@ export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs,
         ref={t.id === activeId ? activeChipRef : undefined}
         data-tabchip={t.id}
         onClick={() => onSelect(t.id)}
+        onDoubleClick={() => onChipDouble(t.id)}
         onPointerDown={(e) => onChipPress(e, t.id, label)}
         onContextMenu={(e) => onChipMenu(e, t.id)}
         title={tip}
