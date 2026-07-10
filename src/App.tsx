@@ -11,7 +11,7 @@ import BriefingPanel from './BriefingPanel'
 import HomeView from './HomeView'
 import FindBar from './FindBar'
 import { useSessions } from './useSessions'
-import type { Artifact, ArtifactKind, PaneSearch, RestoreTab, SessionView, Tab } from './types'
+import type { Artifact, ArtifactKind, PaneSearch, RestoreTab, SessionView, Tab, TakeoverInfo } from './types'
 import { baseName, clip, sessionColor, sessionLabel, uuidv4 } from './types'
 import {
   GUTTER, canSplit, clampRatio, closeStaged, dropOnStage, focusNeighbor, hitTest,
@@ -37,6 +37,10 @@ export default function App() {
   const [stage, setStage] = useState<Stage>({ layout: null, active: null })
   const { layout, active: activeId } = stage
   const [quitGuard, setQuitGuard] = useState(false)
+  // Take-over confirm dialog: which live-elsewhere session, where it's
+  // running (fetched async; located=false until the lookup lands), and any
+  // kill error. null = closed.
+  const [takeover, setTakeover] = useState<{ s: SessionView; info: TakeoverInfo | null; located: boolean; err: string | null; killing: boolean } | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   // full-window Home overlay (⌘K → "usage & timeline"): global data without
   // leaving the active terminal — Esc returns exactly where you were
@@ -91,6 +95,9 @@ export default function App() {
   // for the once-registered keydown handler: shortcuts must respect open overlays
   const quitGuardRef = useRef(quitGuard)
   quitGuardRef.current = quitGuard
+  const takeoverRef = useRef(takeover)
+  takeoverRef.current = takeover
+  const takeoverSeqRef = useRef(0) // guards the async process lookup against reopen races
   const paletteOpenRef = useRef(paletteOpen)
   paletteOpenRef.current = paletteOpen
   const homeOverlayRef = useRef(homeOverlay)
@@ -151,6 +158,41 @@ export default function App() {
       sessionId: s.session_id,
       preview,
     }, s.session_id)
+  }
+
+  // "Take over here": stop the terminal that owns a live-elsewhere session,
+  // then resume it in a Drydock tab. Opens the confirm dialog naming exactly
+  // what dies; a session that's live in THIS window just gets its tab focused.
+  const openTakeover = (s: SessionView) => {
+    const here = tabsRef.current.find((t) => t.sessionId === s.session_id && t.kind === 'pty' && !t.exited)
+    if (here) { setStage((st) => showTab(st, here.id)); return }
+    // token guards the async lookup: cancelling and reopening (even the same
+    // session) must not let a stale fetch land its info on the new dialog
+    const token = ++takeoverSeqRef.current
+    setTakeover({ s, info: null, located: false, err: null, killing: false })
+    const apply = (patch: Partial<NonNullable<typeof takeover>>) =>
+      setTakeover((t) => (t && takeoverSeqRef.current === token ? { ...t, ...patch } : t))
+    invoke<TakeoverInfo | null>('session_process_info', { sessionId: s.session_id })
+      .then((info) => apply({ info, located: true }))
+      .catch(() => apply({ located: true }))
+  }
+  const confirmTakeover = () => {
+    const t = takeoverRef.current
+    if (!t || t.killing) return
+    if (!t.info) {
+      // process already gone — the session just hasn't flipped to ended in
+      // the index yet; resume directly (the override the resume-here flow uses)
+      setTakeover(null)
+      resume({ ...t.s, live_status: 'ended' }, { permanent: true })
+      return
+    }
+    setTakeover({ ...t, killing: true, err: null })
+    invoke('takeover_kill', { sessionId: t.s.session_id })
+      .then(() => {
+        setTakeover(null)
+        resume({ ...t.s, live_status: 'ended' }, { permanent: true })
+      })
+      .catch((e) => setTakeover((x) => (x ? { ...x, killing: false, err: String(e) } : x)))
   }
 
   // A brand-new session has no id until claude generates one, so we'd have no way
@@ -626,6 +668,13 @@ export default function App() {
         if (e.metaKey && ['k', 'f', 't', 'T', 'w', 'd', '0'].includes(e.key)) e.preventDefault()
         return
       }
+      // Take-over dialog: same modal contract as the quit guard (Esc cancels
+      // unless the kill is already in flight; shortcuts must not act behind it)
+      if (takeoverRef.current) {
+        if (e.key === 'Escape' && !takeoverRef.current.killing) setTakeover(null)
+        if (e.metaKey && ['k', 'f', 't', 'T', 'w', 'd', '0'].includes(e.key)) e.preventDefault()
+        return
+      }
       // Same for the search palette (it handles its own Esc/arrows/Enter); ⌘K
       // still toggles it closed.
       if (paletteOpenRef.current && e.metaKey && ['f', 't', 'T', 'w', 'd', '0'].includes(e.key)) {
@@ -821,6 +870,7 @@ export default function App() {
         activeSessionId={activeTab?.sessionId ?? null}
         onResume={resume}
         onTranscript={(s) => resume(s, { transcript: true })}
+        onTakeover={openTakeover}
         onNewSession={newSession}
         onToggleStar={(s) => invoke('set_starred', { sessionId: s.session_id, starred: !s.starred }).then(refresh)}
         onHide={(sessionId, hide) => invoke('set_hidden', { sessionId, hidden: hide }).then(refresh)}
@@ -927,6 +977,7 @@ export default function App() {
                     const liveTab = tabs.find((x) => x.sessionId === t.sessionId && x.kind === 'pty' && !x.exited)
                     return liveTab ? () => setStage((st) => showTab(st, liveTab.id)) : null
                   })()}
+                  onTakeover={sess && sess.live_status !== 'ended' ? () => openTakeover(sess) : null}
                   onInteract={() => promote(t.id)}
                   onMatches={(index, count) => setFindMatches({ index, count })}
                   onResumeHere={() => {
@@ -1050,7 +1101,9 @@ export default function App() {
         // zIndex + own compositing layer: every other overlay has a z-index, but
         // this modal had none, so over a terminal's WebGL canvas WebKit painted it
         // on top yet routed clicks to the canvas (visible but not clickable).
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, transform: 'translateZ(0)' }}>
+        // z-110 (above the takeover dialog's 100): a quit requested mid-takeover
+        // must sit on top, matching the keydown handler's quit-guard-first order.
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 110, transform: 'translateZ(0)' }}>
           <div style={{ background: '#161c25', color: '#e8edf4', padding: 20, borderRadius: 8, fontFamily: 'system-ui', fontSize: 13 }}>
             <div style={{ marginBottom: 12 }}>Sessions are still running in tabs. Quit anyway?</div>
             <button
@@ -1062,6 +1115,50 @@ export default function App() {
             <button
               style={{ background: '#1d2530', color: '#e8edf4', border: '1px solid #2c3647', borderRadius: 5, padding: '4px 12px', cursor: 'pointer', fontSize: 12 }}
               onClick={() => setQuitGuard(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      {takeover && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, transform: 'translateZ(0)' }}>
+          <div style={{ background: '#161c25', color: '#e8edf4', padding: 20, borderRadius: 8, fontFamily: 'system-ui', fontSize: 13, maxWidth: 440 }}>
+            <div style={{ fontWeight: 600, marginBottom: 8 }}>Take over this session?</div>
+            {!takeover.located ? (
+              <div style={{ color: '#9aa3af', marginBottom: 12 }}>locating the process…</div>
+            ) : takeover.info ? (
+              <div style={{ marginBottom: 12, lineHeight: 1.6 }}>
+                <div>
+                  Stops <span style={{ fontFamily: 'Menlo, monospace', fontSize: 12 }}>claude</span> (pid {takeover.info.pid}) in{' '}
+                  <b>{takeover.info.app ?? 'another terminal'}</b>
+                  {takeover.info.tty ? <span style={{ color: '#9aa3af' }}> · {takeover.info.tty}</span> : null}
+                  {takeover.info.cwd ? <span style={{ color: '#9aa3af' }}> — {clip(takeover.info.cwd, 44)}</span> : null}
+                  , then resumes the session here.
+                </div>
+                {takeover.info.status === 'busy' && (
+                  <div style={{ color: '#e8a33d', marginTop: 6 }}>
+                    Mid-task right now — the in-flight turn will be lost. Everything already in the transcript survives.
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div style={{ color: '#9aa3af', marginBottom: 12 }}>
+                The process is already gone — the session just hasn't settled to "ended" yet. Resume it directly.
+              </div>
+            )}
+            {takeover.err && <div style={{ color: '#cf6b6b', marginBottom: 10 }}>{takeover.err}</div>}
+            <button
+              style={{ background: takeover.info ? '#7a2e2e' : '#2e4a7a', color: '#fff', border: 'none', padding: '5px 12px', borderRadius: 5, cursor: takeover.located && !takeover.killing ? 'pointer' : 'default', fontSize: 12, marginRight: 8, opacity: takeover.located && !takeover.killing ? 1 : 0.6 }}
+              disabled={!takeover.located || takeover.killing}
+              onClick={confirmTakeover}
+            >
+              {takeover.killing ? 'Taking over…' : takeover.info ? 'Take over' : 'Resume here'}
+            </button>
+            <button
+              style={{ background: '#1d2530', color: '#e8edf4', border: '1px solid #2c3647', borderRadius: 5, padding: '4px 12px', cursor: 'pointer', fontSize: 12 }}
+              disabled={takeover.killing}
+              onClick={() => setTakeover(null)}
             >
               Cancel
             </button>

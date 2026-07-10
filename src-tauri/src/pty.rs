@@ -121,6 +121,12 @@ impl PtyManager {
         self.sessions.lock().unwrap().get(&id).and_then(|s| s.child.process_id())
     }
 
+    /// OS pids of ALL live children — the takeover guard: an external-kill
+    /// request must never signal one of our own tabs.
+    pub fn pids(&self) -> Vec<u32> {
+        self.sessions.lock().unwrap().values().filter_map(|s| s.child.process_id()).collect()
+    }
+
     /// Kill the child; the reader thread then sees EOF and fires on_exit + cleanup.
     pub fn kill(&self, id: u32) -> Result<()> {
         let mut map = self.sessions.lock().unwrap();

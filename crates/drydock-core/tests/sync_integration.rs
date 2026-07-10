@@ -283,6 +283,7 @@ fn agent_file_never_attaches_to_a_radar_stub() {
             status: "busy".into(),
             pid: 42,
             updated_at: None,
+            proc_start: None,
         }])
         .unwrap();
     assert!(store.get_session(SID).unwrap().is_some(), "stub exists");

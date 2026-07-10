@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
-import type { PaneSearch, SessionView, TEntry, TranscriptPage } from './types'
+import type { PaneSearch, SessionView, TakeoverInfo, TEntry, TranscriptPage } from './types'
 import { clip } from './types'
 
 type ChunkView = { role: string; text: string; ts: number | null }
@@ -16,6 +16,9 @@ type Props = {
   // set when this session's live terminal is open in THIS window — the header
   // then offers a jump back (the ⌘⇧T toggle's visible half)
   onFocusLive?: (() => void) | null
+  // set for a session live in ANOTHER terminal — the header offers taking it
+  // over (App owns the confirm dialog + kill + resume)
+  onTakeover?: (() => void) | null
   onInteract?: () => void // scrolling/clicking the transcript body
   onMatches?: (index: number, count: number) => void // ⌘F find results (active match, total)
 }
@@ -120,7 +123,7 @@ function fmtTime(ts: number, prev: number | null): string {
 }
 
 const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
-  { sessionId, session, onResumeHere, onFocusLive, onInteract, onMatches },
+  { sessionId, session, onResumeHere, onFocusLive, onTakeover, onInteract, onMatches },
   ref,
 ) {
   const [entries, setEntries] = useState<TEntry[]>([])
@@ -461,6 +464,21 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
   })
 
   const live = session && session.live_status !== 'ended'
+  // Live in another terminal: name WHERE it's running (host app · tty) — the
+  // whole point is not having to hunt for that window. Best-effort; the plain
+  // "another terminal" text stands when the process can't be located.
+  const [loc, setLoc] = useState<TakeoverInfo | null>(null)
+  const liveElsewhere = !!live && !onFocusLive
+  // re-locate when the session's live state changes too (it may move terminals
+  // or its status may flip) — not just on the first transition
+  useEffect(() => {
+    if (!liveElsewhere) { setLoc(null); return }
+    let stale = false
+    invoke<TakeoverInfo | null>('session_process_info', { sessionId })
+      .then((i) => { if (!stale) setLoc(i) })
+      .catch(() => {})
+    return () => { stale = true }
+  }, [sessionId, liveElsewhere, session?.live_status])
   return (
     <div
       // links in rendered markdown (parent transcript AND agent overlay) must
@@ -478,12 +496,17 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
           {live
             ? onFocusLive
               ? `read-only transcript — live in this window (${session?.live_status})`
-              : `running in another terminal (${session?.live_status}) — read-only live view`
+              : `running in ${loc?.app ?? 'another terminal'}${loc?.tty ? ` · ${loc.tty}` : ''} (${session?.live_status}) — read-only live view`
             : 'session ended'}
         </span>
         {live && onFocusLive && (
           <button style={hBtn} title="Switch to the running terminal tab (⌘⇧T)" onClick={onFocusLive}>
             Go to live tab
+          </button>
+        )}
+        {liveElsewhere && onTakeover && (
+          <button style={hBtn} title="Stop that terminal's claude and resume this session here" onClick={onTakeover}>
+            Take over here…
           </button>
         )}
         {!live && (

@@ -14,6 +14,7 @@ type Props = {
   activeSessionId: string | null // session shown in the active tab — highlighted in the list
   onResume: (s: SessionView) => void
   onTranscript: (s: SessionView) => void // open the read-only transcript (never spawns claude)
+  onTakeover: (s: SessionView) => void // stop a live-elsewhere session's process + resume it here
   onNewSession: (projectPath: string) => void
   onToggleStar: (s: SessionView) => void
   onHide: (sessionId: string, hide: boolean) => void
@@ -125,7 +126,7 @@ type Naming =
   // click-away blur) must be a no-op, not freeze an AUTO title into an override
   | { kind: 'rename-session'; sid: string; initial: string }
 
-export default function Sidebar({ onHome, sessions, folders, hidden, activeSessionId, onResume, onTranscript, onNewSession, onToggleStar, onHide, onDelete, onRefresh, updateBusyCount, onRestartForUpdate }: Props) {
+export default function Sidebar({ onHome, sessions, folders, hidden, activeSessionId, onResume, onTranscript, onTakeover, onNewSession, onToggleStar, onHide, onDelete, onRefresh, updateBusyCount, onRestartForUpdate }: Props) {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('dd.sidebarCollapsed') === '1')
   // clamp on load AND on window resize: a width persisted on a big monitor must
   // not overflow a smaller window later
@@ -672,6 +673,16 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
                 <button style={S.menuItem} {...menuHover} onClick={() => { onTranscript(menu.s); setMenu(null) }}>
                   View transcript
                 </button>
+                {menu.s.live_status !== 'ended' && (
+                  <button
+                    style={S.menuItem}
+                    {...menuHover}
+                    title="Stop the terminal that owns this session and resume it in Drydock (asks first)"
+                    onClick={() => { onTakeover(menu.s); setMenu(null) }}
+                  >
+                    Take over here…
+                  </button>
+                )}
                 <button style={S.menuItem} {...menuHover} onClick={() => setMenu({ ...menu, view: 'folders' })}>
                   Move to folder&nbsp;&nbsp;▸
                 </button>

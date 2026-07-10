@@ -1459,6 +1459,7 @@ mod tests {
             status: status.to_string(),
             updated_at: None,
             cwd: cwd.map(String::from),
+            proc_start: None,
         }
     }
 

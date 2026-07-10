@@ -12,6 +12,7 @@ mod index;
 mod pty;
 mod search;
 mod settings;
+mod takeover;
 mod updates;
 
 use base64::engine::general_purpose::STANDARD as B64;
@@ -525,6 +526,8 @@ fn main() {
             save_saved_artifact,
             notify_user,
             force_quit,
+            takeover::session_process_info,
+            takeover::takeover_kill,
             index::sessions_snapshot,
             index::set_starred,
             index::set_hidden,

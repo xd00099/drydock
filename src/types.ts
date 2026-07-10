@@ -1,3 +1,13 @@
+// Where a live-elsewhere session is running (backend session_process_info) —
+// named in the take-over confirm dialog before anything is signalled.
+export type TakeoverInfo = {
+  pid: number
+  status: string // 'busy' | 'idle' (pid-file granularity)
+  cwd: string | null
+  tty: string | null
+  app: string | null
+}
+
 export type SessionView = {
   session_id: string
   project_path: string
