@@ -10,6 +10,99 @@
    "Show scroll bars: Always" or a plugged-in mouse). */
 :root {
   color-scheme: dark;
+
+  /* Semantic color tokens — the single palette behind every inline style
+     (src/theme.ts owns the xterm mirror, which can't read CSS vars). Dark IS
+     the original design: these values are the exact hexes the UI shipped with. */
+  --dd-bg0: #0b0e13;
+  --dd-bg1: #10141a;
+  --dd-surface: #11161f;
+  --dd-surface2: #161c25;
+  --dd-btn: #141b26;
+  --dd-row: #1b2330;
+  --dd-well: #0d1117;
+  --dd-hover: #232c3a;
+  --dd-border: #1d2530;
+  --dd-border2: #2c3647;
+  --dd-border3: #3a4656;
+  --dd-border-faint: #10151d;
+  --dd-text: #e8edf4;
+  --dd-text1: #c8cdd5;
+  --dd-text2: #9aa3af;
+  --dd-text3: #7d8794;
+  --dd-dim: #5b6675;
+  --dd-dim2: #4a5462;
+  --dd-accent: #7fb0ff;
+  --dd-accent-strong: #4f7fd9;
+  --dd-accent-text: #9cc3ff;
+  --dd-accent-muted: #5a7fb0;
+  --dd-accent-border: #3d5a80;
+  --dd-accent-bg: #27405e;
+  --dd-ok: #5fb98a;
+  --dd-ok-bright: #7ec8a0;
+  --dd-ok-bg: #2f6b4f;
+  --dd-warn: #e8a33d;
+  --dd-warn-bright: #e8c35a;
+  --dd-warn-muted: #c9a35f;
+  --dd-warn-border: #6a4a2c;
+  --dd-warn-bg: #3a3122;
+  --dd-err: #cf6b6b;
+  --dd-err-bright: #e8907a;
+  --dd-err-text: #f0d0d0;
+  --dd-err-border: #6a3a3a;
+  --dd-err-bg: #3a2626;
+  --dd-err-bg-strong: #5a3030;
+  --dd-teal: #7ecfc0;
+  --dd-purple: #c792ea;
+  --dd-white: #fff;
+}
+
+/* Light theme — hand-tuned counterparts, applied by theme.ts via the html
+   data-theme attribute. color-scheme flips so the OS draws light scrollbars
+   and native controls to match. */
+html[data-theme='light'] {
+  color-scheme: light;
+  --dd-bg0: #f2f4f8;
+  --dd-bg1: #ffffff;
+  --dd-surface: #ffffff;
+  --dd-surface2: #e9edf3;
+  --dd-btn: #e6eaf1;
+  --dd-row: #dbe4f0;
+  --dd-well: #eef1f6;
+  --dd-hover: #e1e7ef;
+  --dd-border: #d8dee7;
+  --dd-border2: #c2cbd8;
+  --dd-border3: #a6b2c2;
+  --dd-border-faint: #e7ebf1;
+  --dd-text: #1a2330;
+  --dd-text1: #2d3949;
+  --dd-text2: #4c5a6c;
+  --dd-text3: #617082;
+  --dd-dim: #8391a2;
+  --dd-dim2: #a3aebc;
+  --dd-accent: #2f6bd8;
+  --dd-accent-strong: #2456b8;
+  --dd-accent-text: #1f5bc4;
+  --dd-accent-muted: #4a6a94;
+  --dd-accent-border: #9db8dd;
+  --dd-accent-bg: #d8e5f8;
+  --dd-ok: #1f8a5a;
+  --dd-ok-bright: #22996a;
+  --dd-ok-bg: #cdeadd;
+  --dd-warn: #a86a0c;
+  --dd-warn-bright: #9c7d08;
+  --dd-warn-muted: #8a6a2a;
+  --dd-warn-border: #dcbf92;
+  --dd-warn-bg: #f6ecd8;
+  --dd-err: #c23f3f;
+  --dd-err-bright: #bd5240;
+  --dd-err-text: #7a2020;
+  --dd-err-border: #dba3a3;
+  --dd-err-bg: #f7dede;
+  --dd-err-bg-strong: #efc9c9;
+  --dd-teal: #177a6c;
+  --dd-purple: #8a4bbf;
+  --dd-white: #ffffff;
 }
 
 html,
