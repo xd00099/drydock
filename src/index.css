@@ -115,6 +115,250 @@ html[data-theme='light'] {
   --dd-ink: #17130a;
 }
 
+/* Named themes — canonical palettes from their iTerm2/VS Code ports, mapped
+   onto the same semantic tokens. Every block must define the full :root token
+   set (theme.test.ts enforces this); theme.ts carries each theme's xterm
+   mirror. */
+html[data-theme='dracula'] {
+  color-scheme: dark;
+  --dd-bg0: #1e1f29;
+  --dd-bg1: #282a36;
+  --dd-surface: #2b2d3a;
+  --dd-surface2: #313342;
+  --dd-btn: #303241;
+  --dd-row: #363948;
+  --dd-well: #21222c;
+  --dd-hover: #44475a;
+  --dd-border: #3a3d4d;
+  --dd-border2: #44475a;
+  --dd-border3: #565a70;
+  --dd-border-faint: #2c2e3b;
+  --dd-text: #f8f8f2;
+  --dd-text1: #e4e4de;
+  --dd-text2: #b8bac6;
+  --dd-text3: #9498ac;
+  --dd-dim: #6272a4;
+  --dd-dim2: #525a7a;
+  --dd-accent: #bd93f9;
+  --dd-accent-strong: #9a68e8;
+  --dd-accent-text: #cfaefb;
+  --dd-accent-muted: #8a70b8;
+  --dd-accent-border: #5f4a8a;
+  --dd-accent-bg: #3a3153;
+  --dd-ok: #50fa7b;
+  --dd-ok-bright: #7bfb9a;
+  --dd-ok-bg: #1f5c37;
+  --dd-warn: #ffb86c;
+  --dd-warn-bright: #f1fa8c;
+  --dd-warn-muted: #d9b06a;
+  --dd-warn-border: #77592e;
+  --dd-warn-bg: #453a26;
+  --dd-err: #ff5555;
+  --dd-err-bright: #ff7b6f;
+  --dd-err-text: #ffd0d0;
+  --dd-err-border: #7a3a3a;
+  --dd-err-bg: #442a2e;
+  --dd-err-bg-strong: #63343a;
+  --dd-teal: #8be9fd;
+  --dd-purple: #ff79c6;
+  --dd-white: #fff;
+  --dd-btn-danger: #8a3040;
+  --dd-btn-primary: #4d3d78;
+  --dd-ink: #17130a;
+}
+
+html[data-theme='nord'] {
+  color-scheme: dark;
+  --dd-bg0: #272c36;
+  --dd-bg1: #2e3440;
+  --dd-surface: #323845;
+  --dd-surface2: #373e4d;
+  --dd-btn: #3b4252;
+  --dd-row: #404859;
+  --dd-well: #2a303c;
+  --dd-hover: #434c5e;
+  --dd-border: #3b4252;
+  --dd-border2: #4c566a;
+  --dd-border3: #5c6a82;
+  --dd-border-faint: #333947;
+  --dd-text: #eceff4;
+  --dd-text1: #d8dee9;
+  --dd-text2: #aeb7c6;
+  --dd-text3: #8f99ab;
+  --dd-dim: #6f7a8e;
+  --dd-dim2: #5d6879;
+  --dd-accent: #88c0d0;
+  --dd-accent-strong: #5e81ac;
+  --dd-accent-text: #9fd0de;
+  --dd-accent-muted: #6a97a8;
+  --dd-accent-border: #45636e;
+  --dd-accent-bg: #31454e;
+  --dd-ok: #a3be8c;
+  --dd-ok-bright: #b5cfa0;
+  --dd-ok-bg: #46583a;
+  --dd-warn: #e0b56d;
+  --dd-warn-bright: #ebcb8b;
+  --dd-warn-muted: #c4a878;
+  --dd-warn-border: #6a5a38;
+  --dd-warn-bg: #4a4232;
+  --dd-err: #bf616a;
+  --dd-err-bright: #d08770;
+  --dd-err-text: #f0d4d6;
+  --dd-err-border: #6e4048;
+  --dd-err-bg: #4a3338;
+  --dd-err-bg-strong: #5e3a42;
+  --dd-teal: #8fbcbb;
+  --dd-purple: #b48ead;
+  --dd-white: #fff;
+  --dd-btn-danger: #8a4550;
+  --dd-btn-primary: #45607e;
+  --dd-ink: #17130a;
+}
+
+html[data-theme='one-dark'] {
+  color-scheme: dark;
+  --dd-bg0: #21252b;
+  --dd-bg1: #282c34;
+  --dd-surface: #2c313a;
+  --dd-surface2: #333842;
+  --dd-btn: #31363f;
+  --dd-row: #3a3f4b;
+  --dd-well: #23272e;
+  --dd-hover: #3e4451;
+  --dd-border: #363c46;
+  --dd-border2: #4b5263;
+  --dd-border3: #5c6370;
+  --dd-border-faint: #2d323b;
+  --dd-text: #dcdfe4;
+  --dd-text1: #abb2bf;
+  --dd-text2: #9198a5;
+  --dd-text3: #7f8794;
+  --dd-dim: #5c6370;
+  --dd-dim2: #4b5263;
+  --dd-accent: #61afef;
+  --dd-accent-strong: #3b83cc;
+  --dd-accent-text: #82c0f4;
+  --dd-accent-muted: #5388b8;
+  --dd-accent-border: #3a5a7c;
+  --dd-accent-bg: #263b52;
+  --dd-ok: #98c379;
+  --dd-ok-bright: #aacf8e;
+  --dd-ok-bg: #405434;
+  --dd-warn: #d19a66;
+  --dd-warn-bright: #e5c07b;
+  --dd-warn-muted: #bfa06a;
+  --dd-warn-border: #6a5432;
+  --dd-warn-bg: #423827;
+  --dd-err: #e06c75;
+  --dd-err-bright: #e8856f;
+  --dd-err-text: #f2cfd2;
+  --dd-err-border: #6e3a40;
+  --dd-err-bg: #452b2f;
+  --dd-err-bg-strong: #5e3238;
+  --dd-teal: #56b6c2;
+  --dd-purple: #c678dd;
+  --dd-white: #fff;
+  --dd-btn-danger: #8f333b;
+  --dd-btn-primary: #2d4f75;
+  --dd-ink: #17130a;
+}
+
+html[data-theme='solarized-dark'] {
+  color-scheme: dark;
+  --dd-bg0: #00212b;
+  --dd-bg1: #002b36;
+  --dd-surface: #032f3b;
+  --dd-surface2: #073642;
+  --dd-btn: #0a3b48;
+  --dd-row: #0d4354;
+  --dd-well: #002731;
+  --dd-hover: #12495a;
+  --dd-border: #0a3b48;
+  --dd-border2: #155163;
+  --dd-border3: #2a6475;
+  --dd-border-faint: #04303c;
+  --dd-text: #eee8d5;
+  --dd-text1: #93a1a1;
+  --dd-text2: #839496;
+  --dd-text3: #6f858d;
+  --dd-dim: #586e75;
+  --dd-dim2: #4a5f66;
+  --dd-accent: #268bd2;
+  --dd-accent-strong: #1e6fa8;
+  --dd-accent-text: #4ba3e3;
+  --dd-accent-muted: #2f7cad;
+  --dd-accent-border: #175a80;
+  --dd-accent-bg: #0d4a68;
+  --dd-ok: #859900;
+  --dd-ok-bright: #9fb520;
+  --dd-ok-bg: #3c4a10;
+  --dd-warn: #b58900;
+  --dd-warn-bright: #d1a821;
+  --dd-warn-muted: #a08a3a;
+  --dd-warn-border: #665020;
+  --dd-warn-bg: #3d3517;
+  --dd-err: #dc322f;
+  --dd-err-bright: #cb4b16;
+  --dd-err-text: #f5c6c4;
+  --dd-err-border: #6e2a28;
+  --dd-err-bg: #47201f;
+  --dd-err-bg-strong: #612a28;
+  --dd-teal: #2aa198;
+  --dd-purple: #6c71c4;
+  --dd-white: #fff;
+  --dd-btn-danger: #9c2b28;
+  --dd-btn-primary: #14618f;
+  --dd-ink: #17130a;
+}
+
+html[data-theme='solarized-light'] {
+  color-scheme: light;
+  --dd-bg0: #eee8d5;
+  --dd-bg1: #fdf6e3;
+  --dd-surface: #f9f1dd;
+  --dd-surface2: #ede5cc;
+  --dd-btn: #e9e1c8;
+  --dd-row: #e2d9bd;
+  --dd-well: #f5eed8;
+  --dd-hover: #e6ddc2;
+  --dd-border: #ded5b8;
+  --dd-border2: #ccc2a2;
+  --dd-border3: #b0a685;
+  --dd-border-faint: #ece4cc;
+  --dd-text: #073642;
+  --dd-text1: #2f4d57;
+  --dd-text2: #586e75;
+  --dd-text3: #657b83;
+  --dd-dim: #8d9c9c;
+  --dd-dim2: #a3aea9;
+  --dd-accent: #268bd2;
+  --dd-accent-strong: #1e6fa8;
+  --dd-accent-text: #176197;
+  --dd-accent-muted: #56809f;
+  --dd-accent-border: #a3c5e0;
+  --dd-accent-bg: #d9e7f2;
+  --dd-ok: #758700;
+  --dd-ok-bright: #859900;
+  --dd-ok-bg: #e4e8c4;
+  --dd-warn: #a07508;
+  --dd-warn-bright: #8f6f04;
+  --dd-warn-muted: #8a743a;
+  --dd-warn-border: #d8c288;
+  --dd-warn-bg: #f2e8c8;
+  --dd-err: #dc322f;
+  --dd-err-bright: #cb4b16;
+  --dd-err-text: #8a1f1d;
+  --dd-err-border: #e0a8a0;
+  --dd-err-bg: #f5ddd5;
+  --dd-err-bg-strong: #eec9c0;
+  --dd-teal: #2aa198;
+  --dd-purple: #6c71c4;
+  --dd-white: #ffffff;
+  --dd-btn-danger: #c03c32;
+  --dd-btn-primary: #268bd2;
+  --dd-ink: #17130a;
+}
+
 html,
 body,
 #root {

@@ -35,7 +35,7 @@ It never wraps the `claude` binary and never writes inside `~/.claude`. It reads
 - **Readable transcripts** — open any session as a rendered document (markdown, collapsible tool calls and thinking), flip between a live terminal and its transcript with ⌘⇧T, find in-session with ⌘F, export to markdown.
 - **Artifacts** — sessions launched from Drydock can render HTML, SVG, or Markdown into a side panel via a built-in loopback MCP server. Previews are saved per session into a local gallery.
 - **Interactive review** — annotate a rendered artifact by clicking the element you mean (⌘I), send the notes back, and Claude applies them and re-renders. Plans get reviewed by pointing, not by describing.
-- **Keyboard-first, your keys** — a new-session-in-any-folder dialog (⌘N, creates missing folders), panel and tab chords, and a Settings page (⌘,) where every binding is rebindable. Dark, light, and follow-system themes.
+- **Keyboard-first, your keys** — a new-session-in-any-folder dialog (⌘N, creates missing folders), panel and tab chords, and a Settings page (⌘,) where every binding is rebindable. Seven themes — Dark, Light, Dracula, Nord, One Dark, Solarized Dark/Light — or follow the system.
 - **A real terminal** — xterm.js on a PTY with GPU rendering and full IME support (pinyin included). Notifications and a menu-bar tray flag any session waiting on your input.
 
 ## A quick tour

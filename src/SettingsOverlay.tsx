@@ -1,5 +1,6 @@
 import { useEffect, useReducer, useState } from 'react'
 import { useSetting } from './settings'
+import { THEMES } from './theme'
 import {
   ACTIONS, KEYMAP_EVENT, actionLabel, chordFor, displayChord, findConflict,
   loadOverrides, saveOverride, serializeChord, useChord, validateChord,
@@ -8,8 +9,7 @@ import type { ActionId, Category } from './keymap'
 
 // ⌘, — full-window settings overlay (same overlay pattern as Home/usage:
 // fixed inset-0, z 85, below the takeover dialog's 100 and quit guard's 110).
-// Sections rail on the left; Appearance stays a stub until the theming spec
-// lands.
+// Sections rail on the left.
 
 type Section = 'shortcuts' | 'general' | 'appearance'
 
@@ -177,31 +177,66 @@ function ShortcutsPanel() {
   )
 }
 
+// A theme card's swatch shows THAT theme's colors (concrete hexes from the
+// registry), not the live tokens — otherwise every card previews the active
+// theme. The System card's swatch is a dark/light split.
+function Swatch({ p }: { p: { bg: string; text: string; dots: [string, string, string] } }) {
+  return (
+    <span style={{ display: 'flex', alignItems: 'center', gap: 4, background: p.bg, border: '1px solid var(--dd-border2)', borderRadius: 5, padding: '5px 7px', flexShrink: 0 }}>
+      <span style={{ width: 16, height: 3, borderRadius: 2, background: p.text }} />
+      {p.dots.map((c, i) => (
+        <span key={i} style={{ width: 6, height: 6, borderRadius: '50%', background: c }} />
+      ))}
+    </span>
+  )
+}
+
 function AppearancePanel() {
   const [theme, setTheme] = useSetting('theme', 'dark')
-  const options: { id: string; label: string; desc: string }[] = [
-    { id: 'dark', label: 'Dark', desc: 'The original Drydock palette.' },
-    { id: 'light', label: 'Light', desc: 'Bright chrome, dark text.' },
-    { id: 'system', label: 'System', desc: 'Follow the macOS appearance.' },
-  ]
+  const card = (on: boolean): React.CSSProperties => ({
+    display: 'flex', alignItems: 'center', gap: 10, width: '100%', textAlign: 'left',
+    background: on ? 'var(--dd-btn)' : 'none',
+    border: '1px solid ' + (on ? 'var(--dd-accent-border)' : 'var(--dd-border)'),
+    borderRadius: 8, padding: '9px 12px', cursor: 'pointer',
+  })
+  const radio = (on: boolean): React.CSSProperties => ({
+    width: 13, height: 13, borderRadius: '50%', flexShrink: 0,
+    border: '1px solid ' + (on ? 'var(--dd-accent)' : 'var(--dd-border3)'),
+    background: on ? 'var(--dd-accent)' : 'none',
+    boxShadow: on ? 'inset 0 0 0 3px var(--dd-btn)' : 'none',
+  })
+  const text = (label: string, desc: string) => (
+    <span style={{ flex: 1, minWidth: 0 }}>
+      <span style={{ display: 'block', color: 'var(--dd-text)', fontSize: 13 }}>{label}</span>
+      <span style={{ display: 'block', color: 'var(--dd-dim)', fontSize: 11, marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{desc}</span>
+    </span>
+  )
+  const sysOn = theme === 'system'
   return (
     <div>
       <div style={{ ...S.rowDesc, padding: '4px 0 10px' }}>
         Applies instantly — terminals recolor in place.
       </div>
-      {options.map((o) => {
-        const on = theme === o.id
-        return (
-          <button key={o.id} onClick={() => setTheme(o.id)}
-            style={{ display: 'flex', alignItems: 'center', gap: 12, width: '100%', textAlign: 'left', background: on ? 'var(--dd-btn)' : 'none', border: '1px solid ' + (on ? 'var(--dd-accent-border)' : 'var(--dd-border)'), borderRadius: 8, padding: '10px 14px', marginBottom: 8, cursor: 'pointer' }}>
-            <span style={{ width: 14, height: 14, borderRadius: '50%', flexShrink: 0, border: '1px solid ' + (on ? 'var(--dd-accent)' : 'var(--dd-border3)'), background: on ? 'var(--dd-accent)' : 'none', boxShadow: on ? 'inset 0 0 0 3px var(--dd-btn)' : 'none' }} />
-            <span>
-              <span style={{ display: 'block', color: 'var(--dd-text)', fontSize: 13 }}>{o.label}</span>
-              <span style={{ display: 'block', color: 'var(--dd-dim)', fontSize: 11, marginTop: 2 }}>{o.desc}</span>
-            </span>
-          </button>
-        )
-      })}
+      <button onClick={() => setTheme('system')} style={{ ...card(sysOn), marginBottom: 8 }}>
+        <span style={radio(sysOn)} />
+        {text('System', 'Follow the macOS appearance (Dark / Light).')}
+        <span style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'linear-gradient(90deg, #10141a 50%, #ffffff 50%)', border: '1px solid var(--dd-border2)', borderRadius: 5, padding: '5px 7px', flexShrink: 0 }}>
+          <span style={{ width: 16, height: 3, borderRadius: 2, background: '#c8cdd5' }} />
+          <span style={{ width: 16, height: 3, borderRadius: 2, background: '#2d3949' }} />
+        </span>
+      </button>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+        {THEMES.map((t) => {
+          const on = theme === t.id
+          return (
+            <button key={t.id} onClick={() => setTheme(t.id)} style={card(on)}>
+              <span style={radio(on)} />
+              {text(t.label, t.desc)}
+              <Swatch p={t.preview} />
+            </button>
+          )
+        })}
+      </div>
     </div>
   )
 }
