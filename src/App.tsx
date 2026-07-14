@@ -7,6 +7,7 @@ import TabBar from './TabBar'
 import TerminalPane, { bytesToB64 } from './TerminalPane'
 import TranscriptView from './TranscriptView'
 import SearchPalette from './SearchPalette'
+import NewSessionDialog from './NewSessionDialog'
 import BriefingPanel from './BriefingPanel'
 import HomeView from './HomeView'
 import FindBar from './FindBar'
@@ -44,6 +45,7 @@ export default function App() {
   // kill error. null = closed.
   const [takeover, setTakeover] = useState<{ s: SessionView; info: TakeoverInfo | null; located: boolean; err: string | null; killing: boolean } | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const [newDialog, setNewDialog] = useState(false) // ⌘N: new session in any folder
   // full-window Home overlay (⌘K → "usage & timeline"): global data without
   // leaving the active terminal — Esc returns exactly where you were
   const [homeOverlay, setHomeOverlay] = useState(false)
@@ -123,6 +125,8 @@ export default function App() {
   const takeoverSeqRef = useRef(0) // guards the async process lookup against reopen races
   const paletteOpenRef = useRef(paletteOpen)
   paletteOpenRef.current = paletteOpen
+  const newDialogRef = useRef(newDialog)
+  newDialogRef.current = newDialog
   const homeOverlayRef = useRef(homeOverlay)
   homeOverlayRef.current = homeOverlay
   const newShellRef = useRef(() => {})
@@ -193,6 +197,7 @@ export default function App() {
       case 'briefing.preview': setBriefingC(false); setPreviewNonce((n) => n + 1); break
       case 'tab.prev': cycleTab(-1); break
       case 'tab.next': cycleTab(1); break
+      case 'session.new': setNewDialog(true); break
       default: break
     }
   }
@@ -394,6 +399,17 @@ export default function App() {
   }
 
   const activeTab = tabs.find((t) => t.id === activeId)
+
+  // ⌘N recents: most-recent distinct project folders across all known sessions
+  const recentDirs = (() => {
+    const seen = new Set<string>()
+    const out: string[] = []
+    for (const s of [...sessions].sort((a, b) => (b.last_message_at ?? 0) - (a.last_message_at ?? 0))) {
+      if (s.project_path && !seen.has(s.project_path)) { seen.add(s.project_path); out.push(s.project_path) }
+      if (out.length >= 6) break
+    }
+    return out
+  })()
 
   // Find searches the active pane itself: a terminal's scrollback (live claude
   // sessions and shells alike, via xterm's search addon) or an open transcript
@@ -776,6 +792,13 @@ export default function App() {
       // Take-over dialog: Esc cancels unless the kill is already in flight
       if (takeoverRef.current) {
         if (e.key === 'Escape' && !takeoverRef.current.killing) setTakeover(null)
+        if (action) e.preventDefault()
+        return
+      }
+      // ⌘N dialog: its input handles Esc/arrows/Tab/Enter itself; the toggle
+      // chord re-closes it, every other shortcut is swallowed.
+      if (newDialogRef.current) {
+        if (action === 'session.new') { e.preventDefault(); setNewDialog(false); return }
         if (action) e.preventDefault()
         return
       }
@@ -1291,6 +1314,12 @@ export default function App() {
         onClose={() => setPaletteOpen(false)}
         onPick={(s, transcript) => { setHomeOverlay(false); resume(s, { transcript }) }}
         onOverlay={() => { setPaletteOpen(false); setHomeOverlay(true) }}
+      />
+      <NewSessionDialog
+        open={newDialog}
+        recents={recentDirs}
+        onLaunch={(p) => newSession(p)}
+        onClose={() => setNewDialog(false)}
       />
       {homeOverlay && (
         // full-window, above panes/find (z<90 artifact-expand, <100 quit guard);
