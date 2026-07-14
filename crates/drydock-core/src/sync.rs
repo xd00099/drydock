@@ -14,10 +14,14 @@ pub struct SyncReport {
     pub sessions_deleted: usize,
     pub malformed_lines: usize,
     pub agent_files_parsed: usize,
+    /// Sessions whose transcript went BACK in time this pass (truncated or
+    /// rewritten under the synced offset — the signature of a Claude Code
+    /// rewind). Consumers align time-coupled state, e.g. rendered artifacts.
+    pub rewound_sessions: Vec<String>,
 }
 
 #[derive(Debug, PartialEq)]
-pub enum SyncOutcome { Parsed { malformed: usize }, Skipped }
+pub enum SyncOutcome { Parsed { malformed: usize, rewound: bool }, Skipped }
 
 /// Bytes the tail fingerprint covers, immediately before the synced offset.
 const TAIL_FINGERPRINT_LEN: u64 = 64;
@@ -45,12 +49,17 @@ pub fn sync_file(store: &mut Store, sf: &SessionFile) -> Result<SyncOutcome> {
     let path_str = sf.path.to_string_lossy().to_string();
     let prev = store.get_sync_state(&path_str)?;
 
+    // Both reparse-from-zero paths below are the on-disk signature of a Claude
+    // Code REWIND (the transcript went back in time) — flagged so consumers can
+    // align time-coupled state like rendered artifacts.
+    let mut rewound = false;
     let mut start = match &prev {
         Some(st) if st.byte_offset as u64 > sf.size => {
             // file replaced/truncated: drop derived data, reparse from zero
             // (data-only: the user's name/hidden/folder flags must survive
             // the reparse — it's still the same session)
             store.delete_session_data(&sf.session_id)?;
+            rewound = true;
             0u64
         }
         Some(st) => {
@@ -70,6 +79,7 @@ pub fn sync_file(store: &mut Store, sf: &SessionFile) -> Result<SyncOutcome> {
             if tail_fingerprint(&sf.path, start)? != stored_tail {
                 store.delete_session_data(&sf.session_id)?;
                 start = 0;
+                rewound = true;
             }
         }
     }
@@ -111,7 +121,7 @@ pub fn sync_file(store: &mut Store, sf: &SessionFile) -> Result<SyncOutcome> {
     let tail = tail_fingerprint(&sf.path, new_offset)?;
     let carry = last_id.or(boundary);
     store.set_sync_state(&path_str, &sf.session_id, new_offset as i64, sf.mtime, Some(&tail), carry.as_deref())?;
-    Ok(SyncOutcome::Parsed { malformed })
+    Ok(SyncOutcome::Parsed { malformed, rewound })
 }
 
 /// Sync one SUBAGENT transcript incrementally: its chunks join the parent
@@ -180,7 +190,9 @@ pub fn sync_agent_file(store: &mut Store, af: &AgentFile) -> Result<SyncOutcome>
     let tail = tail_fingerprint(&af.path, new_offset)?;
     let carry = last_id.or(boundary);
     store.set_sync_state_kind(&path_str, &af.parent_session_id, new_offset as i64, af.mtime, Some(&tail), true, carry.as_deref())?;
-    Ok(SyncOutcome::Parsed { malformed })
+    // agent sidecars never signal a session rewind — only the MAIN transcript's
+    // timeline drives artifact alignment
+    Ok(SyncOutcome::Parsed { malformed, rewound: false })
 }
 
 /// Sum token usage per model over a batch of parsed records, DEDUPED by
@@ -269,9 +281,12 @@ pub fn sync_all(store: &mut Store, claude_dir: &Path) -> Result<SyncReport> {
 
     for sf in &files {
         match sync_file(store, sf) {
-            Ok(SyncOutcome::Parsed { malformed }) => {
+            Ok(SyncOutcome::Parsed { malformed, rewound }) => {
                 report.files_parsed += 1;
                 report.malformed_lines += malformed;
+                if rewound {
+                    report.rewound_sessions.push(sf.session_id.clone());
+                }
             }
             Ok(SyncOutcome::Skipped) => report.files_skipped += 1,
             // one unreadable file (perms, vanished mid-read) must not abort
@@ -285,7 +300,7 @@ pub fn sync_all(store: &mut Store, claude_dir: &Path) -> Result<SyncReport> {
     let agents = scan_subagents(claude_dir)?;
     for af in &agents {
         match sync_agent_file(store, af) {
-            Ok(SyncOutcome::Parsed { malformed }) => {
+            Ok(SyncOutcome::Parsed { malformed, .. }) => {
                 report.agent_files_parsed += 1;
                 report.malformed_lines += malformed;
             }

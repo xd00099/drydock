@@ -191,8 +191,10 @@ export type Artifact = { id: string; title: string; kind: ArtifactKind; content:
 
 // One artifact persisted to the on-disk per-session gallery (survives the
 // session and the app). `file` keys read/serve/download; `seq` was its live id
-// at render time, so the gallery dedups against the in-memory list.
-export type SavedArtifact = { file: string; title: string; kind: string; created_ms: number; seq: number; path: string | null }
+// at render time, so the gallery dedups against the in-memory list. `rewound`
+// = rendered on a timeline the user rewound away from (kept, badged, never
+// auto-selected).
+export type SavedArtifact = { file: string; title: string; kind: string; created_ms: number; seq: number; path: string | null; rewound?: boolean }
 
 /** The label a session would wear WITHOUT a Drydock rename — i.e. what
  *  "Clear name" restores: claude custom-title > card summary > title. */

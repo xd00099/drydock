@@ -1240,6 +1240,20 @@ impl Store {
             .optional()?)
     }
 
+    /// The session's last message timestamp (ms) as currently indexed — after a
+    /// rewind re-sync this IS the rewound-to point, used to align artifacts.
+    pub fn session_last_message_at(&self, session_id: &str) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT last_message_at FROM sessions WHERE session_id = ?1",
+                params![session_id],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
     /// (file_path, session_id, is_agent) for every synced file — deletion
     /// mirroring needs to know whether a vanished path was a whole session's
     /// transcript or just one subagent sidecar file.

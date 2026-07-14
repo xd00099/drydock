@@ -126,6 +126,9 @@ type Tokens = Arc<Mutex<HashMap<String, TokenInfo>>>;
 struct Stored {
     pty_id: u32,
     seq: u64,
+    /// Render wall-clock (ms) — compared against the transcript's rewound-to
+    /// point to prune artifacts from a discarded timeline.
+    created_ms: i64,
     kind: String,
     title: String,
     content: String,
@@ -224,6 +227,24 @@ impl FeedbackHub {
             fb.layout_clean = false;
             fb.waiting_streak = 0;
         }
+    }
+
+    /// The session's timeline went backwards (Claude Code rewind): everything
+    /// this round accumulated — queued prompts, layout state, delivered keys,
+    /// the end flag — describes a discarded future. Start the round over.
+    fn reset_round(&self, pty_id: u32) {
+        {
+            let mut map = self.map.lock().unwrap();
+            if let Some(fb) = map.get_mut(&pty_id) {
+                fb.prompts.clear();
+                fb.layout.clear();
+                fb.layout_clean = false;
+                fb.delivered_layout_keys.clear();
+                fb.ended = false;
+                fb.waiting_streak = 0;
+            }
+        }
+        self.cv.notify_all(); // a parked poll re-checks and keeps waiting
     }
 
     /// A poll drained this batch but the response write failed (the client
@@ -447,6 +468,42 @@ impl ArtifactServer {
         self.feedback.cv.notify_all();
     }
 
+    /// The session's transcript rewound to `tail_ms`: artifacts rendered after
+    /// that point belong to a discarded timeline. Drop them from the live
+    /// in-memory store, record the discarded window in the session's gallery
+    /// (persisted copies stay, badged "rewound"), and reset the review round.
+    /// Returns (pty_id, removed live artifact ids) per open tab of the session.
+    pub fn handle_rewind(&self, session_id: &str, tail_ms: i64) -> Vec<(u32, Vec<String>)> {
+        append_rewound_window(&self.dir, session_id, tail_ms, now_ms());
+        let ptys: Vec<u32> = self
+            .tokens
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|t| t.session_id.as_deref() == Some(session_id))
+            .map(|t| t.pty_id)
+            .collect();
+        let mut removed: Vec<(u32, Vec<String>)> = Vec::new();
+        if !ptys.is_empty() {
+            let mut m = self.store.lock().unwrap();
+            for &pty in &ptys {
+                let ids: Vec<String> = m
+                    .iter()
+                    .filter(|(_, s)| s.pty_id == pty && s.created_ms > tail_ms)
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                for id in &ids {
+                    m.remove(id);
+                }
+                removed.push((pty, ids));
+            }
+        }
+        for &pty in &ptys {
+            self.feedback.reset_round(pty);
+        }
+        removed
+    }
+
     /// Replace the current layout warnings for `pty_id` (frontend →
     /// `report_layout_warnings`), marking any whose `kind:selector` key was
     /// already delivered as `persistent`, and wake the poll.
@@ -469,8 +526,13 @@ impl ArtifactServer {
                 clamp_str(&mut w.severity, 16);
                 w.persistent = fb.delivered_layout_keys.contains(&layout_key(w));
             }
+            // Only a MEANINGFUL report counts as engagement — a routine empty
+            // audit (every iframe remount posts one) must not keep resetting
+            // the model's give-up counter.
+            if !warnings.is_empty() || fb.layout_clean {
+                fb.waiting_streak = 0;
+            }
             fb.layout = warnings;
-            fb.waiting_streak = 0;
         }
         self.feedback.cv.notify_all();
     }
@@ -578,7 +640,7 @@ fn handle_conn(
             let id = seq.to_string();
             // Retain every artifact so Download / Reveal-in-Finder work for all
             // kinds and HTML can be re-fetched over the artifact:// scheme.
-            store_insert(store, &id, pty_id, seq, &e.kind, &e.title, &e.content, e.path.clone());
+            store_insert(store, &id, pty_id, seq, now_ms(), &e.kind, &e.title, &e.content, e.path.clone());
             // ...and persist it to the session's on-disk gallery, so it survives
             // the session and the app (the Artifacts tab lists these as "saved").
             if let Some(sid) = &session_id {
@@ -1060,6 +1122,15 @@ fn take_or_wait(hub: &FeedbackHub, pty_id: u32, block: Duration) -> PollResult {
                     let prompts = std::mem::take(&mut fb.prompts);
                     let layout = std::mem::take(&mut fb.layout);
                     let layout_clean = std::mem::take(&mut fb.layout_clean);
+                    // Delivering "clean" CLOSES the fix cycle: forget the
+                    // delivered keys, or every later empty audit (each iframe
+                    // remount posts one) would re-arm layout_clean and the
+                    // model would be told "the layout is clean now" forever.
+                    // A warning that reappears after a confirmed-clean cycle
+                    // correctly reads as fresh — it IS a regression.
+                    if layout_clean {
+                        fb.delivered_layout_keys.clear();
+                    }
                     for w in &layout {
                         let k = layout_key(w);
                         if !fb.delivered_layout_keys.contains(&k) {
@@ -1162,11 +1233,11 @@ fn next_step_feedback(fresh_error_layout: bool, layout_clean: bool, ended: bool)
 /// Store one artifact under `id`, then evict this pty's oldest if it now exceeds
 /// the per-session cap (oldest = smallest `seq`).
 #[allow(clippy::too_many_arguments)]
-fn store_insert(store: &Store, id: &str, pty_id: u32, seq: u64, kind: &str, title: &str, content: &str, path: Option<PathBuf>) {
+fn store_insert(store: &Store, id: &str, pty_id: u32, seq: u64, created_ms: i64, kind: &str, title: &str, content: &str, path: Option<PathBuf>) {
     let mut m = store.lock().unwrap();
     m.insert(
         id.to_string(),
-        Stored { pty_id, seq, kind: kind.to_string(), title: title.to_string(), content: content.to_string(), path },
+        Stored { pty_id, seq, created_ms, kind: kind.to_string(), title: title.to_string(), content: content.to_string(), path },
     );
     let mut mine: Vec<(String, u64)> =
         m.iter().filter(|(_, s)| s.pty_id == pty_id).map(|(k, s)| (k.clone(), s.seq)).collect();
@@ -1192,6 +1263,43 @@ pub struct SavedArtifact {
     pub seq: u64,
     /// Original on-disk source when rendered from a `path` (enables Reveal).
     pub path: Option<String>,
+    /// Rendered on a timeline the user has since rewound away from (its
+    /// created_ms falls inside a recorded rewound window). Kept — the user may
+    /// still want to compare — but badged and never auto-selected.
+    pub rewound: bool,
+}
+
+/// Discarded-timeline windows for a session's gallery: `rewound.json` holds
+/// `[[tail_ms, detected_at_ms], …]` — an artifact created inside any window was
+/// rendered after the point a rewind went back to, before the rewind happened.
+/// (The file name can't collide with content files: those are `<ms>-<seq>.<ext>`.)
+fn read_rewound_windows(dir: &Path, session_id: &str) -> Vec<(i64, i64)> {
+    if !valid_session_component(session_id) {
+        return Vec::new();
+    }
+    std::fs::read_to_string(dir.join(session_id).join("rewound.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<(i64, i64)>>(&s).ok())
+        .unwrap_or_default()
+}
+
+fn append_rewound_window(dir: &Path, session_id: &str, tail_ms: i64, at_ms: i64) {
+    if !valid_session_component(session_id) {
+        return;
+    }
+    let d = dir.join(session_id);
+    if std::fs::create_dir_all(&d).is_err() {
+        return;
+    }
+    let mut windows = read_rewound_windows(dir, session_id);
+    windows.push((tail_ms, at_ms));
+    if windows.len() > 50 {
+        let excess = windows.len() - 50;
+        windows.drain(0..excess);
+    }
+    if let Ok(json) = serde_json::to_string(&windows) {
+        let _ = std::fs::write(d.join("rewound.json"), json);
+    }
 }
 
 /// A session id is used as a directory component: require uuid-ish characters
@@ -1277,6 +1385,7 @@ fn list_saved_in(dir: &Path, session_id: &str) -> Vec<SavedArtifact> {
     if !valid_session_component(session_id) {
         return Vec::new();
     }
+    let windows = read_rewound_windows(dir, session_id);
     let d = dir.join(session_id);
     let Ok(entries) = std::fs::read_dir(&d) else { return Vec::new() };
     let mut out: Vec<SavedArtifact> = entries
@@ -1290,13 +1399,15 @@ fn list_saved_in(dir: &Path, session_id: &str) -> Vec<SavedArtifact> {
             if !d.join(&file).is_file() {
                 return None; // meta without content (partial prune/write)
             }
+            let created_ms = meta.get("created_ms").and_then(Value::as_i64).unwrap_or(0);
             Some(SavedArtifact {
                 file,
                 title: meta.get("title").and_then(Value::as_str).unwrap_or("Untitled").to_string(),
                 kind,
-                created_ms: meta.get("created_ms").and_then(Value::as_i64).unwrap_or(0),
+                created_ms,
                 seq: meta.get("seq").and_then(Value::as_u64).unwrap_or(0),
                 path: meta.get("path").and_then(Value::as_str).map(String::from),
+                rewound: windows.iter().any(|(tail, at)| created_ms > *tail && created_ms <= *at),
             })
         })
         .collect();
@@ -1646,7 +1757,7 @@ mod tests {
         let store: Store = Arc::new(Mutex::new(HashMap::new()));
         let n = MAX_ARTIFACTS_PER_PTY as u64 + 5;
         for i in 1..=n {
-            store_insert(&store, &i.to_string(), 7, i, "html", "t", &format!("<p>{i}</p>"), None);
+            store_insert(&store, &i.to_string(), 7, i, i as i64, "html", "t", &format!("<p>{i}</p>"), None);
         }
         let m = store.lock().unwrap();
         let mine = m.values().filter(|s| s.pty_id == 7).count();
@@ -1660,8 +1771,8 @@ mod tests {
         let store: Store = Arc::new(Mutex::new(HashMap::new()));
         // two sessions each fill to the cap; neither evicts the other's
         for i in 1..=(MAX_ARTIFACTS_PER_PTY as u64) {
-            store_insert(&store, &format!("a{i}"), 1, i, "html", "t", "x", None);
-            store_insert(&store, &format!("b{i}"), 2, 1000 + i, "html", "t", "y", None);
+            store_insert(&store, &format!("a{i}"), 1, i, i as i64, "html", "t", "x", None);
+            store_insert(&store, &format!("b{i}"), 2, 1000 + i, 1000 + i as i64, "html", "t", "y", None);
         }
         let m = store.lock().unwrap();
         assert_eq!(m.values().filter(|s| s.pty_id == 1).count(), MAX_ARTIFACTS_PER_PTY);
@@ -1770,7 +1881,7 @@ mod tests {
     #[test]
     fn artifact_download_uses_stored_content_and_name() {
         let srv = test_server(std::env::temp_dir());
-        store_insert(&srv.store, "9", 1, 9, "markdown", "Read Me", "# hi", None);
+        store_insert(&srv.store, "9", 1, 9, 9, "markdown", "Read Me", "# hi", None);
         let (name, bytes) = srv.artifact_download("9").unwrap();
         assert_eq!(name, "Read Me.md");
         assert_eq!(bytes, b"# hi");
@@ -2084,6 +2195,90 @@ mod tests {
         let srv2 = test_server(std::env::temp_dir());
         srv2.report_layout(8, vec![]);
         assert_eq!(take_or_wait(&srv2.feedback, 8, Duration::from_millis(20)).status, "waiting");
+    }
+
+    #[test]
+    fn clean_signal_fires_once_not_on_every_remount() {
+        // Regression: delivering "clean" must close the fix cycle. Before, the
+        // delivered keys survived, so every iframe remount's routine empty
+        // audit re-armed layout_clean and the model was told "the layout is
+        // clean now — ask the user to review" in an endless loop.
+        let srv = test_server(std::env::temp_dir());
+        let w = LayoutWarning { kind: "clipped-text".into(), selector: ".x".into(),
+            overflow_px: 9.0, viewport_width: 700.0, severity: "error".into(), persistent: false };
+        srv.report_layout(7, vec![w.clone()]);
+        assert_eq!(take_or_wait(&srv.feedback, 7, Duration::from_millis(20)).status, "feedback");
+        srv.report_layout(7, vec![]); // the fix confirmed
+        assert!(take_or_wait(&srv.feedback, 7, Duration::from_millis(20)).layout_clean);
+        // remounts / re-renders keep posting empty audits — NO re-fire
+        for _ in 0..3 {
+            srv.report_layout(7, vec![]);
+            assert_eq!(take_or_wait(&srv.feedback, 7, Duration::from_millis(20)).status, "waiting", "clean is one-shot");
+        }
+        // a warning REAPPEARING after a confirmed-clean cycle is a regression:
+        // it reads as fresh, and a later empty audit can confirm clean again
+        srv.report_layout(7, vec![w]);
+        let again = take_or_wait(&srv.feedback, 7, Duration::from_millis(20));
+        assert!(!again.layout_warnings[0].persistent, "post-clean reappearance is fresh");
+        srv.report_layout(7, vec![]);
+        assert!(take_or_wait(&srv.feedback, 7, Duration::from_millis(20)).layout_clean, "next cycle can confirm clean once");
+    }
+
+    #[test]
+    fn empty_audit_does_not_reset_the_waiting_streak() {
+        let srv = test_server(std::env::temp_dir());
+        for _ in 0..WAITING_STREAK_LIMIT {
+            let _ = take_or_wait(&srv.feedback, 7, Duration::from_millis(1));
+        }
+        srv.report_layout(7, vec![]); // routine remount report, no delivered keys
+        let r = take_or_wait(&srv.feedback, 7, Duration::from_millis(1));
+        assert_eq!(r.status, "waiting");
+        assert!(r.next_step.contains("Stop polling"), "streak survives a meaningless report: {}", r.next_step);
+    }
+
+    #[test]
+    fn handle_rewind_prunes_memory_badges_gallery_and_resets_the_round() {
+        let tmp = std::env::temp_dir().join(format!("drydock-rewind-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let sid = "44444444-4444-4444-4444-444444444444";
+        let srv = test_server(tmp.clone());
+        let _token = srv.mint(7, None, Some(sid.to_string()));
+
+        // live artifacts straddling the rewound-to point (tail_ms = 150)
+        store_insert(&srv.store, "1", 7, 1, 100, "html", "before", "<p>a</p>", None);
+        store_insert(&srv.store, "2", 7, 2, 200, "html", "after", "<p>b</p>", None);
+        // review round state that describes the soon-discarded timeline
+        srv.submit_feedback(7, vec![msg_prompt("", "stale note")], true);
+        // gallery copies with the same timestamps (fabricated metas, like the prune test)
+        let d = tmp.join(sid);
+        std::fs::create_dir_all(&d).unwrap();
+        for (stem, ms) in [("0000000000100-1", 100i64), ("0000000000200-2", 200i64)] {
+            std::fs::write(d.join(format!("{stem}.html")), "x").unwrap();
+            std::fs::write(
+                d.join(format!("{stem}.meta.json")),
+                format!(r#"{{"title":"t","kind":"html","created_ms":{ms},"seq":1}}"#),
+            )
+            .unwrap();
+        }
+
+        let removed = srv.handle_rewind(sid, 150);
+        assert_eq!(removed, vec![(7u32, vec!["2".to_string()])], "only the post-rewind live artifact is pruned");
+        assert!(srv.store.lock().unwrap().contains_key("1"), "pre-rewind artifact survives");
+        assert!(!srv.store.lock().unwrap().contains_key("2"));
+
+        // gallery: kept but badged, only inside the discarded window
+        let listed = list_saved_in(&tmp, sid);
+        assert_eq!(listed.len(), 2, "gallery copies are never deleted");
+        assert!(!listed[0].rewound, "pre-rewind copy unbadged");
+        assert!(listed[1].rewound, "discarded-future copy badged");
+
+        // the review round was reset: the stale end/prompts are gone
+        assert_eq!(take_or_wait(&srv.feedback, 7, Duration::from_millis(20)).status, "waiting");
+
+        // a session with no open tab still records the gallery window
+        let removed2 = srv.handle_rewind("55555555-5555-5555-5555-555555555555", 10);
+        assert!(removed2.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

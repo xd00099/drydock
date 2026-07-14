@@ -973,7 +973,9 @@ function PreviewTab({
   }, [reviewable])
 
   // Persisted gallery for this session; re-listed whenever a new render lands
-  // (renders persist before the artifact event fires, so this stays fresh).
+  // (renders persist before the artifact event fires, so this stays fresh) and
+  // after a rewind (items gain their "rewound" badge).
+  const [savedNonce, setSavedNonce] = useState(0)
   useEffect(() => {
     if (!sessionId) { setSaved([]); return }
     let live = true
@@ -981,7 +983,16 @@ function PreviewTab({
       .then((s) => { if (live) setSaved(s) })
       .catch(() => { if (live) setSaved([]) })
     return () => { live = false }
-  }, [sessionId, artifacts.length])
+  }, [sessionId, artifacts.length, savedNonce])
+  useEffect(() => {
+    if (!sessionId) return
+    let cancelled = false
+    let un: UnlistenFn | null = null
+    listen<{ session_id: string }>('artifact-rewound', (e) => {
+      if (e.payload.session_id === sessionId) setSavedNonce((n) => n + 1)
+    }).then((u) => { if (cancelled) u(); else un = u })
+    return () => { cancelled = true; un?.() }
+  }, [sessionId])
 
   // Gallery = persisted artifacts (older, deduped against the live list by
   // their render-time seq) followed by this run's live artifacts — so the
@@ -1000,8 +1011,13 @@ function PreviewTab({
       : []),
     ...artifacts.map((a): GalleryItem => ({ id: a.id, title: a.title, kind: a.kind })),
   ]
-  // Default to the newest; a manual pick sticks until that artifact is gone.
-  const current = items.find((i) => i.id === selectedId) ?? (items.length ? items[items.length - 1] : null)
+  // Default to the newest that ISN'T from a rewound-away timeline (after a
+  // rewind the panel time-travels with the conversation); a manual pick —
+  // including a rewound copy, for comparison — sticks until it's gone.
+  const current =
+    items.find((i) => i.id === selectedId) ??
+    [...items].reverse().find((i) => !i.saved?.rewound) ??
+    (items.length ? items[items.length - 1] : null)
 
   // Saved svg/markdown render through the sanitized srcdoc path and need their
   // content fetched once; saved html streams from artifact://saved/… directly.
@@ -1190,7 +1206,7 @@ function PreviewTab({
           style={{ margin: '0 12px 8px', background: '#161c25', color: '#d6dbe3', border: '1px solid #2c3647', borderRadius: 4, padding: '3px 4px', fontSize: 11 }}
         >
           {items.map((a, i) => (
-            <option key={a.id} value={a.id}>{i + 1}. {a.title} ({a.kind}){a.saved ? ' · saved' : ''}</option>
+            <option key={a.id} value={a.id}>{i + 1}. {a.title} ({a.kind}){a.saved?.rewound ? ' · rewound' : a.saved ? ' · saved' : ''}</option>
           ))}
         </select>
       )}

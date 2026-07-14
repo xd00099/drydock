@@ -847,6 +847,36 @@ export default function App() {
     return () => { cancelled = true; un?.() }
   }, [])
 
+  // The session's transcript rewound (Claude Code Esc-Esc): artifacts rendered
+  // after the rewound-to point show a discarded future — the backend pruned
+  // them; drop them here too, and clear the review round's pills/layout (they
+  // annotated that discarded timeline).
+  useEffect(() => {
+    let cancelled = false
+    let un: UnlistenFn | null = null
+    listen<{ session_id: string; pty_id: number | null; removed_ids: string[] }>('artifact-rewound', (e) => {
+      const p = e.payload
+      if (p.pty_id == null) return
+      const pty = p.pty_id
+      if (p.removed_ids.length) {
+        const gone = new Set(p.removed_ids)
+        setArtifactsByTab((prev) => {
+          const cur = prev[pty]
+          if (!cur?.length) return prev
+          const kept = cur.filter((a) => !gone.has(a.id))
+          return kept.length === cur.length ? prev : { ...prev, [pty]: kept }
+        })
+      }
+      mutateReview((prev) => {
+        const cur = prev[pty]
+        if (!cur || (cur.prompts.length === 0 && cur.layout.length === 0)) return prev
+        return { ...prev, [pty]: { ...cur, prompts: [], layout: [] } }
+      })
+    }).then((u) => { if (cancelled) u(); else un = u })
+    return () => { cancelled = true; un?.() }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // Review-loop signals from the backend poll tool: presence transitions
   // (listening/working/waiting around await_artifact_feedback) and optional
   // agent replies for the conversation panel.

@@ -297,3 +297,41 @@ fn agent_file_never_attaches_to_a_radar_stub() {
     assert!(store.get_session(SID).unwrap().is_none());
     assert_eq!(store.all_synced_paths().unwrap().len(), 0, "no orphan sync rows");
 }
+
+#[test]
+fn rewinds_are_reported_but_normal_syncs_are_not() {
+    let (tmp, file) = setup();
+    let mut store = Store::open_in_memory().unwrap();
+    let basic = fixture("session_basic.jsonl");
+    let lines: Vec<&str> = basic.lines().collect();
+
+    // first sync of a fresh file: not a rewind
+    fs::write(&file, format!("{}\n{}\n{}\n", lines[0], lines[1], lines[2])).unwrap();
+    let r = sync_all(&mut store, tmp.path()).unwrap();
+    assert!(r.rewound_sessions.is_empty(), "fresh parse is not a rewind");
+
+    // plain append: not a rewind
+    let mut f = fs::OpenOptions::new().append(true).open(&file).unwrap();
+    use std::io::Write;
+    write!(f, "{}\n", lines[3]).unwrap();
+    drop(f);
+    let r = sync_all(&mut store, tmp.path()).unwrap();
+    assert!(r.rewound_sessions.is_empty(), "append is not a rewind");
+
+    // TRUNCATION (the Claude Code rewind signature): reported
+    fs::write(&file, format!("{}\n{}\n", lines[0], lines[1])).unwrap();
+    let r = sync_all(&mut store, tmp.path()).unwrap();
+    assert_eq!(r.rewound_sessions, vec![SID.to_string()], "truncation is a rewind");
+
+    // rewrite ending past the old offset (caught by the tail fingerprint): reported
+    fs::write(&file, format!("{}\n", lines[0])).unwrap();
+    let mut f = fs::OpenOptions::new().append(true).open(&file).unwrap();
+    write!(f, "{}\n{}\n{}\n", lines[4], lines[5], lines[2]).unwrap();
+    drop(f);
+    let r = sync_all(&mut store, tmp.path()).unwrap();
+    assert_eq!(r.rewound_sessions, vec![SID.to_string()], "under-offset rewrite is a rewind");
+
+    // and the indexed last_message_at getter feeds tail_ms for alignment
+    assert!(store.session_last_message_at(SID).unwrap().is_some());
+    assert!(store.session_last_message_at("no-such").unwrap().is_none());
+}

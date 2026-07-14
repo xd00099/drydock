@@ -230,7 +230,7 @@ pub fn start(app: &AppHandle) -> anyhow::Result<()> {
             let restore_handle = emit_handle.clone();
             let restore_db = db_for_restore.clone();
             let emit = emit_handle.clone();
-            if let Err(e) = drydock_core::watcher::watch_with(&claude, &db, move |_report| {
+            if let Err(e) = drydock_core::watcher::watch_with(&claude, &db, move |report| {
                 // mark restored only on SUCCESS: if the open loses a lock race
                 // this callback, the next sync retries — a skipped restore
                 // must not silently disable backups for the whole run
@@ -253,6 +253,34 @@ pub fn start(app: &AppHandle) -> anyhow::Result<()> {
                                 }
                                 Err(e) => eprintln!("drydock: usage backfill failed (retries next run): {e:#}"),
                             }
+                        }
+                    }
+                }
+                // A rewound transcript means artifacts rendered after the
+                // rewound-to point show a discarded future: prune the live
+                // ones, badge the gallery copies, reset the review round, and
+                // tell the panel which ids vanished. tail_ms comes from the
+                // freshly re-synced index (= the point the session went back to).
+                for sid in &report.rewound_sessions {
+                    let tail_ms = Store::open(&restore_db)
+                        .ok()
+                        .and_then(|s| s.session_last_message_at(sid).ok())
+                        .flatten()
+                        .unwrap_or(0);
+                    if let Some(srv) = restore_handle.try_state::<crate::artifacts::ArtifactServer>() {
+                        let removed = srv.handle_rewind(sid, tail_ms);
+                        if removed.is_empty() {
+                            // no open tab — still notify so a visible gallery re-lists
+                            let _ = restore_handle.emit(
+                                "artifact-rewound",
+                                serde_json::json!({ "session_id": sid, "pty_id": null, "removed_ids": [], "tail_ms": tail_ms }),
+                            );
+                        }
+                        for (pty, ids) in removed {
+                            let _ = restore_handle.emit(
+                                "artifact-rewound",
+                                serde_json::json!({ "session_id": sid, "pty_id": pty, "removed_ids": ids, "tail_ms": tail_ms }),
+                            );
                         }
                     }
                 }
