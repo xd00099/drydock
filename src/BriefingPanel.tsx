@@ -1114,6 +1114,12 @@ function PreviewTab({
       if (shownId) setGate({ artifactId: shownId, errors: warnings.filter((w) => w.severity === 'error').length })
     }
   }
+  // "Send & end" also leaves annotate mode — ending the review should read as
+  // an ending, not stay armed for more clicks.
+  const sendFromPanel = (m: string, end: boolean) => {
+    onSend?.(m, end)
+    if (end) setReviewOn(false)
+  }
   // Curtain: mask an artifact whose in-iframe audit reported error-severity
   // defects, until a clean audit, "Show anyway", or the safety timeout. The
   // model hears about the same warnings through the poll, so a broken render
@@ -1211,7 +1217,7 @@ function PreviewTab({
             {gateActive && <LayoutGate curtain={curtainUp} errors={gate?.errors ?? 0} onReveal={() => setGateDismissed(true)} />}
           </div>
           {reviewPanelUp && review && (
-            <ReviewPanel review={review} accent={accent} annotateOn={reviewOn} onDiscard={onDiscard} onSend={onSend} />
+            <ReviewPanel review={review} accent={accent} annotateOn={reviewOn} onDiscard={onDiscard} onSend={sendFromPanel} />
           )}
         </div>
       )}
@@ -1253,7 +1259,7 @@ function PreviewTab({
               {gateActive && <LayoutGate curtain={curtainUp} errors={gate?.errors ?? 0} onReveal={() => setGateDismissed(true)} />}
             </div>
             {reviewPanelUp && review && (
-              <ReviewPanel review={review} accent={accent} annotateOn={reviewOn} onDiscard={onDiscard} onSend={onSend} />
+              <ReviewPanel review={review} accent={accent} annotateOn={reviewOn} onDiscard={onDiscard} onSend={sendFromPanel} />
             )}
           </div>
         </div>

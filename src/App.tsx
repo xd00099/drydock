@@ -924,6 +924,17 @@ export default function App() {
       })),
     ]
     mutateReview((prev) => ({ ...prev, [tabId]: { ...(prev[tabId] ?? EMPTY_REVIEW), prompts: [], chat } }))
+    // The poll only runs WHILE the model is in a turn. presence 'waiting' means
+    // nobody is listening (the turn ended — e.g. the model hit the empty-poll
+    // limit), so the queued feedback would sit silently until the user typed
+    // something. Nudge the session ourselves: type a prompt into its PTY
+    // exactly as the user would, starting a turn that collects the queue.
+    if (cur.presence === 'waiting') {
+      const nudge = endReview
+        ? 'I finished reviewing the artifact — call await_artifact_feedback to collect my final feedback if you have not already, apply it, and continue with the work.'
+        : 'I left review feedback on the artifact — call await_artifact_feedback to collect and apply it.'
+      invoke('pty_write', { id: tabId, data: `${nudge}\r` }).catch(() => {})
+    }
   }
 
   // Latest layout audit from the mounted artifact: keep for the curtain, and
