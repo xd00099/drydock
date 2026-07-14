@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import type { Artifact } from './types'
@@ -43,14 +43,69 @@ function toSrcDoc(a: Artifact): string {
  *  SVG/Markdown never need scripting, so they keep the strict path: DOMPurify
  *  strips scripts/handlers, `sandbox=""` disables scripting, and the inherited
  *  app CSP blocks inline scripts — three independent layers. */
-export default function ArtifactView({ artifact, style }: { artifact: Artifact; style?: React.CSSProperties }) {
+export default function ArtifactView({
+  artifact,
+  style,
+  reviewMode,
+  accent,
+  onReviewMsg,
+}: {
+  artifact: Artifact
+  style?: React.CSSProperties
+  /** annotate (true) vs explore (false) — pushed into the injected review SDK */
+  reviewMode?: boolean
+  /** session color for the SDK's highlights/annotation card */
+  accent?: string
+  /** dd-artifact:* messages from THIS artifact's iframe (source-verified) */
+  onReviewMsg?: (msg: Record<string, unknown>) => void
+}) {
   const srcDoc = useMemo(() => (artifact.kind === 'html' ? '' : toSrcDoc(artifact)), [artifact])
   const baseStyle: React.CSSProperties = { width: '100%', height: '100%', border: 'none', background: '#0f1115', ...style }
+  const frameRef = useRef<HTMLIFrameElement | null>(null)
+
+  // Push the current mode + accent into the frame's review SDK. Re-sent on every
+  // change and whenever the SDK announces dd-artifact:ready (fresh document).
+  const pushMode = () => {
+    frameRef.current?.contentWindow?.postMessage({ type: 'dd-artifact:setMode', enabled: !!reviewMode, accent }, '*')
+  }
+  useEffect(() => {
+    if (artifact.kind === 'html') pushMode()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reviewMode, accent, artifact.id])
+
+  // Review bridge. TRUST GUARD: the sandboxed frame runs in an opaque origin
+  // ("null"), so origin checks are useless — a message is trusted only when its
+  // source IS this iframe's contentWindow, and its type is a dd-artifact:*
+  // string. Everything else (other iframes, the Esc forwarder's drydock-esc,
+  // random window.postMessage calls) is ignored here.
+  useEffect(() => {
+    if (!onReviewMsg || artifact.kind !== 'html') return
+    const onMsg = (e: MessageEvent) => {
+      if (!frameRef.current || e.source !== frameRef.current.contentWindow) return
+      const data = e.data as Record<string, unknown> | null
+      const type = data && typeof data.type === 'string' ? data.type : ''
+      if (!type.startsWith('dd-artifact:')) return
+      if (type === 'dd-artifact:ready') {
+        pushMode()
+        return
+      }
+      onReviewMsg(data as Record<string, unknown>)
+    }
+    window.addEventListener('message', onMsg)
+    return () => window.removeEventListener('message', onMsg)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onReviewMsg, reviewMode, accent, artifact.kind])
+
   if (artifact.kind === 'html') {
     // ids are server-generated URL-path-safe strings — live counters ("7") or
     // gallery paths ("saved/<uuid>/<ms>-<seq>.html", whose '/' must survive)
     return (
+      // Keyed by artifact id: switching artifacts creates a NEW iframe (and a
+      // new contentWindow), so an in-flight message from the previous document
+      // fails the source-trust guard instead of being attributed to the new one.
       <iframe
+        key={artifact.id}
+        ref={frameRef}
         title={artifact.title}
         sandbox="allow-scripts allow-modals"
         src={`artifact://localhost/${artifact.id}`}

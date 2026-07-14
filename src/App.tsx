@@ -11,8 +11,8 @@ import BriefingPanel from './BriefingPanel'
 import HomeView from './HomeView'
 import FindBar from './FindBar'
 import { useSessions } from './useSessions'
-import type { Artifact, ArtifactKind, PaneSearch, RestoreTab, SessionView, Tab, TakeoverInfo } from './types'
-import { baseName, clip, sessionColor, sessionLabel, uuidv4 } from './types'
+import type { Artifact, ArtifactKind, LayoutWarning, PaneSearch, RestoreTab, ReviewPrompt, ReviewState, SessionView, Tab, TakeoverInfo } from './types'
+import { EMPTY_REVIEW, baseName, clip, sessionColor, sessionLabel, uuidv4 } from './types'
 import {
   GUTTER, canSplit, clampRatio, closeStaged, dropOnStage, focusNeighbor, hitTest,
   layoutRects, pruneStage, setRatio, showTab, stagedIds,
@@ -51,6 +51,20 @@ export default function App() {
   // id; `unread` counts artifacts that arrived for a non-active tab.
   const [artifactsByTab, setArtifactsByTab] = useState<Record<number, Artifact[]>>({})
   const [unread, setUnread] = useState<Record<number, number>>({})
+  // Interactive artifact review, per tab: queued annotations, sent history,
+  // latest layout audit, and agent presence (docs/artifact-review.md). ALL
+  // writes go through mutateReview: it updates the ref mirror SYNCHRONOUSLY
+  // (before React flushes), so two message events in one tick (queue then
+  // send) never read stale state, and reviewSend's invoke sees every queued
+  // prompt exactly once.
+  const [reviewByTab, setReviewByTab] = useState<Record<number, ReviewState>>({})
+  const reviewRef = useRef(reviewByTab)
+  const mutateReview = (fn: (prev: Record<number, ReviewState>) => Record<number, ReviewState>) => {
+    reviewRef.current = fn(reviewRef.current)
+    setReviewByTab(reviewRef.current)
+  }
+  // one pending "working → waiting" decay timer per tab (model stopped polling)
+  const reviewDecayTimers = useRef<Record<number, number>>({})
   // ⌘F find-in-session state; each pane registers a PaneSearch controller by id
   const paneSearch = useRef<Record<number, PaneSearch | null>>({})
   const [findOpen, setFindOpen] = useState(false)
@@ -259,6 +273,8 @@ export default function App() {
     setTabs((p) => p.map((t) => (t.id === id ? { ...t, exited: true } : t)))
     setArtifactsByTab((d) => { if (!(id in d)) return d; const n = { ...d }; delete n[id]; return n })
     setUnread((d) => { if (!(id in d)) return d; const n = { ...d }; delete n[id]; return n })
+    window.clearTimeout(reviewDecayTimers.current[id])
+    mutateReview((d) => { if (!(id in d)) return d; const n = { ...d }; delete n[id]; return n })
   }
 
   const closeTab = (id: number, opts?: { keepFind?: boolean }) => {
@@ -267,6 +283,8 @@ export default function App() {
     delete paneSearch.current[id]
     setArtifactsByTab((d) => { if (!(id in d)) return d; const n = { ...d }; delete n[id]; return n })
     setUnread((d) => { if (!(id in d)) return d; const n = { ...d }; delete n[id]; return n })
+    window.clearTimeout(reviewDecayTimers.current[id])
+    mutateReview((d) => { if (!(id in d)) return d; const n = { ...d }; delete n[id]; return n })
     // Lane-aware selection: closing a tab stays among its own kind (sessions
     // vs terminals, matching the TabBar lanes). A terminal lane that empties
     // falls back to a session; a SESSION lane that empties lands on Home even
@@ -829,6 +847,92 @@ export default function App() {
     return () => { cancelled = true; un?.() }
   }, [])
 
+  // Review-loop signals from the backend poll tool: presence transitions
+  // (listening/working/waiting around await_artifact_feedback) and optional
+  // agent replies for the conversation panel.
+  useEffect(() => {
+    let cancelled = false
+    let un: UnlistenFn | null = null
+    listen<{ pty_id: number; presence?: string; reply?: string }>('artifact-review', (e) => {
+      const p = e.payload
+      // Drop events for tabs that closed/exited — a straggler poll finishing
+      // after teardown must not resurrect an orphaned review entry.
+      const t = tabsRef.current.find((x) => x.id === p.pty_id)
+      if (!t || t.kind !== 'pty' || t.exited) return
+      mutateReview((prev) => {
+        const cur = prev[p.pty_id] ?? EMPTY_REVIEW
+        const presence =
+          p.presence === 'listening' || p.presence === 'working' || p.presence === 'waiting' ? p.presence : cur.presence
+        const chat = p.reply ? [...cur.chat, { role: 'agent' as const, text: p.reply }] : cur.chat
+        return { ...prev, [p.pty_id]: { ...cur, presence, chat } }
+      })
+      // 'working' means "feedback delivered, model revising" — but a model
+      // that stops polling (turn ended, crash) would wedge the composer shut.
+      // Decay to 'waiting' unless a newer presence event lands first.
+      window.clearTimeout(reviewDecayTimers.current[p.pty_id])
+      if (p.presence === 'working') {
+        reviewDecayTimers.current[p.pty_id] = window.setTimeout(() => {
+          mutateReview((prev) => {
+            const cur = prev[p.pty_id]
+            if (!cur || cur.presence !== 'working') return prev
+            return { ...prev, [p.pty_id]: { ...cur, presence: 'waiting' } }
+          })
+        }, 60_000)
+      }
+    }).then((u) => { if (cancelled) u(); else un = u })
+    return () => { cancelled = true; un?.() }
+  }, [])
+
+  // ---- interactive review handlers (bound per tab at the BriefingPanel) ----
+
+  // Queue one annotation from the SDK. A repeat _ddQueueKey replaces the unsent
+  // prior update for the same input (radio/checkbox/field), like lavish-axi.
+  const reviewQueue = (tabId: number, prompt: ReviewPrompt) => {
+    mutateReview((prev) => {
+      const cur = prev[tabId] ?? EMPTY_REVIEW
+      const key = prompt._ddQueueKey
+      const kept = key ? cur.prompts.filter((p) => p._ddQueueKey !== key) : cur.prompts
+      return { ...prev, [tabId]: { ...cur, prompts: [...kept, prompt] } }
+    })
+  }
+
+  const reviewDiscard = (tabId: number, index: number) => {
+    mutateReview((prev) => {
+      const cur = prev[tabId] ?? EMPTY_REVIEW
+      return { ...prev, [tabId]: { ...cur, prompts: cur.prompts.filter((_, i) => i !== index) } }
+    })
+  }
+
+  // Send everything queued (plus an optional composer message) to the session's
+  // feedback queue; endReview marks the review finished. Reads the ref (kept
+  // fresh by mutateReview) so the invoke happens exactly once.
+  const reviewSend = (tabId: number, message: string, endReview: boolean) => {
+    const cur = reviewRef.current[tabId] ?? EMPTY_REVIEW
+    if (cur.presence === 'working') return // model is mid-revision; panel shows why
+    const all = [...cur.prompts]
+    const msg = message.trim()
+    if (msg) all.push({ uid: '', prompt: msg, selector: '', tag: 'message', text: '' })
+    if (!all.length && !endReview) return
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const stripped = all.map(({ _ddQueueKey, ...rest }) => rest)
+    invoke('submit_artifact_feedback', { ptyId: tabId, prompts: stripped, endReview }).catch(console.error)
+    const chat = [
+      ...cur.chat,
+      ...all.map((p) => ({
+        role: 'user' as const,
+        text: p.tag === 'message' ? p.prompt : `⟨${p.tag}⟩${p.text ? ` “${clip(p.text, 60)}”` : ''} — ${p.prompt}`,
+      })),
+    ]
+    mutateReview((prev) => ({ ...prev, [tabId]: { ...(prev[tabId] ?? EMPTY_REVIEW), prompts: [], chat } }))
+  }
+
+  // Latest layout audit from the mounted artifact: keep for the curtain, and
+  // hand to the backend so the next poll delivers it (persistent-marked there).
+  const reviewLayout = (tabId: number, warnings: LayoutWarning[]) => {
+    invoke('report_layout_warnings', { ptyId: tabId, warnings }).catch(console.error)
+    mutateReview((prev) => ({ ...prev, [tabId]: { ...(prev[tabId] ?? EMPTY_REVIEW), layout: warnings } }))
+  }
+
   // (unread badges clear via the staged-tabs effect above — landing on stage,
   // focused or not, counts as seen)
 
@@ -1055,6 +1159,12 @@ export default function App() {
             label={s ? sessionLabel(s) : null}
             initialUnread={(unread[activeTab.id] ?? 0) > 0}
             artifacts={artifactsByTab[activeTab.id] ?? EMPTY_ARTIFACTS}
+            review={activeTab.kind === 'pty' && !activeTab.exited ? reviewByTab[activeTab.id] ?? EMPTY_REVIEW : null}
+            reviewAccent={activeTab.sessionId ? sessionColor(activeTab.sessionId, 1, s?.hue) : '#f4c95d'}
+            onReviewQueue={(p) => reviewQueue(activeTab.id, p)}
+            onReviewDiscard={(i) => reviewDiscard(activeTab.id, i)}
+            onReviewSend={(m, end) => reviewSend(activeTab.id, m, end)}
+            onReviewLayout={(w) => reviewLayout(activeTab.id, w)}
             onToggleStar={
               s ? () => invoke('set_starred', { sessionId: s.session_id, starred: !s.starred }).then(refresh) : undefined
             }

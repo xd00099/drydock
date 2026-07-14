@@ -35,9 +35,10 @@ fn is_claude_exec(arg: &str) -> bool {
 fn inject_artifact_flags(cmd: &str, cfg_path: &str) -> String {
     let rest = &cmd["exec claude".len()..];
     format!(
-        "exec claude --mcp-config '{cfg}' --allowedTools {tool} --append-system-prompt '{nudge}'{rest}",
+        "exec claude --mcp-config '{cfg}' --allowedTools {tool} {await_tool} --append-system-prompt '{nudge}'{rest}",
         cfg = cfg_path,
         tool = artifacts::TOOL_ID,
+        await_tool = artifacts::AWAIT_TOOL_ID,
         nudge = artifacts::NUDGE,
     )
 }
@@ -158,6 +159,7 @@ fn pty_spawn(
         }
     }
     let release_tokens = artifacts.tokens_handle();
+    let release_feedback = artifacts.feedback_handle();
     let exit_cleanup = cleanup_files.clone();
 
     let app_exit = app.clone();
@@ -175,6 +177,9 @@ fn pty_spawn(
             // The session is gone: invalidate its token, remove its injected
             // config files, and clear any waiting-for-input flag.
             release_tokens.lock().unwrap().retain(|_, v| v.pty_id != id);
+            // Drop any pending review feedback and wake a poll blocked on it
+            // (it then returns `ended`, since the session is gone).
+            release_feedback.drop_session(id);
             for p in &exit_cleanup {
                 let _ = std::fs::remove_file(p);
             }
@@ -270,7 +275,7 @@ fn list_mcp_servers(
         scope: "drydock".to_string(),
         builtin: true,
         enabled: settings.artifacts_enabled(),
-        tools: vec![artifacts::TOOL_NAME.to_string()],
+        tools: vec![artifacts::TOOL_NAME.to_string(), artifacts::AWAIT_TOOL_NAME.to_string()],
     };
     let mut out = Vec::with_capacity(servers.len() + 1);
     out.push(builtin); // Drydock's own server first
@@ -303,6 +308,30 @@ fn set_mcp_enabled(
     } else {
         settings.set_mcp_disabled(&name, !enabled).map_err(|e| e.to_string())
     }
+}
+
+/// The human queued/sent inline annotations on a rendered artifact: hand them to
+/// the session's feedback queue, waking a blocked `await_artifact_feedback` poll.
+/// `end_review` marks the review finished (the poll then reports `ended`).
+#[tauri::command]
+fn submit_artifact_feedback(
+    pty_id: u32,
+    prompts: Vec<artifacts::ReviewPrompt>,
+    end_review: bool,
+    artifacts: State<'_, artifacts::ArtifactServer>,
+) {
+    artifacts.submit_feedback(pty_id, prompts, end_review);
+}
+
+/// The in-iframe layout audit reported (possibly empty) render-time defects for a
+/// session's artifact: record them so the next poll can surface them to the model.
+#[tauri::command]
+fn report_layout_warnings(
+    pty_id: u32,
+    warnings: Vec<artifacts::LayoutWarning>,
+    artifacts: State<'_, artifacts::ArtifactServer>,
+) {
+    artifacts.report_layout(pty_id, warnings);
 }
 
 /// Reveal an artifact's source file in Finder. Only meaningful when the model
@@ -519,6 +548,8 @@ fn main() {
             list_mcp_servers,
             mcp_status,
             set_mcp_enabled,
+            submit_artifact_feedback,
+            report_layout_warnings,
             reveal_artifact,
             save_artifact,
             list_saved_artifacts,
@@ -611,7 +642,9 @@ mod tests {
         let out = inject_artifact_flags("exec claude --session-id 'abc-123'", "/cfg/7.json");
         // flags are spliced right after `exec claude`, the rest is preserved
         assert!(out.starts_with("exec claude --mcp-config '/cfg/7.json'"));
+        // both tools are pre-approved so neither first call halts on a prompt
         assert!(out.contains(artifacts::TOOL_ID));
+        assert!(out.contains(artifacts::AWAIT_TOOL_ID));
         assert!(out.ends_with("--session-id 'abc-123'"));
     }
 
@@ -644,5 +677,6 @@ mod tests {
         assert!(full.contains("--disallowedTools 'mcp__github'"));
         assert!(full.contains("--mcp-config '/cfg/3.json'"));
         assert!(full.contains(artifacts::TOOL_ID));
+        assert!(full.contains(artifacts::AWAIT_TOOL_ID));
     }
 }

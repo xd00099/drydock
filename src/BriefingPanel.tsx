@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { clampPanelWidth, fmtTokens, loadNum, relAge, baseName, type Artifact, type ArtifactKind, type CardView, type FileTouch, type McpServer, type SavedArtifact, type SessionUsage, type Skill, type TasksView, type TimelineItem } from './types'
+import { clampPanelWidth, clip, fmtTokens, loadNum, relAge, baseName, type Artifact, type ArtifactKind, type CardView, type FileTouch, type LayoutWarning, type McpServer, type ReviewPrompt, type ReviewState, type SavedArtifact, type SessionUsage, type Skill, type TasksView, type TimelineItem } from './types'
 import ArtifactView from './ArtifactView'
 import TimeMachine from './TimeMachine'
 import ResizeHandle from './ResizeHandle'
@@ -22,6 +22,14 @@ type Props = {
   // artifacts arrived while this tab was NOT focused (e.g. Home was showing):
   // open the Artifacts tab on mount so the badge's click actually lands there
   initialUnread?: boolean
+  // Interactive artifact review (docs/artifact-review.md). null = this tab
+  // can't review (plain transcript / exited pty) → annotation UI hidden.
+  review?: ReviewState | null
+  reviewAccent?: string // session color for the SDK highlights + panel chrome
+  onReviewQueue?: (p: ReviewPrompt) => void
+  onReviewDiscard?: (index: number) => void
+  onReviewSend?: (message: string, endReview: boolean) => void
+  onReviewLayout?: (w: LayoutWarning[]) => void
 }
 
 const TABS: { id: RightTab; label: string }[] = [
@@ -901,7 +909,25 @@ function ProjectTab({ projectPath }: { projectPath?: string }) {
 // one from the session's on-disk gallery.
 type GalleryItem = { id: string; title: string; kind: ArtifactKind; saved?: SavedArtifact }
 
-function PreviewTab({ artifacts, sessionId }: { artifacts: Artifact[]; sessionId: string | null }) {
+function PreviewTab({
+  artifacts,
+  sessionId,
+  review,
+  accent,
+  onQueue,
+  onDiscard,
+  onSend,
+  onLayout,
+}: {
+  artifacts: Artifact[]
+  sessionId: string | null
+  review: ReviewState | null // null = tab can't review (annotation UI hidden)
+  accent: string
+  onQueue?: (p: ReviewPrompt) => void
+  onDiscard?: (index: number) => void
+  onSend?: (message: string, endReview: boolean) => void
+  onLayout?: (w: LayoutWarning[]) => void
+}) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [full, setFull] = useState(false)
   const [saved, setSaved] = useState<SavedArtifact[]>([])
@@ -919,6 +945,32 @@ function PreviewTab({ artifacts, sessionId }: { artifacts: Artifact[]; sessionId
     flashTimer.current = window.setTimeout(() => setMsg(null), 3000)
   }
   useEffect(() => () => clearTimeout(flashTimer.current), [])
+
+  // ---- interactive review (docs/artifact-review.md) ----
+  const reviewable = review !== null
+  const [reviewOn, setReviewOn] = useState(false) // annotate vs explore
+  // Layout gate: which artifact the latest audit belongs to + its error count;
+  // dismissal is per-artifact (reset when the shown artifact changes).
+  const [gate, setGate] = useState<{ artifactId: string; errors: number } | null>(null)
+  const [gateDismissed, setGateDismissed] = useState(false)
+
+  // ⌘I toggles annotate mode while the Artifacts tab is up. Capture-phase, and
+  // the SDK forwards the same hotkey from inside the iframe (dd-artifact:toggleMode).
+  // Focus-scoped: never steal the keystroke from the terminal or an editable
+  // control (xterm's hidden textarea lives inside a .xterm container).
+  useEffect(() => {
+    if (!reviewable) return
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'i') {
+        const t = e.target as HTMLElement | null
+        if (t && (t.closest?.('.xterm') || t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
+        e.preventDefault()
+        setReviewOn((v) => !v)
+      }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [reviewable])
 
   // Persisted gallery for this session; re-listed whenever a new render lands
   // (renders persist before the artifact event fires, so this stays fresh).
@@ -1006,6 +1058,79 @@ function PreviewTab({ artifacts, sessionId }: { artifacts: Artifact[]; sessionId
           ? { id: current.id, title: current.title, kind: current.kind, content: contentCache[current.saved.file], path: current.saved.path ?? undefined }
           : null
 
+  // ---- review wiring for the mounted artifact ----
+  const shownId = shown?.id ?? null
+  // Review is wired ONLY to the newest LIVE artifact: annotating an old
+  // gallery/saved copy would feed stale selectors and a stale layout audit
+  // into the live session's loop.
+  const latestLiveId = artifacts.length ? artifacts[artifacts.length - 1].id : null
+  const reviewTarget = reviewable && !!current && !current.saved && current.id === latestLiveId && shown?.kind === 'html'
+  // a different artifact means a fresh layout gate
+  useEffect(() => { setGateDismissed(false); setGate(null) }, [shownId])
+
+  // The iframe is UNTRUSTED (its scripts include the artifact's own): coerce
+  // every field at this boundary so a malformed payload can neither crash the
+  // React tree nor fail backend deserialization. Send/end are deliberately NOT
+  // accepted from the frame — a page script calling window.dd.sendQueued()
+  // must not deliver feedback to the model without a human gesture in the
+  // trusted panel (prompt-injection guard). Queue only proposes visible pills.
+  const asStr = (x: unknown) => (typeof x === 'string' ? x : '')
+  const toReviewPrompt = (v: unknown): ReviewPrompt | null => {
+    if (!v || typeof v !== 'object') return null
+    const o = v as Record<string, unknown>
+    const prompt = asStr(o.prompt).trim()
+    if (!prompt) return null
+    return {
+      uid: asStr(o.uid),
+      prompt,
+      selector: asStr(o.selector),
+      tag: asStr(o.tag) || 'message',
+      text: asStr(o.text),
+      target: o.target,
+      _ddQueueKey: typeof o._ddQueueKey === 'string' && o._ddQueueKey ? o._ddQueueKey : undefined,
+    }
+  }
+  const onReviewMsg = (m: Record<string, unknown>) => {
+    const t = m.type as string
+    if (t === 'dd-artifact:queuePrompt') {
+      const p = toReviewPrompt(m.prompt)
+      if (p && onQueue) onQueue(p)
+    } else if (t === 'dd-artifact:toggleMode') setReviewOn((v) => !v)
+    else if (t === 'dd-artifact:layout' && Array.isArray(m.layout_warnings)) {
+      const warnings = (m.layout_warnings as unknown[])
+        .map((w): LayoutWarning | null => {
+          if (!w || typeof w !== 'object') return null
+          const o = w as Record<string, unknown>
+          return {
+            kind: asStr(o.kind) || 'layout-warning',
+            selector: asStr(o.selector),
+            overflowPx: Number(o.overflowPx) || 0,
+            viewportWidth: Number(o.viewportWidth) || 0,
+            severity: o.severity === 'warning' ? 'warning' : 'error',
+          }
+        })
+        .filter((w): w is LayoutWarning => w !== null)
+      onLayout?.(warnings)
+      if (shownId) setGate({ artifactId: shownId, errors: warnings.filter((w) => w.severity === 'error').length })
+    }
+  }
+  // Curtain: mask an artifact whose in-iframe audit reported error-severity
+  // defects, until a clean audit, "Show anyway", or the safety timeout. The
+  // model hears about the same warnings through the poll, so a broken render
+  // usually fixes itself before the human ever needs the curtain lifted.
+  const gateActive = reviewTarget && !!shown && gate?.artifactId === shown.id && (gate?.errors ?? 0) > 0
+  const curtainUp = gateActive && !gateDismissed
+  useEffect(() => {
+    if (!curtainUp) return
+    const t = window.setTimeout(() => setGateDismissed(true), 12000) // review is never blocked forever
+    return () => window.clearTimeout(t)
+  }, [curtainUp])
+  // Presence counts as activity: a session blocked in await_artifact_feedback
+  // surfaces the panel even before the first annotation, so the user can see
+  // "Claude is waiting" and reach Send & end.
+  const reviewPanelUp =
+    reviewable && !!review && (reviewOn || review.presence !== 'waiting' || review.prompts.length > 0 || review.chat.length > 0)
+
   // Download writes straight to ~/Downloads (backend) and reveals it; Open
   // shows the model's original source file in Finder (file-backed ones only).
   const download = (g: GalleryItem) => {
@@ -1033,6 +1158,15 @@ function PreviewTab({ artifacts, sessionId }: { artifacts: Artifact[]; sessionId
         {current.saved && <span style={S.chip} title="Persisted from an earlier run of this session">saved</span>}
         <span style={S.chip}>{current.kind}</span>
         {actions(current)}
+        {reviewTarget && (
+          <button
+            style={{ ...S.iconBtn, ...(reviewOn ? { background: accent, color: '#17130a', border: `1px solid ${accent}` } : {}) }}
+            title={'Annotate mode (⌘I) — click elements or select text in the artifact to comment'}
+            onClick={() => setReviewOn((v) => !v)}
+          >
+            ✎ Annotate
+          </button>
+        )}
         <button style={S.iconBtn} title="Expand to full window" onClick={() => setFull(true)}>⤢</button>
       </div>
       {/* always rendered at a constant height: the iframe below must not jump
@@ -1060,12 +1194,27 @@ function PreviewTab({ artifacts, sessionId }: { artifacts: Artifact[]; sessionId
       {/* Fill the rest of the panel edge-to-edge, no frame. Hidden while the
           full-window overlay is up — two mounted copies of an html artifact
           would each run its scripts (double execution). */}
-      {!full &&
-        (shown ? (
-          <ArtifactView artifact={shown} style={{ flex: 1, minHeight: 0, border: 'none', borderRadius: 0 }} />
-        ) : (
-          <div style={{ ...S.muted, padding: 12 }}>loading…</div>
-        ))}
+      {!full && (
+        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+          <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+            {shown ? (
+              <ArtifactView
+                artifact={shown}
+                style={{ border: 'none', borderRadius: 0 }}
+                reviewMode={reviewTarget && reviewOn}
+                accent={accent}
+                onReviewMsg={reviewTarget ? onReviewMsg : undefined}
+              />
+            ) : (
+              <div style={{ ...S.muted, padding: 12 }}>loading…</div>
+            )}
+            {gateActive && <LayoutGate curtain={curtainUp} errors={gate?.errors ?? 0} onReveal={() => setGateDismissed(true)} />}
+          </div>
+          {reviewPanelUp && review && (
+            <ReviewPanel review={review} accent={accent} annotateOn={reviewOn} onDiscard={onDiscard} onSend={onSend} />
+          )}
+        </div>
+      )}
       {full && (
         // Full-window overlay so UI artifacts get usable space. zIndex below the
         // quit guard (100); translateZ(0) gives it its own compositing layer so
@@ -1077,16 +1226,167 @@ function PreviewTab({ artifacts, sessionId }: { artifacts: Artifact[]; sessionId
             {current.saved && <span style={S.chip}>saved</span>}
             <span style={S.chip}>{current.kind}</span>
             {actions(current)}
+            {reviewTarget && (
+              <button
+                style={{ ...S.iconBtn, ...(reviewOn ? { background: accent, color: '#17130a', border: `1px solid ${accent}` } : {}) }}
+                title={'Annotate mode (⌘I) — click elements or select text in the artifact to comment'}
+                onClick={() => setReviewOn((v) => !v)}
+              >
+                ✎ Annotate
+              </button>
+            )}
             <button style={S.iconBtn} title="Close (Esc)" onClick={() => setFull(false)}>✕</button>
           </div>
-          {shown ? <ArtifactView artifact={shown} style={{ flex: 1 }} /> : <div style={{ ...S.muted, padding: 12 }}>loading…</div>}
+          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+            <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+              {shown ? (
+                <ArtifactView
+                  artifact={shown}
+                  style={{ border: 'none' }}
+                  reviewMode={reviewTarget && reviewOn}
+                  accent={accent}
+                  onReviewMsg={reviewTarget ? onReviewMsg : undefined}
+                />
+              ) : (
+                <div style={{ ...S.muted, padding: 12 }}>loading…</div>
+              )}
+              {gateActive && <LayoutGate curtain={curtainUp} errors={gate?.errors ?? 0} onReveal={() => setGateDismissed(true)} />}
+            </div>
+            {reviewPanelUp && review && (
+              <ReviewPanel review={review} accent={accent} annotateOn={reviewOn} onDiscard={onDiscard} onSend={onSend} />
+            )}
+          </div>
         </div>
       )}
     </div>
   )
 }
 
-export default function BriefingPanel({ sessionId, projectPath, starred, artifacts, label, onToggleStar, onRename, initialUnread }: Props) {
+/** Open-time layout gate: a curtain while the artifact's own audit reports
+ *  error-severity findings (with Show anyway + auto-reveal), then a thin
+ *  persistent banner once revealed. Positioned over the artifact frame. */
+function LayoutGate({ curtain, errors, onReveal }: { curtain: boolean; errors: number; onReveal: () => void }) {
+  if (curtain)
+    return (
+      <div style={{ position: 'absolute', inset: 0, background: 'rgba(11,14,19,.96)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, zIndex: 5 }}>
+        <div style={{ color: '#e8edf4', fontSize: 13, fontWeight: 600, fontFamily: 'system-ui' }}>Layout issues detected</div>
+        <div style={{ color: '#7d8794', fontSize: 11, maxWidth: 280, textAlign: 'center', lineHeight: 1.45, fontFamily: 'system-ui' }}>
+          {errors} error-severity layout {errors === 1 ? 'finding' : 'findings'}. Claude has been notified and usually re-renders a fix; this reveals on its own in a few seconds.
+        </div>
+        <button onClick={onReveal} style={{ background: '#2a2f3a', color: '#e8edf4', border: '1px solid #3c4557', borderRadius: 6, padding: '6px 12px', fontSize: 12, cursor: 'pointer', fontFamily: 'system-ui' }}>
+          Show anyway
+        </button>
+      </div>
+    )
+  return (
+    <div style={{ position: 'absolute', left: 0, right: 0, top: 0, background: 'rgba(90,45,45,.85)', color: '#f0c9c9', fontSize: 10, padding: '3px 8px', zIndex: 5, fontFamily: 'system-ui' }}>
+      layout issues detected — Claude has been notified
+    </div>
+  )
+}
+
+/** Queued-annotation pills + conversation log + sticky composer, accented in
+ *  the session color. Sends are disabled while the model is `working` on
+ *  already-delivered feedback (mirrors lavish-axi's presence gating). */
+function ReviewPanel({
+  review,
+  accent,
+  annotateOn,
+  onDiscard,
+  onSend,
+}: {
+  review: ReviewState
+  accent: string
+  annotateOn: boolean
+  onDiscard?: (index: number) => void
+  onSend?: (message: string, endReview: boolean) => void
+}) {
+  const [draft, setDraft] = useState('')
+  const busy = review.presence === 'working'
+  const canSend = !busy && (draft.trim().length > 0 || review.prompts.length > 0)
+  const send = (end: boolean) => {
+    if (busy) return
+    onSend?.(draft, end)
+    setDraft('')
+  }
+  const logRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    logRef.current?.scrollTo({ top: logRef.current.scrollHeight })
+  }, [review.chat.length, review.prompts.length])
+  const presenceLine = busy
+    ? 'Claude is working on your feedback…'
+    : review.presence === 'listening'
+      ? 'Claude is waiting for your feedback'
+      : 'Feedback queues here until Claude checks for it'
+  return (
+    <div style={{ flex: 'none', maxHeight: '45%', display: 'flex', flexDirection: 'column', borderTop: `2px solid ${accent}`, background: '#0d1117', fontFamily: 'system-ui' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 10px 0', fontSize: 10, color: '#7d8794', flex: 'none' }}>
+        <span style={{ width: 7, height: 7, borderRadius: '50%', background: busy ? '#f4c95d' : review.presence === 'listening' ? '#7ec8a0' : '#5b6675', flex: 'none' }} />
+        <span style={{ flex: 1 }}>{presenceLine}</span>
+      </div>
+      <div ref={logRef} style={{ overflowY: 'auto', padding: '6px 10px', display: 'flex', flexDirection: 'column', gap: 4, minHeight: 40 }}>
+        {review.chat.map((c, i) => (
+          <div key={i} style={{ fontSize: 11, lineHeight: 1.4, color: c.role === 'agent' ? '#9fb3d1' : '#d6dbe3', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+            <span style={{ color: '#5b6675' }}>{c.role === 'agent' ? 'claude · ' : 'you · '}</span>
+            {c.text}
+          </div>
+        ))}
+        {review.prompts.map((p, i) => (
+          <div key={`q${i}`} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 11, lineHeight: 1.4, background: '#161c25', border: `1px solid ${accent}`, borderRadius: 6, padding: '4px 6px' }}>
+            <span style={{ flex: 1, color: '#d6dbe3', overflowWrap: 'anywhere' }}>
+              {p.tag !== 'message' && (
+                <span style={{ color: accent }}>{p.tag === 'text' ? `“${clip(p.text, 40)}” ` : `⟨${p.tag}⟩ `}</span>
+              )}
+              {p.prompt}
+            </span>
+            <button onClick={() => onDiscard?.(i)} title="Discard this annotation" style={{ background: 'none', border: 'none', color: '#5b6675', cursor: 'pointer', fontSize: 11, padding: 0, lineHeight: 1.4 }}>
+              ✕
+            </button>
+          </div>
+        ))}
+        {annotateOn && review.prompts.length === 0 && review.chat.length === 0 && (
+          <div style={{ ...S.muted, fontSize: 10 }}>Click an element or select text in the artifact to annotate it, or type below.</div>
+        )}
+      </div>
+      <div style={{ display: 'flex', gap: 6, padding: '0 10px 8px', alignItems: 'flex-end', flex: 'none' }}>
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault()
+              if (canSend) send(false)
+            }
+          }}
+          placeholder={busy ? 'Claude is applying your feedback…' : 'Message Claude about this artifact…'}
+          disabled={busy}
+          rows={2}
+          style={{ flex: 1, resize: 'none', background: '#10141a', color: '#e8edf4', border: '1px solid #2c3647', borderRadius: 6, padding: '6px 8px', fontSize: 11, fontFamily: 'system-ui' }}
+        />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <button
+            onClick={() => send(false)}
+            disabled={!canSend}
+            title="Send queued annotations + message to Claude"
+            style={{ background: canSend ? accent : '#2a2f3a', color: canSend ? '#17130a' : '#5b6675', border: 'none', borderRadius: 6, padding: '5px 10px', fontSize: 11, fontWeight: 700, cursor: canSend ? 'pointer' : 'default', whiteSpace: 'nowrap' }}
+          >
+            Send{review.prompts.length ? ` (${review.prompts.length})` : ''}
+          </button>
+          <button
+            onClick={() => send(true)}
+            disabled={busy}
+            title="Send everything and end the review — Claude stops polling"
+            style={{ background: 'none', color: busy ? '#3c4557' : '#7d8794', border: '1px solid #2c3647', borderRadius: 6, padding: '3px 10px', fontSize: 10, cursor: busy ? 'default' : 'pointer', whiteSpace: 'nowrap' }}
+          >
+            Send & end
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export default function BriefingPanel({ sessionId, projectPath, starred, artifacts, label, onToggleStar, onRename, initialUnread, review, reviewAccent, onReviewQueue, onReviewDiscard, onReviewSend, onReviewLayout }: Props) {
   const [card, setCard] = useState<CardView | null>(null)
   const [files, setFiles] = useState<FileTouch[]>([])
   const [tasks, setTasks] = useState<TasksView | null>(null)
@@ -1174,7 +1474,16 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
         {/* Every tab manages its own layout: Preview edge-to-edge, Briefing and
             Project as scrolling-top / pinned-bottom section stacks. */}
         {tab === 'preview' ? (
-          <PreviewTab artifacts={artifacts} sessionId={sessionId} />
+          <PreviewTab
+            artifacts={artifacts}
+            sessionId={sessionId}
+            review={review ?? null}
+            accent={reviewAccent ?? '#f4c95d'}
+            onQueue={onReviewQueue}
+            onDiscard={onReviewDiscard}
+            onSend={onReviewSend}
+            onLayout={onReviewLayout}
+          />
         ) : tab === 'briefing' ? (
           <BriefingTab sessionId={sessionId} card={card} starred={starred} files={files} tasks={tasks} usage={usage} projectPath={projectPath} label={label} onToggleStar={onToggleStar} onRename={onRename} />
         ) : (

@@ -40,6 +40,45 @@ export type FolderView = { id: string; name: string }
 
 export type Snapshot = { sessions: SessionView[]; hidden: string[]; folders: FolderView[] }
 
+// ---- interactive artifact review (docs/artifact-review.md) ----
+
+/** One queued annotation/message, as the injected review SDK reports it.
+ *  Field names cross to the backend and the model verbatim; `_ddQueueKey` is a
+ *  browser-only dedup key stripped before submit. */
+export type ReviewPrompt = {
+  uid: string
+  prompt: string
+  selector: string
+  tag: string // element tag, or 'text' | 'message'
+  text: string
+  target?: unknown
+  _ddQueueKey?: string
+}
+
+export type LayoutWarning = {
+  kind: string
+  selector: string
+  overflowPx: number
+  viewportWidth: number
+  severity: 'error' | 'warning'
+  persistent?: boolean
+}
+
+/** waiting = model not polling · listening = blocked in await_artifact_feedback
+ *  · working = feedback delivered, model revising (sends disabled) */
+export type ReviewPresence = 'waiting' | 'listening' | 'working'
+
+export type ReviewChatEntry = { role: 'user' | 'agent'; text: string }
+
+export type ReviewState = {
+  prompts: ReviewPrompt[] // queued, not yet sent
+  chat: ReviewChatEntry[] // sent feedback + agent replies
+  layout: LayoutWarning[] // latest audit report from the mounted artifact
+  presence: ReviewPresence
+}
+
+export const EMPTY_REVIEW: ReviewState = { prompts: [], chat: [], layout: [], presence: 'waiting' }
+
 // In-pane "find within session" (⌘F). Each pane (terminal/transcript) exposes
 // this so the FindBar can drive it. `incremental` keeps the current match when
 // the query only grew (live typing), vs explicitly advancing on next/prev.

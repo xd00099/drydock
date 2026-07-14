@@ -26,8 +26,8 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 use tauri::http::{Response, StatusCode};
 use tauri::{AppHandle, Emitter};
 
@@ -39,13 +39,36 @@ pub const TOOL_NAME: &str = "render_artifact";
 /// model's first call doesn't halt on a permission prompt).
 pub const TOOL_ID: &str = "mcp__drydock-artifacts__render_artifact";
 
+/// Second tool: block until the human sends inline feedback on a rendered
+/// artifact (the interactive-review loop — the native analog of `lavish-axi
+/// poll`). See docs/artifact-review.md.
+pub const AWAIT_TOOL_NAME: &str = "await_artifact_feedback";
+pub const AWAIT_TOOL_ID: &str = "mcp__drydock-artifacts__await_artifact_feedback";
+
+/// Space-joined `--allowedTools` value pre-approving BOTH tools at spawn.
+pub const ALLOWED_TOOLS: &str = "mcp__drydock-artifacts__render_artifact mcp__drydock-artifacts__await_artifact_feedback";
+
+/// How long a single `await_artifact_feedback` call blocks before returning
+/// `status:"waiting"` (the model then re-calls). Kept safely under Claude Code's
+/// MCP tool-call timeout so the client never aborts the call mid-wait.
+const POLL_BLOCK_MS: u64 = 25_000;
+
+/// Bound the per-session feedback queue and each prompt's length so a runaway
+/// artifact can't balloon memory; excess is dropped (the render still worked).
+const MAX_PROMPTS_PER_SESSION: usize = 200;
+const MAX_PROMPT_LEN: usize = 8 * 1024;
+/// Cap on remembered delivered-layout-warning keys (repeat/persistent tracking).
+const MAX_DELIVERED_LAYOUT_KEYS: usize = 200;
+
 /// System-prompt nudge injected via `--append-system-prompt`. MUST stay a single
 /// line with NO single quotes/apostrophes — it is spliced single-quoted into the
 /// shell `-c` command. It names the exact tool id because current Claude Code may
 /// defer/lazy-load MCP tool schemas, so the model needs an explicit pointer.
-pub const NUDGE: &str = "You are running inside Drydock, which has an Artifacts side panel. When you create a self-contained visual artifact for the user to look at (an HTML page or UI mockup, an SVG image or diagram, or a Markdown document), show it by calling the tool mcp__drydock-artifacts__render_artifact with a short title. IMPORTANT for efficiency: if the artifact is in a file (including one you just wrote), pass its `path` (absolute, or relative to your working directory) and do NOT paste the file contents into the call — Drydock reads the file itself, so you avoid regenerating it. Use the `content` argument only for artifacts that are not saved to any file. It renders locally inside Drydock and is not published to claude.ai.";
+pub const NUDGE: &str = "You are running inside Drydock, which has an Artifacts side panel. When you create a self-contained visual artifact for the user to look at (an HTML page or UI mockup, an SVG image or diagram, or a Markdown document), show it by calling the tool mcp__drydock-artifacts__render_artifact with a short title. IMPORTANT for efficiency: if the artifact is in a file (including one you just wrote), pass its `path` (absolute, or relative to your working directory) and do NOT paste the file contents into the call — Drydock reads the file itself, so you avoid regenerating it. Use the `content` argument only for artifacts that are not saved to any file. It renders locally inside Drydock and is not published to claude.ai. After you render an HTML plan or mockup for the user to review, call mcp__drydock-artifacts__await_artifact_feedback to receive the inline annotations the user leaves on it; apply them, re-render, and call it again until it returns status ended. It blocks briefly and returns status waiting when nothing has arrived yet, so just call it again to keep waiting.";
 
-const TOOL_DESCRIPTION: &str = "Render a self-contained visual artifact (HTML page/UI mockup, SVG image/diagram, or Markdown document) in Drydock's Artifacts side panel so the user can SEE it immediately. Pass EITHER `path` (preferred — a file you already wrote; Drydock reads it, so you don't resend or regenerate its content) OR inline `content` (only for artifacts not saved to a file). Renders locally inside Drydock and is NOT published to claude.ai.";
+const TOOL_DESCRIPTION: &str = "Render a self-contained visual artifact (HTML page/UI mockup, SVG image/diagram, or Markdown document) in Drydock's Artifacts side panel so the user can SEE it immediately. Pass EITHER `path` (preferred — a file you already wrote; Drydock reads it, so you don't resend or regenerate its content) OR inline `content` (only for artifacts not saved to a file). Renders locally inside Drydock and is NOT published to claude.ai. For an HTML plan/mockup you want reviewed, follow the render with await_artifact_feedback to collect the user's inline annotations.";
+
+const AWAIT_TOOL_DESCRIPTION: &str = "Block until the user sends inline feedback on the HTML artifact you rendered for review, then return it. Call this after render_artifact when you want the user to annotate a plan or mockup. Returns {status:\"feedback\", prompts:[{prompt, selector, tag, text, target?}], layout_warnings?}, or {status:\"waiting\"} after a short wait when nothing has arrived yet (just call it again), or {status:\"ended\"} when the user finishes the review. Follow the returned next_step. Pass `reply` to post a short message into the review panel first.";
 
 /// Reject content larger than this (bytes). Bounds webview memory; the model
 /// gets an isError result it can react to.
@@ -114,6 +137,150 @@ struct Stored {
 /// the `artifact://` scheme — SVG/Markdown render in a sanitized srcdoc.
 type Store = Arc<Mutex<HashMap<String, Stored>>>;
 
+// ---- interactive review (annotate + await feedback) --------------------------
+
+/// One queued human annotation or message, as the injected SDK reports it and as
+/// `await_artifact_feedback` delivers it to the model. Field names cross the
+/// frontend and the model verbatim. `target` (present for text-range selections)
+/// carries the selected text + boundary anchors; element clicks omit it.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ReviewPrompt {
+    #[serde(default)]
+    pub uid: String,
+    #[serde(default)]
+    pub prompt: String,
+    #[serde(default)]
+    pub selector: String,
+    #[serde(default)]
+    pub tag: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<Value>,
+}
+
+/// One render-time layout defect the in-iframe audit found. `persistent` flips to
+/// true once its `kind:selector` key has already been delivered to the model, so
+/// a re-report after a failed fix reads as "still broken", not "fresh".
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LayoutWarning {
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub selector: String,
+    #[serde(default, rename = "overflowPx")]
+    pub overflow_px: f64,
+    #[serde(default, rename = "viewportWidth")]
+    pub viewport_width: f64,
+    #[serde(default)]
+    pub severity: String,
+    #[serde(default)]
+    pub persistent: bool,
+}
+
+/// One session's pending feedback, drained by `await_artifact_feedback`.
+#[derive(Default)]
+struct SessionFeedback {
+    prompts: Vec<ReviewPrompt>,
+    layout: Vec<LayoutWarning>,
+    delivered_layout_keys: Vec<String>,
+    /// The human ended the review. A consumable EDGE, not a latch: delivering it
+    /// clears it, so a later render in the same session starts a fresh round.
+    ended: bool,
+    /// A re-audit came back clean AFTER warnings were delivered — a deliverable
+    /// "your fix worked" signal (otherwise an empty audit is indistinguishable
+    /// from "nothing happened yet").
+    layout_clean: bool,
+    /// Consecutive polls that timed out empty. Past a limit the next_step tells
+    /// the model to stop polling (each empty round costs it a tool-call cycle).
+    waiting_streak: u32,
+}
+
+/// Shared feedback state: a per-pty map plus a condvar the poll waits on and the
+/// submit/report/release paths notify. One condvar for the whole map is fine —
+/// spurious wakes just re-check the caller's own entry.
+#[derive(Default)]
+pub struct FeedbackHub {
+    map: Mutex<HashMap<u32, SessionFeedback>>,
+    cv: Condvar,
+}
+
+impl FeedbackHub {
+    /// Drop a session's queue and wake any blocked poll (which then returns
+    /// `ended`, since its entry has vanished). Called on pty exit.
+    pub fn drop_session(&self, pty_id: u32) {
+        self.map.lock().unwrap().remove(&pty_id);
+        self.cv.notify_all();
+    }
+
+    /// A new HTML artifact was rendered for this session: its pending layout
+    /// report belongs to the PREVIOUS document, so clear it (delivered keys are
+    /// kept — "still broken after the re-render" must read as persistent), and
+    /// reset the empty-poll streak (a fresh render restarts engagement).
+    fn begin_render(&self, pty_id: u32) {
+        let mut map = self.map.lock().unwrap();
+        if let Some(fb) = map.get_mut(&pty_id) {
+            fb.layout.clear();
+            fb.layout_clean = false;
+            fb.waiting_streak = 0;
+        }
+    }
+
+    /// A poll drained this batch but the response write failed (the client
+    /// aborted the call while the poll was parked — Esc, timeout, crash): put
+    /// the feedback BACK so the next poll delivers it instead of losing it.
+    fn requeue(&self, pty_id: u32, mut prompts: Vec<ReviewPrompt>, layout: Vec<LayoutWarning>, ended: bool) {
+        {
+            let mut map = self.map.lock().unwrap();
+            // A vanished entry means the session itself is gone — nothing to save.
+            let Some(fb) = map.get_mut(&pty_id) else { return };
+            prompts.append(&mut fb.prompts); // drained batch back in FRONT, order kept
+            fb.prompts = prompts;
+            if fb.layout.is_empty() {
+                fb.layout = layout; // a newer audit (if any) outranks the drained one
+            }
+            fb.ended |= ended;
+        }
+        self.cv.notify_all();
+    }
+}
+
+/// Char-boundary-safe truncation for attacker-influenceable strings (a hostile
+/// artifact can put anything in selector/text/tag via window.dd).
+fn clamp_str(s: &mut String, max: usize) {
+    if s.len() > max {
+        let mut cut = max;
+        while cut > 0 && !s.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        s.truncate(cut);
+    }
+}
+
+type Feedback = Arc<FeedbackHub>;
+
+/// What `await_artifact_feedback` returns to the model (JSON-stringified into the
+/// tool result). `next_step` is agent-facing guidance mirroring lavish-axi.
+#[derive(Debug, PartialEq, serde::Serialize)]
+struct PollResult {
+    status: String, // "feedback" | "waiting" | "ended"
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    prompts: Vec<ReviewPrompt>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    layout_warnings: Vec<LayoutWarning>,
+    #[serde(skip_serializing_if = "is_false")]
+    session_ended: bool,
+    /// True when a re-audit came back clean after warnings had been delivered —
+    /// "your layout fix worked".
+    #[serde(skip_serializing_if = "is_false")]
+    layout_clean: bool,
+    next_step: String,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 /// Artifact pushed to the webview. Field names cross to the frontend verbatim.
 #[derive(Clone, serde::Serialize)]
 struct ArtifactEvent {
@@ -134,6 +301,8 @@ pub struct ArtifactServer {
     pub port: u16,
     tokens: Tokens,
     store: Store,
+    /// Per-session interactive-review feedback queue + wait condvar.
+    feedback: Feedback,
     /// Root of the persisted gallery: `<dir>/<session_id>/<ms>-<seq>.<ext>`
     /// plus a `.meta.json` sidecar per artifact.
     dir: PathBuf,
@@ -150,11 +319,13 @@ impl ArtifactServer {
         let port = listener.local_addr()?.port();
         let tokens: Tokens = Arc::new(Mutex::new(HashMap::new()));
         let store: Store = Arc::new(Mutex::new(HashMap::new()));
+        let feedback: Feedback = Arc::new(FeedbackHub::default());
         let t = Arc::clone(&tokens);
         let s = Arc::clone(&store);
+        let f = Arc::clone(&feedback);
         let d = dir.clone();
-        std::thread::spawn(move || serve(listener, t, s, app, d));
-        Ok(Self { port, tokens, store, dir })
+        std::thread::spawn(move || serve(listener, t, s, f, app, d));
+        Ok(Self { port, tokens, store, feedback, dir })
     }
 
     /// HTML for an artifact id, for the `artifact://` scheme handler. Live ids
@@ -222,16 +393,91 @@ impl ArtifactServer {
     }
 
     /// Drop every token AND stored artifact for a tab id (on pty exit) — an
-    /// ended session keeps nothing in memory.
+    /// ended session keeps nothing in memory. Also drops any pending review
+    /// feedback and wakes a poll blocked on it.
     pub fn release(&self, pty_id: u32) {
         self.tokens.lock().unwrap().retain(|_, v| v.pty_id != pty_id);
         self.store.lock().unwrap().retain(|_, s| s.pty_id != pty_id);
+        self.feedback.drop_session(pty_id);
     }
 
     /// Shared handle to the token map, for an exit closure that outlives `&self`.
     pub fn tokens_handle(&self) -> Tokens {
         Arc::clone(&self.tokens)
     }
+
+    /// Shared handle to the feedback hub, for the exit closure (mirrors
+    /// `tokens_handle`) — lets a dying pty drop its queue and wake a blocked poll.
+    pub fn feedback_handle(&self) -> Feedback {
+        Arc::clone(&self.feedback)
+    }
+
+    /// Queue the human's annotations/messages for `pty_id` (frontend →
+    /// `submit_artifact_feedback`) and wake the session's poll. Over-long prompts
+    /// are truncated and the queue is capped (oldest dropped) to bound memory.
+    pub fn submit_feedback(&self, pty_id: u32, prompts: Vec<ReviewPrompt>, end_review: bool) {
+        {
+            let mut map = self.feedback.map.lock().unwrap();
+            let fb = map.entry(pty_id).or_default();
+            for mut p in prompts {
+                // Every field is attacker-influenceable (window.dd in the
+                // artifact) and lands verbatim in the model's context — bound
+                // them all, not just the comment.
+                clamp_str(&mut p.prompt, MAX_PROMPT_LEN);
+                clamp_str(&mut p.selector, 1024);
+                clamp_str(&mut p.tag, 64);
+                clamp_str(&mut p.text, 4 * 1024);
+                clamp_str(&mut p.uid, 128);
+                if let Some(t) = &p.target {
+                    if serde_json::to_string(t).map(|s| s.len()).unwrap_or(usize::MAX) > 8 * 1024 {
+                        p.target = None;
+                    }
+                }
+                fb.prompts.push(p);
+            }
+            if fb.prompts.len() > MAX_PROMPTS_PER_SESSION {
+                let drop = fb.prompts.len() - MAX_PROMPTS_PER_SESSION;
+                fb.prompts.drain(0..drop);
+            }
+            if end_review {
+                fb.ended = true;
+            }
+            fb.waiting_streak = 0; // the user engaged
+        }
+        self.feedback.cv.notify_all();
+    }
+
+    /// Replace the current layout warnings for `pty_id` (frontend →
+    /// `report_layout_warnings`), marking any whose `kind:selector` key was
+    /// already delivered as `persistent`, and wake the poll.
+    pub fn report_layout(&self, pty_id: u32, mut warnings: Vec<LayoutWarning>) {
+        warnings.truncate(100); // a hostile page can't flood the queue
+        {
+            let mut map = self.feedback.map.lock().unwrap();
+            let fb = map.entry(pty_id).or_default();
+            // An EMPTY audit after warnings were delivered is meaningful ("the
+            // fix worked") — flag it deliverable. Empty before any delivery is
+            // just a clean page: nothing to say.
+            if warnings.is_empty() {
+                fb.layout_clean = !fb.delivered_layout_keys.is_empty();
+            } else {
+                fb.layout_clean = false;
+            }
+            for w in &mut warnings {
+                clamp_str(&mut w.kind, 64);
+                clamp_str(&mut w.selector, 1024);
+                clamp_str(&mut w.severity, 16);
+                w.persistent = fb.delivered_layout_keys.contains(&layout_key(w));
+            }
+            fb.layout = warnings;
+            fb.waiting_streak = 0;
+        }
+        self.feedback.cv.notify_all();
+    }
+}
+
+fn layout_key(w: &LayoutWarning) -> String {
+    format!("{}:{}", w.kind, w.selector)
 }
 
 /// 128 bits of OS randomness, URL-safe base64 (header-safe charset). Fails loud
@@ -242,30 +488,36 @@ fn random_token() -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
 }
 
-fn serve(listener: TcpListener, tokens: Tokens, store: Store, app: AppHandle, dir: PathBuf) {
+fn serve(listener: TcpListener, tokens: Tokens, store: Store, feedback: Feedback, app: AppHandle, dir: PathBuf) {
     let counter = Arc::new(AtomicU64::new(1));
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
         let tokens = Arc::clone(&tokens);
         let store = Arc::clone(&store);
+        let feedback = Arc::clone(&feedback);
         let app = app.clone();
         let counter = Arc::clone(&counter);
         let dir = dir.clone();
         std::thread::spawn(move || {
-            let _ = handle_conn(stream, &tokens, &store, &app, &counter, &dir);
+            let _ = handle_conn(stream, &tokens, &store, &feedback, &app, &counter, &dir);
         });
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_conn(
     mut stream: TcpStream,
     tokens: &Tokens,
     store: &Store,
+    feedback: &Feedback,
     app: &AppHandle,
     counter: &AtomicU64,
     dir: &Path,
 ) -> std::io::Result<()> {
-    // Idle keep-alive connections must not pin a thread forever.
+    // Idle keep-alive connections must not pin a thread forever. The window must
+    // exceed POLL_BLOCK_MS: while an await_artifact_feedback call is parked on
+    // the condvar, this thread is inside route_with — the timeout only governs
+    // reads BETWEEN requests, but keep the margin generous anyway.
     stream.set_read_timeout(Some(Duration::from_secs(120))).ok();
     // Disable Nagle's algorithm: responses are small JSON written right after the
     // request is read, and Nagle + the client's delayed-ACK would otherwise add a
@@ -314,8 +566,14 @@ fn handle_conn(
             if keep_alive { continue } else { return Ok(()) }
         }
 
-        let routed = route(&req.body, cwd.as_deref());
+        let ctx = PollCtx { hub: feedback, pty_id, app, block: Duration::from_millis(POLL_BLOCK_MS) };
+        let routed = route_with(&req.body, cwd.as_deref(), Some(&ctx));
         for e in &routed.emits {
+            // A fresh HTML render supersedes the previous document's pending
+            // layout report and restarts the review round's engagement clock.
+            if e.kind == "html" {
+                feedback.begin_render(pty_id);
+            }
             let seq = counter.fetch_add(1, Ordering::Relaxed);
             let id = seq.to_string();
             // Retain every artifact so Download / Reveal-in-Finder work for all
@@ -337,9 +595,18 @@ fn handle_conn(
                 ArtifactEvent { pty_id, id, title: e.title.clone(), kind: e.kind.clone(), content, path },
             );
         }
-        match &routed.json {
-            Some(v) => write_json(&mut stream, routed.status, v, keep_alive)?,
-            None => write_status(&mut stream, routed.status, keep_alive)?,
+        let write_res = match &routed.json {
+            Some(v) => write_json(&mut stream, routed.status, v, keep_alive),
+            None => write_status(&mut stream, routed.status, keep_alive),
+        };
+        if let Err(e) = write_res {
+            // The client is gone (it aborted the call — Esc, timeout, crash). A
+            // poll that just drained feedback must NOT lose it: put the batch
+            // back so the next poll delivers it.
+            if let Some(r) = routed.redeliver {
+                feedback.requeue(r.pty_id, r.prompts, r.layout, r.ended);
+            }
+            return Err(e);
         }
         if !keep_alive {
             return Ok(());
@@ -487,15 +754,42 @@ struct Emit {
     path: Option<PathBuf>,
 }
 
+/// Feedback a poll drained from the queue, carried on the response so the
+/// transport can put it BACK if the response write fails (client aborted).
+struct Redeliver {
+    pty_id: u32,
+    prompts: Vec<ReviewPrompt>,
+    layout: Vec<LayoutWarning>,
+    ended: bool,
+}
+
 struct Routed {
     status: u16,
     json: Option<Value>,
     emits: Vec<Emit>,
+    redeliver: Option<Redeliver>,
+}
+
+/// Context for the blocking `await_artifact_feedback` call: which session, the
+/// hub to wait on, an app handle to emit presence/replies, and how long to
+/// block. Threaded through routing; `None` (unit tests) makes the await tool a
+/// fast tool-error instead of blocking.
+struct PollCtx<'a> {
+    hub: &'a FeedbackHub,
+    pty_id: u32,
+    app: &'a AppHandle,
+    block: Duration,
+}
+
+/// Route a raw request body with no poll context (used by unit tests).
+#[cfg(test)]
+fn route(body: &[u8], cwd: Option<&Path>) -> Routed {
+    route_with(body, cwd, None)
 }
 
 /// Route a raw request body (single message, or a batch array) to a response.
 /// `cwd` is the calling session's working directory, for relative artifact paths.
-fn route(body: &[u8], cwd: Option<&Path>) -> Routed {
+fn route_with(body: &[u8], cwd: Option<&Path>, ctx: Option<&PollCtx>) -> Routed {
     let v: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
         Err(_) => {
@@ -503,6 +797,7 @@ fn route(body: &[u8], cwd: Option<&Path>) -> Routed {
                 status: 200,
                 json: Some(rpc_error(Value::Null, -32700, "Parse error")),
                 emits: vec![],
+                redeliver: None,
             }
         }
     };
@@ -510,33 +805,36 @@ fn route(body: &[u8], cwd: Option<&Path>) -> Routed {
         let mut out = Vec::new();
         let mut emits = Vec::new();
         for it in &items {
-            let r = route_one(it, cwd);
+            // Batch items get NO poll context: a blocking await inside a batch
+            // would hold every other item's response (and emits) hostage for
+            // 25s. It fails fast as a tool error the model can recover from.
+            let r = route_one(it, cwd, None);
             if let Some(j) = r.json {
                 out.push(j);
             }
             emits.extend(r.emits);
         }
         if out.is_empty() {
-            Routed { status: 202, json: None, emits }
+            Routed { status: 202, json: None, emits, redeliver: None }
         } else {
-            Routed { status: 200, json: Some(Value::Array(out)), emits }
+            Routed { status: 200, json: Some(Value::Array(out)), emits, redeliver: None }
         }
     } else {
-        route_one(&v, cwd)
+        route_one(&v, cwd, ctx)
     }
 }
 
-fn route_one(msg: &Value, cwd: Option<&Path>) -> Routed {
+fn route_one(msg: &Value, cwd: Option<&Path>, ctx: Option<&PollCtx>) -> Routed {
     // No id → JSON-RPC notification: never gets a response.
     let Some(id) = msg.get("id").cloned() else {
-        return Routed { status: 202, json: None, emits: vec![] };
+        return Routed { status: 202, json: None, emits: vec![], redeliver: None };
     };
     let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
     match method {
         "initialize" => respond(id, initialize_result(msg)),
         "ping" => respond(id, json!({})),
         "tools/list" => respond(id, tools_list_result()),
-        "tools/call" => tools_call(id, msg, cwd),
+        "tools/call" => tools_call(id, msg, cwd, ctx),
         _ => respond_err(id, -32601, "Method not found"),
     }
 }
@@ -546,11 +844,12 @@ fn respond(id: Value, result: Value) -> Routed {
         status: 200,
         json: Some(json!({ "jsonrpc": "2.0", "id": id, "result": result })),
         emits: vec![],
+        redeliver: None,
     }
 }
 
 fn respond_err(id: Value, code: i64, message: &str) -> Routed {
-    Routed { status: 200, json: Some(rpc_error(id, code, message)), emits: vec![] }
+    Routed { status: 200, json: Some(rpc_error(id, code, message)), emits: vec![], redeliver: None }
 }
 
 fn rpc_error(id: Value, code: i64, message: &str) -> Value {
@@ -586,6 +885,16 @@ fn tools_list_result() -> Value {
                     "kind": { "type": "string", "enum": ["html", "svg", "markdown"], "description": "Content type. Optional when `path` has a known extension; required with inline `content`." }
                 },
                 "required": ["title"]
+            }
+        }, {
+            "name": AWAIT_TOOL_NAME,
+            "title": "Await user feedback on an artifact",
+            "description": AWAIT_TOOL_DESCRIPTION,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "reply": { "type": "string", "description": "Optional one-line message to show the user in the review panel before waiting (e.g. a summary of what you built and what to review first)." }
+                }
             }
         }]
     })
@@ -627,11 +936,13 @@ fn read_artifact_file(path: &str, cwd: Option<&Path>) -> Result<(String, PathBuf
     Ok((text, resolved))
 }
 
-fn tools_call(id: Value, msg: &Value, cwd: Option<&Path>) -> Routed {
+fn tools_call(id: Value, msg: &Value, cwd: Option<&Path>, ctx: Option<&PollCtx>) -> Routed {
     let params = msg.get("params");
     let name = params.and_then(|p| p.get("name")).and_then(Value::as_str);
-    if name != Some(TOOL_NAME) {
-        return respond_err(id, -32602, "Unknown tool");
+    match name {
+        Some(TOOL_NAME) => {} // fall through to the render logic below
+        Some(AWAIT_TOOL_NAME) => return await_feedback_call(id, params, ctx),
+        _ => return respond_err(id, -32602, "Unknown tool"),
     }
     let args = params.and_then(|p| p.get("arguments"));
     let get = |k: &str| args.and_then(|a| a.get(k)).and_then(Value::as_str);
@@ -679,7 +990,171 @@ fn tools_call(id: Value, msg: &Value, cwd: Option<&Path>) -> Routed {
             }
         })),
         emits: vec![Emit { title: title.to_string(), kind: kind.to_string(), content, path: source }],
+        redeliver: None,
     }
+}
+
+// ---- interactive review: await_artifact_feedback ----------------------------
+
+/// Handle `await_artifact_feedback`: optionally post the agent's reply into the
+/// review panel, then block until the human sends feedback / ends the review, or
+/// return `waiting` after `POLL_BLOCK_MS` so the model re-calls. `ctx == None`
+/// (unit tests without a live hub) yields a benign error result.
+fn await_feedback_call(id: Value, params: Option<&Value>, ctx: Option<&PollCtx>) -> Routed {
+    let Some(ctx) = ctx else {
+        return tool_error(id, "feedback polling is unavailable in this context");
+    };
+    let reply = params
+        .and_then(|p| p.get("arguments"))
+        .and_then(|a| a.get("reply"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if let Some(reply) = reply {
+        let _ = ctx.app.emit("artifact-review", json!({ "pty_id": ctx.pty_id, "reply": reply }));
+    }
+    // Presence for the review panel: "listening" while blocked in this call,
+    // then "working" (feedback delivered — the model is revising) or "waiting"
+    // (nothing arrived / review over; between re-calls the model isn't listening).
+    let _ = ctx.app.emit("artifact-review", json!({ "pty_id": ctx.pty_id, "presence": "listening" }));
+    let result = take_or_wait(ctx.hub, ctx.pty_id, ctx.block);
+    // The final batch of an ended review must NOT read as "working" — the model
+    // was told to stop polling, so the panel would wedge on it forever.
+    let presence = if result.status == "feedback" && !result.session_ended { "working" } else { "waiting" };
+    let _ = ctx.app.emit("artifact-review", json!({ "pty_id": ctx.pty_id, "presence": presence }));
+    // Carry the drained batch on the response: if the client aborted this call
+    // while we were parked, the transport puts it back (see handle_conn).
+    let redeliver = (result.status == "feedback").then(|| Redeliver {
+        pty_id: ctx.pty_id,
+        prompts: result.prompts.clone(),
+        layout: result.layout_warnings.clone(),
+        ended: result.session_ended,
+    });
+    let text = serde_json::to_string(&result).unwrap_or_else(|_| "{\"status\":\"waiting\"}".to_string());
+    Routed {
+        status: 200,
+        json: Some(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": { "content": [{ "type": "text", "text": text }] }
+        })),
+        emits: vec![],
+        redeliver,
+    }
+}
+
+/// Block up to `block` for `pty_id`'s pending feedback, draining and clearing it
+/// on delivery. Returns `feedback` (prompts and/or layout warnings), `ended` (the
+/// human ended the review, or the session went away), or `waiting` on timeout.
+fn take_or_wait(hub: &FeedbackHub, pty_id: u32, block: Duration) -> PollResult {
+    let deadline = Instant::now() + block;
+    let mut map = hub.map.lock().unwrap();
+    // Ensure an entry exists so a later `drop_session` (pty exit) is observable
+    // as a vanished entry → `ended`, distinct from "nothing submitted yet".
+    map.entry(pty_id).or_default();
+    loop {
+        match map.get_mut(&pty_id) {
+            None => return PollResult::ended(),
+            Some(fb) => {
+                if !fb.prompts.is_empty() || !fb.layout.is_empty() || fb.layout_clean {
+                    let prompts = std::mem::take(&mut fb.prompts);
+                    let layout = std::mem::take(&mut fb.layout);
+                    let layout_clean = std::mem::take(&mut fb.layout_clean);
+                    for w in &layout {
+                        let k = layout_key(w);
+                        if !fb.delivered_layout_keys.contains(&k) {
+                            fb.delivered_layout_keys.push(k);
+                        }
+                    }
+                    if fb.delivered_layout_keys.len() > MAX_DELIVERED_LAYOUT_KEYS {
+                        let drop = fb.delivered_layout_keys.len() - MAX_DELIVERED_LAYOUT_KEYS;
+                        fb.delivered_layout_keys.drain(0..drop);
+                    }
+                    // `ended` is a consumable edge: delivering the final batch
+                    // clears it, so a LATER render in this session can start a
+                    // fresh review round instead of instantly reading "ended".
+                    let ended = std::mem::take(&mut fb.ended);
+                    fb.waiting_streak = 0;
+                    return PollResult::feedback(prompts, layout, layout_clean, ended);
+                }
+                if fb.ended {
+                    fb.ended = false; // consume the edge (see above)
+                    return PollResult::ended();
+                }
+            }
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            let streak = match map.get_mut(&pty_id) {
+                Some(fb) => {
+                    fb.waiting_streak = fb.waiting_streak.saturating_add(1);
+                    fb.waiting_streak
+                }
+                None => 0,
+            };
+            return PollResult::waiting(streak);
+        }
+        // wait_timeout releases the map lock while parked; a spurious wake just
+        // re-checks at the top of the loop (bounded by the deadline).
+        let (m, _res) = hub.cv.wait_timeout(map, deadline - now).unwrap();
+        map = m;
+    }
+}
+
+/// After this many consecutive empty polls (~5.5 min at 25s + model turnaround)
+/// the next_step tells the model to stop burning tool-call cycles.
+const WAITING_STREAK_LIMIT: u32 = 8;
+
+impl PollResult {
+    fn feedback(prompts: Vec<ReviewPrompt>, layout: Vec<LayoutWarning>, layout_clean: bool, ended: bool) -> Self {
+        let fresh_error = layout.iter().any(|w| w.severity == "error" && !w.persistent);
+        PollResult {
+            status: "feedback".into(),
+            next_step: next_step_feedback(fresh_error, layout_clean, ended),
+            prompts,
+            layout_warnings: layout,
+            session_ended: ended,
+            layout_clean,
+        }
+    }
+    fn waiting(streak: u32) -> Self {
+        let next_step = if streak >= WAITING_STREAK_LIMIT {
+            "The user has not engaged with the review yet. Stop polling for now and continue in the conversation; call await_artifact_feedback again later if they say they are reviewing.".into()
+        } else {
+            "No feedback yet. Call await_artifact_feedback again to keep waiting for the user.".to_string()
+        };
+        PollResult {
+            status: "waiting".into(),
+            prompts: vec![],
+            layout_warnings: vec![],
+            session_ended: false,
+            layout_clean: false,
+            next_step,
+        }
+    }
+    fn ended() -> Self {
+        PollResult {
+            status: "ended".into(),
+            prompts: vec![],
+            layout_warnings: vec![],
+            session_ended: true,
+            layout_clean: false,
+            next_step: "The user ended the review. Stop polling and continue in the conversation.".into(),
+        }
+    }
+}
+
+fn next_step_feedback(fresh_error_layout: bool, layout_clean: bool, ended: bool) -> String {
+    if ended {
+        return "This is the last feedback before the user ended the review. Apply it, then continue in the conversation instead of polling again.".into();
+    }
+    if fresh_error_layout {
+        return "Fix the error-severity layout_warnings, re-render the artifact, then call await_artifact_feedback again to recheck before asking the user to review.".into();
+    }
+    if layout_clean {
+        return "The layout audit is clean now. Ask the user to review the artifact, then call await_artifact_feedback again.".into();
+    }
+    "Apply the annotations, re-render the artifact if needed, then call await_artifact_feedback again (pass reply to message the user in the review panel).".into()
 }
 
 // ---- HTML artifact store + `artifact://` rendering --------------------------
@@ -878,14 +1353,23 @@ fn is_full_document(html: &str) -> bool {
 /// appended at the end so it can't disturb the document's own parsing.
 const ESC_FORWARDER: &str = "<script>addEventListener('keydown',function(e){if(e.key==='Escape')parent.postMessage({type:'drydock-esc'},'*')},true)</script>";
 
-/// The exact HTML document served for an artifact: a full page passes through
-/// (plus the Esc forwarder); a fragment gets the minimal dark-theme wrapper.
+/// The interactive-review SDK injected into every served HTML artifact
+/// (annotate elements/text, layout audit — see docs/artifact-review.md). Only
+/// the SERVED copy carries it; the artifact's source file is never touched.
+/// Adapted from lavish-axi (MIT © Kun Chen) — see the file header.
+const REVIEW_SDK: &str = include_str!("artifact_review_sdk.js");
+
+/// The exact HTML document served for an artifact: a full page passes through,
+/// a fragment gets the minimal dark-theme wrapper; both carry the review SDK and
+/// then the Esc forwarder. Order matters: the SDK registers its window-capture
+/// Escape listener FIRST so an open annotation card can claim the key
+/// (stopImmediatePropagation) before the forwarder would close the overlay.
 fn build_artifact_document(html: &str) -> String {
     if is_full_document(html) {
-        format!("{html}{ESC_FORWARDER}")
+        format!("{html}<script>{REVIEW_SDK}</script>{ESC_FORWARDER}")
     } else {
         format!(
-            "<!doctype html><html><head><meta charset=\"utf-8\"><style>{ARTIFACT_FRAME_CSS}</style></head><body>{html}{ESC_FORWARDER}</body></html>"
+            "<!doctype html><html><head><meta charset=\"utf-8\"><style>{ARTIFACT_FRAME_CSS}</style></head><body>{html}<script>{REVIEW_SDK}</script>{ESC_FORWARDER}</body></html>"
         )
     }
 }
@@ -924,6 +1408,7 @@ fn tool_error(id: Value, text: &str) -> Routed {
             }
         })),
         emits: vec![],
+        redeliver: None,
     }
 }
 
@@ -1211,9 +1696,10 @@ mod tests {
         let body = String::from_utf8(r.body().clone()).unwrap();
         assert_eq!(
             body,
-            format!("{doc}{ESC_FORWARDER}"),
-            "a full page is served unwrapped, with only the Esc forwarder appended"
+            format!("{doc}<script>{REVIEW_SDK}</script>{ESC_FORWARDER}"),
+            "a full page is served unwrapped, with only the review SDK + Esc forwarder appended"
         );
+        assert!(body.starts_with(doc), "the document itself is untouched");
     }
 
     #[test]
@@ -1222,6 +1708,32 @@ mod tests {
         let frag = build_artifact_document("<div>x</div>");
         assert!(frag.contains(ESC_FORWARDER));
         assert!(frag.contains("drydock-esc"));
+    }
+
+    #[test]
+    fn artifact_documents_carry_the_review_sdk() {
+        // both branches inject the SDK, and the SDK precedes the Esc forwarder
+        // (its Escape handler must register first to claim the key for an open
+        // annotation card)
+        for doc in [
+            build_artifact_document("<div>x</div>"),
+            build_artifact_document("<!doctype html><html><body>x</body></html>"),
+        ] {
+            assert!(doc.contains("dd-artifact:queuePrompt"), "SDK marker present");
+            let sdk_at = doc.find("dd-artifact:queuePrompt").unwrap();
+            let esc_at = doc.find("drydock-esc").unwrap();
+            assert!(sdk_at < esc_at, "SDK registers before the Esc forwarder");
+        }
+    }
+
+    #[test]
+    fn review_sdk_is_script_embeddable() {
+        // Embedded verbatim inside a <script> tag: the closing sequence would
+        // truncate the script and break every served artifact.
+        assert!(!REVIEW_SDK.to_ascii_lowercase().contains("</script"), "no closing-script sequence");
+        assert!(REVIEW_SDK.contains("dd-artifact:ready"), "boot handshake present");
+        assert!(REVIEW_SDK.contains("dd-artifact:layout"), "layout audit present");
+        assert!(REVIEW_SDK.contains("Kun Chen"), "MIT attribution retained");
     }
 
     #[test]
@@ -1252,7 +1764,7 @@ mod tests {
     }
 
     fn test_server(dir: PathBuf) -> ArtifactServer {
-        ArtifactServer { port: 0, tokens: Arc::new(Mutex::new(HashMap::new())), store: Arc::new(Mutex::new(HashMap::new())), dir }
+        ArtifactServer { port: 0, tokens: Arc::new(Mutex::new(HashMap::new())), store: Arc::new(Mutex::new(HashMap::new())), feedback: Arc::new(FeedbackHub::default()), dir }
     }
 
     #[test]
@@ -1355,6 +1867,10 @@ mod tests {
     #[test]
     fn tool_id_matches_server_and_tool_names() {
         assert_eq!(TOOL_ID, format!("mcp__{SERVER_NAME}__{TOOL_NAME}"));
+        assert_eq!(AWAIT_TOOL_ID, format!("mcp__{SERVER_NAME}__{AWAIT_TOOL_NAME}"));
+        // ALLOWED_TOOLS pre-approves exactly both fully-qualified ids
+        assert!(ALLOWED_TOOLS.contains(TOOL_ID));
+        assert!(ALLOWED_TOOLS.contains(AWAIT_TOOL_ID));
     }
 
     #[test]
@@ -1362,5 +1878,278 @@ mod tests {
         // It is spliced single-quoted into a shell -c string.
         assert!(!NUDGE.contains('\''));
         assert!(!NUDGE.contains('\n'));
+    }
+
+    // ---- interactive review: feedback queue + poll ---------------------------
+
+    fn msg_prompt(uid: &str, text: &str) -> ReviewPrompt {
+        ReviewPrompt { uid: uid.into(), prompt: text.into(), selector: String::new(), tag: "message".into(), text: String::new(), target: None }
+    }
+
+    #[test]
+    fn tools_list_advertises_both_tools() {
+        let msg = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
+        let r = route(msg.to_string().as_bytes(), None);
+        let tools = r.json.unwrap()["result"]["tools"].clone();
+        let names: Vec<String> = tools.as_array().unwrap().iter()
+            .map(|t| t["name"].as_str().unwrap_or("").to_string()).collect();
+        assert!(names.iter().any(|n| n == TOOL_NAME), "render tool listed: {names:?}");
+        assert!(names.iter().any(|n| n == AWAIT_TOOL_NAME), "await tool listed: {names:?}");
+    }
+
+    #[test]
+    fn await_tool_without_ctx_is_tool_error_not_a_hang() {
+        // The test-only `route` passes ctx=None: the await tool must fail fast
+        // rather than block or panic.
+        let msg = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": AWAIT_TOOL_NAME, "arguments": {} } });
+        let r = route(msg.to_string().as_bytes(), None);
+        assert!(r.emits.is_empty());
+        assert_eq!(r.json.unwrap()["result"]["isError"], true);
+    }
+
+    #[test]
+    fn feedback_delivered_after_submit_then_drains() {
+        let srv = test_server(std::env::temp_dir());
+        srv.submit_feedback(7, vec![msg_prompt("1", "make it blue")], false);
+        let r = take_or_wait(&srv.feedback, 7, Duration::from_millis(50));
+        assert_eq!(r.status, "feedback");
+        assert_eq!(r.prompts.len(), 1);
+        assert_eq!(r.prompts[0].prompt, "make it blue");
+        assert!(!r.session_ended);
+        // delivery cleared the queue: a second poll times out to waiting
+        let r2 = take_or_wait(&srv.feedback, 7, Duration::from_millis(20));
+        assert_eq!(r2.status, "waiting");
+    }
+
+    #[test]
+    fn take_or_wait_blocks_then_returns_waiting_on_timeout() {
+        let srv = test_server(std::env::temp_dir());
+        let start = Instant::now();
+        let r = take_or_wait(&srv.feedback, 7, Duration::from_millis(60));
+        assert_eq!(r.status, "waiting");
+        assert!(start.elapsed() >= Duration::from_millis(50), "it actually blocked ~the full window");
+    }
+
+    #[test]
+    fn end_review_with_no_prompts_returns_ended() {
+        let srv = test_server(std::env::temp_dir());
+        srv.submit_feedback(7, vec![], true);
+        let r = take_or_wait(&srv.feedback, 7, Duration::from_millis(20));
+        assert_eq!(r.status, "ended");
+        assert!(r.session_ended);
+    }
+
+    #[test]
+    fn send_and_end_delivers_final_batch_with_the_end_flag() {
+        let srv = test_server(std::env::temp_dir());
+        srv.submit_feedback(7, vec![msg_prompt("", "final note")], true);
+        let r = take_or_wait(&srv.feedback, 7, Duration::from_millis(20));
+        assert_eq!(r.status, "feedback");
+        assert!(r.session_ended, "last batch before an end is flagged");
+        assert!(r.next_step.contains("last feedback"), "{}", r.next_step);
+        // the edge was consumed with that delivery: a later poll waits fresh
+        // (a NEW review round in the same session must be possible)
+        let r2 = take_or_wait(&srv.feedback, 7, Duration::from_millis(20));
+        assert_eq!(r2.status, "waiting");
+    }
+
+    #[test]
+    fn layout_warning_is_fresh_then_persistent_on_redelivery() {
+        let srv = test_server(std::env::temp_dir());
+        let w = LayoutWarning { kind: "page-horizontal-overflow".into(), selector: "body".into(),
+            overflow_px: 12.0, viewport_width: 720.0, severity: "error".into(), persistent: false };
+        srv.report_layout(7, vec![w.clone()]);
+        let r = take_or_wait(&srv.feedback, 7, Duration::from_millis(20));
+        assert_eq!(r.layout_warnings.len(), 1);
+        assert!(!r.layout_warnings[0].persistent, "first delivery is fresh");
+        srv.report_layout(7, vec![w]);
+        let r2 = take_or_wait(&srv.feedback, 7, Duration::from_millis(20));
+        assert!(r2.layout_warnings[0].persistent, "the redelivered key reads as persistent");
+    }
+
+    #[test]
+    fn feedback_is_isolated_per_pty() {
+        let srv = test_server(std::env::temp_dir());
+        srv.submit_feedback(1, vec![msg_prompt("", "for one")], false);
+        assert_eq!(take_or_wait(&srv.feedback, 2, Duration::from_millis(20)).status, "waiting");
+        assert_eq!(take_or_wait(&srv.feedback, 1, Duration::from_millis(20)).status, "feedback");
+    }
+
+    #[test]
+    fn prompt_queue_is_capped_and_each_prompt_truncated() {
+        let srv = test_server(std::env::temp_dir());
+        let big = "é".repeat(MAX_PROMPT_LEN); // 2 bytes/char: exercises the boundary-safe cut
+        let many: Vec<ReviewPrompt> = (0..(MAX_PROMPTS_PER_SESSION + 10))
+            .map(|i| ReviewPrompt { uid: i.to_string(), prompt: big.clone(), selector: String::new(), tag: "message".into(), text: String::new(), target: None })
+            .collect();
+        srv.submit_feedback(7, many, false);
+        let r = take_or_wait(&srv.feedback, 7, Duration::from_millis(20));
+        assert_eq!(r.prompts.len(), MAX_PROMPTS_PER_SESSION, "queue capped");
+        assert!(r.prompts.iter().all(|p| p.prompt.len() <= MAX_PROMPT_LEN), "each prompt truncated");
+        assert!(r.prompts.iter().all(|p| p.prompt.chars().all(|c| c == 'é')), "cut lands on a char boundary");
+        assert_eq!(r.prompts[0].uid, "10", "oldest 10 evicted");
+    }
+
+    #[test]
+    fn release_wakes_a_blocked_poll_with_ended() {
+        let srv = Arc::new(test_server(std::env::temp_dir()));
+        let srv2 = Arc::clone(&srv);
+        let handle = std::thread::spawn(move || take_or_wait(&srv2.feedback, 7, Duration::from_millis(3000)));
+        std::thread::sleep(Duration::from_millis(120)); // let the poll attach + create its entry
+        srv.release(7); // drops the entry and notifies
+        let r = handle.join().unwrap();
+        assert_eq!(r.status, "ended", "a blocked poll wakes as ended when its session is released");
+    }
+
+    #[test]
+    fn submit_wakes_a_blocked_poll_with_feedback() {
+        let srv = Arc::new(test_server(std::env::temp_dir()));
+        let srv2 = Arc::clone(&srv);
+        let handle = std::thread::spawn(move || take_or_wait(&srv2.feedback, 7, Duration::from_millis(3000)));
+        std::thread::sleep(Duration::from_millis(120));
+        srv.submit_feedback(7, vec![msg_prompt("", "hi")], false);
+        let r = handle.join().unwrap();
+        assert_eq!(r.status, "feedback");
+        assert_eq!(r.prompts.len(), 1);
+    }
+
+    #[test]
+    fn poll_result_serializes_to_the_documented_envelope() {
+        let r = PollResult::feedback(vec![msg_prompt("2", "tweak")], vec![], false, false);
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["status"], "feedback");
+        assert_eq!(v["prompts"][0]["prompt"], "tweak");
+        assert!(v.get("layout_warnings").is_none(), "empty layout omitted");
+        assert!(v.get("session_ended").is_none(), "false session_ended omitted");
+        assert!(v.get("layout_clean").is_none(), "false layout_clean omitted");
+        assert!(v["next_step"].as_str().unwrap().contains("await_artifact_feedback"));
+        // waiting envelope
+        let w = serde_json::to_value(PollResult::waiting(1)).unwrap();
+        assert_eq!(w["status"], "waiting");
+    }
+
+    #[test]
+    fn ended_is_a_consumable_edge_so_a_second_round_works() {
+        let srv = test_server(std::env::temp_dir());
+        // round 1: user sends & ends; the model drains the final batch + the end
+        srv.submit_feedback(7, vec![msg_prompt("", "final")], true);
+        assert_eq!(take_or_wait(&srv.feedback, 7, Duration::from_millis(20)).status, "feedback");
+        // (a poll arriving before the next round sees plain waiting, not ended)
+        assert_eq!(take_or_wait(&srv.feedback, 7, Duration::from_millis(20)).status, "waiting");
+        // round 2: fresh feedback flows again
+        srv.submit_feedback(7, vec![msg_prompt("", "round two")], false);
+        let r = take_or_wait(&srv.feedback, 7, Duration::from_millis(20));
+        assert_eq!(r.status, "feedback");
+        assert!(!r.session_ended, "round two is NOT marked ended");
+        // end-without-prompts also consumes on delivery
+        srv.submit_feedback(7, vec![], true);
+        assert_eq!(take_or_wait(&srv.feedback, 7, Duration::from_millis(20)).status, "ended");
+        assert_eq!(take_or_wait(&srv.feedback, 7, Duration::from_millis(20)).status, "waiting");
+    }
+
+    #[test]
+    fn requeue_puts_a_drained_batch_back_in_front() {
+        let srv = test_server(std::env::temp_dir());
+        srv.submit_feedback(7, vec![msg_prompt("1", "first")], false);
+        let drained = take_or_wait(&srv.feedback, 7, Duration::from_millis(20));
+        assert_eq!(drained.prompts.len(), 1);
+        // meanwhile the user queued more; then the aborted poll's batch returns
+        srv.submit_feedback(7, vec![msg_prompt("2", "second")], false);
+        srv.feedback.requeue(7, drained.prompts, drained.layout_warnings, drained.session_ended);
+        let r = take_or_wait(&srv.feedback, 7, Duration::from_millis(20));
+        assert_eq!(r.prompts.len(), 2);
+        assert_eq!(r.prompts[0].prompt, "first", "redelivered batch keeps original order, in front");
+        assert_eq!(r.prompts[1].prompt, "second");
+        // requeue for a dropped session is a no-op (no resurrection)
+        srv.release(7);
+        srv.feedback.requeue(7, vec![msg_prompt("", "ghost")], vec![], false);
+        assert!(srv.feedback.map.lock().unwrap().get(&7).is_none());
+    }
+
+    #[test]
+    fn clean_audit_after_delivered_warnings_is_deliverable() {
+        let srv = test_server(std::env::temp_dir());
+        let w = LayoutWarning { kind: "clipped-text".into(), selector: ".x".into(),
+            overflow_px: 9.0, viewport_width: 700.0, severity: "error".into(), persistent: false };
+        srv.report_layout(7, vec![w]);
+        assert_eq!(take_or_wait(&srv.feedback, 7, Duration::from_millis(20)).status, "feedback");
+        // the fix-recheck cycle reports an empty audit → deliverable "clean"
+        srv.report_layout(7, vec![]);
+        let r = take_or_wait(&srv.feedback, 7, Duration::from_millis(20));
+        assert_eq!(r.status, "feedback");
+        assert!(r.layout_clean, "clean signal delivered");
+        assert!(r.next_step.contains("clean"), "{}", r.next_step);
+        // but an empty audit with nothing ever delivered says nothing
+        let srv2 = test_server(std::env::temp_dir());
+        srv2.report_layout(8, vec![]);
+        assert_eq!(take_or_wait(&srv2.feedback, 8, Duration::from_millis(20)).status, "waiting");
+    }
+
+    #[test]
+    fn waiting_streak_escalates_next_step_and_resets_on_engagement() {
+        let srv = test_server(std::env::temp_dir());
+        let mut last = String::new();
+        for _ in 0..WAITING_STREAK_LIMIT {
+            last = take_or_wait(&srv.feedback, 7, Duration::from_millis(1)).next_step;
+        }
+        assert!(last.contains("Stop polling"), "streak limit escalates: {last}");
+        srv.submit_feedback(7, vec![msg_prompt("", "hi")], false);
+        let _ = take_or_wait(&srv.feedback, 7, Duration::from_millis(20));
+        let fresh = take_or_wait(&srv.feedback, 7, Duration::from_millis(1)).next_step;
+        assert!(!fresh.contains("Stop polling"), "engagement resets the streak: {fresh}");
+    }
+
+    #[test]
+    fn begin_render_clears_stale_layout_but_keeps_delivered_keys() {
+        let srv = test_server(std::env::temp_dir());
+        let w = LayoutWarning { kind: "clipped-text".into(), selector: ".x".into(),
+            overflow_px: 9.0, viewport_width: 700.0, severity: "error".into(), persistent: false };
+        srv.report_layout(7, vec![w.clone()]);
+        let _ = take_or_wait(&srv.feedback, 7, Duration::from_millis(20)); // delivered once
+        srv.report_layout(7, vec![w.clone()]); // re-reported, now pending
+        srv.feedback.begin_render(7); // new document renders: pending report is stale
+        assert_eq!(take_or_wait(&srv.feedback, 7, Duration::from_millis(20)).status, "waiting");
+        // the new document re-reports the same defect → still reads persistent
+        srv.report_layout(7, vec![w]);
+        let r = take_or_wait(&srv.feedback, 7, Duration::from_millis(20));
+        assert!(r.layout_warnings[0].persistent, "delivered keys survive the render reset");
+    }
+
+    #[test]
+    fn every_prompt_field_is_clamped() {
+        let srv = test_server(std::env::temp_dir());
+        let big = "y".repeat(64 * 1024);
+        srv.submit_feedback(7, vec![ReviewPrompt {
+            uid: big.clone(), prompt: big.clone(), selector: big.clone(), tag: big.clone(),
+            text: big.clone(), target: Some(serde_json::json!({ "blob": big })),
+        }], false);
+        let r = take_or_wait(&srv.feedback, 7, Duration::from_millis(20));
+        let p = &r.prompts[0];
+        assert!(p.prompt.len() <= MAX_PROMPT_LEN);
+        assert!(p.selector.len() <= 1024);
+        assert!(p.tag.len() <= 64);
+        assert!(p.text.len() <= 4 * 1024);
+        assert!(p.uid.len() <= 128);
+        assert!(p.target.is_none(), "oversized target dropped");
+    }
+
+    #[test]
+    fn await_inside_a_batch_fails_fast_instead_of_blocking() {
+        // Batch items route without the poll ctx → benign tool error, so a
+        // batched render's emit is never held hostage by a 25s block.
+        let batch = json!([
+            { "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+              "params": { "name": "render_artifact", "arguments": { "title": "B", "kind": "html", "content": "<p>x</p>" } } },
+            { "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+              "params": { "name": AWAIT_TOOL_NAME, "arguments": {} } }
+        ]);
+        let start = Instant::now();
+        let r = route(batch.to_string().as_bytes(), None);
+        assert!(start.elapsed() < Duration::from_millis(500), "no blocking in a batch");
+        assert_eq!(r.emits.len(), 1, "the render still emits");
+        let arr = r.json.unwrap();
+        let awaited = &arr.as_array().unwrap()[1];
+        assert_eq!(awaited["result"]["isError"], true, "batched await is a fast tool error");
     }
 }
