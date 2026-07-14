@@ -183,20 +183,21 @@ export default function VersionFooter({ busyCount, onRestartForUpdate, onOpenSet
   ].filter(Boolean).join('\n')
   return (
     <div style={box}>
-      <button
-        onClick={onOpenSettings}
-        title={`Settings (${settingsChord})`}
-        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--dd-dim)', fontSize: 13, padding: 0, lineHeight: 1 }}
-      >
-        ⚙︎
-      </button>
       <span
         onClick={() => check(true)}
         title={tip}
-        style={{ cursor: 'pointer', color: flash === 'fail' ? 'var(--dd-warn-muted)' : flash === 'ok' ? 'var(--dd-ok)' : 'var(--dd-dim)' }}
+        style={{ flex: 1, cursor: 'pointer', color: flash === 'fail' ? 'var(--dd-warn-muted)' : flash === 'ok' ? 'var(--dd-ok)' : 'var(--dd-dim)' }}
       >
         {label}
       </span>
+      {/* right-aligned, mirroring the DRYDOCK bar's controls above */}
+      <button
+        onClick={onOpenSettings}
+        title={`Settings (${settingsChord})`}
+        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--dd-text3)', fontSize: 16, padding: 0, lineHeight: 1 }}
+      >
+        ⚙︎
+      </button>
     </div>
   )
 }
