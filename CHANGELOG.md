@@ -4,6 +4,24 @@ Each tagged release's `## vX.Y.Z` section becomes the GitHub release body and
 the in-app updater's release notes (extracted by `scripts/release-notes.py` in
 CI — a tag without its section fails the release).
 
+## v0.2.3 — 2026-07-13
+
+### Take over a session running somewhere else
+
+- **"Take over here…"** — when a session is live in another terminal (iTerm,
+  VS Code, tmux, wherever), you no longer have to hunt that window down to
+  continue it in Drydock. Right-click the session in the sidebar, or use the
+  button on the read-only transcript banner, and Drydock stops the external
+  claude and resumes the conversation in its own tab.
+- **You confirm before anything happens.** The dialog names where the session
+  is running (app and tty when recognizable) and warns if it's mid-task —
+  taking over then loses the in-flight turn, so that's your call.
+- **Safe by identity, not just pid.** Drydock verifies the target process is
+  the same claude the session file points at (command and process start time
+  must both match) before signalling, refuses system pids, and refuses
+  sessions already running in a Drydock tab — those just get focused. Graceful
+  stop first (SIGTERM), force only if needed after a few seconds.
+
 ## v0.2.2 — 2026-07-07
 
 ### Split screen
