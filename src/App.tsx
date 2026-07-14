@@ -49,6 +49,7 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [newDialog, setNewDialog] = useState(false) // ⌘N: new session in any folder
   const [settingsOpen, setSettingsOpen] = useState(false) // ⌘, / footer gear
+  const [confirmClose, setConfirmClose] = useState<number | null>(null) // close-guard: tab id awaiting confirm
   // full-window Home overlay (⌘K → "usage & timeline"): global data without
   // leaving the active terminal — Esc returns exactly where you were
   const [homeOverlay, setHomeOverlay] = useState(false)
@@ -132,6 +133,8 @@ export default function App() {
   newDialogRef.current = newDialog
   const settingsOpenRef = useRef(settingsOpen)
   settingsOpenRef.current = settingsOpen
+  const confirmCloseRef = useRef(confirmClose)
+  confirmCloseRef.current = confirmClose
   const homeOverlayRef = useRef(homeOverlay)
   homeOverlayRef.current = homeOverlay
   const newShellRef = useRef(() => {})
@@ -404,6 +407,16 @@ export default function App() {
     })
   }
 
+  // ⌘W / chip ✕ on a live claude session asks first (setting-gated). Shells
+  // and exited/transcript tabs close immediately — nothing running to lose.
+  // Programmatic closes (resume-here replace flows, restore) stay on closeTab.
+  const requestCloseTab = (id: number) => {
+    const t = tabsRef.current.find((x) => x.id === id)
+    const live = !!t && t.kind === 'pty' && !t.exited && !t.terminal
+    if (live && getSetting('closeGuard', '1') === '1') setConfirmClose(id)
+    else closeTab(id)
+  }
+
   const activeTab = tabs.find((t) => t.id === activeId)
 
   // ⌘N recents: most-recent distinct project folders across all known sessions
@@ -430,7 +443,7 @@ export default function App() {
   }
 
   newShellRef.current = () => newShell()
-  closeActiveRef.current = () => { if (activeId !== null) closeTab(activeId) }
+  closeActiveRef.current = () => { if (activeId !== null) requestCloseTab(activeId) }
   starActiveRef.current = () => {
     const s = activeTab?.sessionId ? sessions.find((x) => x.session_id === activeTab.sessionId) : undefined
     if (s) invoke('set_starred', { sessionId: s.session_id, starred: !s.starred }).then(refresh)
@@ -801,6 +814,13 @@ export default function App() {
         if (action) e.preventDefault()
         return
       }
+      // Close-guard confirm: Enter closes the live session, Esc keeps it.
+      if (confirmCloseRef.current !== null) {
+        if (e.key === 'Escape') { setConfirmClose(null); return }
+        if (e.key === 'Enter') { e.preventDefault(); closeTab(confirmCloseRef.current); setConfirmClose(null); return }
+        if (action) e.preventDefault()
+        return
+      }
       // Settings overlay: Esc or the toggle chord closes; everything else is
       // swallowed. (While the Shortcuts tab RECORDS a chord, its own
       // capture-phase listener stops propagation — no key reaches here.)
@@ -1158,7 +1178,7 @@ export default function App() {
           }}
           onChipMenu={(e, id) => { e.preventDefault(); setChipMenu({ x: e.clientX, y: e.clientY, tabId: id }) }}
           onSelect={(id) => { if (suppressClickRef.current) return; setStage((st) => showTab(st, id)) }}
-          onClose={closeTab}
+          onClose={requestCloseTab}
           onNewShell={newShell}
           onHome={() => goHomeRef.current()}
         />
@@ -1368,6 +1388,26 @@ export default function App() {
       {/* After the home overlay: same z, later in DOM — settings wins if both
           ever mount (the keydown guards make that unreachable today). */}
       <SettingsOverlay open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      {confirmClose !== null && (() => {
+        const t = tabs.find((x) => x.id === confirmClose)
+        const s = t?.sessionId ? sessions.find((x) => x.session_id === t.sessionId) : undefined
+        return (
+          // z 105: over the settings/home overlays (85) and takeover (100),
+          // under the quit guard (110); compositing layer for WebGL, as ever
+          <div style={{ position: 'fixed', inset: 0, zIndex: 105, background: 'rgba(4,6,10,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', transform: 'translateZ(0)' }}>
+            <div style={{ background: '#11161f', border: '1px solid #2c3647', borderRadius: 10, padding: '18px 22px', width: 380, fontFamily: 'system-ui' }}>
+              <div style={{ color: '#e8edf4', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Close live session?</div>
+              <div style={{ color: '#9aa3af', fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
+                {clip(s ? sessionLabel(s) : t?.title ?? 'This session', 60)} is still running — closing the tab ends it here (resume any time from the sidebar).
+              </div>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <button onClick={() => setConfirmClose(null)} style={{ background: 'none', border: '1px solid #2c3647', borderRadius: 6, color: '#9aa3af', fontSize: 12, padding: '4px 12px', cursor: 'pointer' }}>Cancel (Esc)</button>
+                <button onClick={() => { closeTab(confirmClose); setConfirmClose(null) }} style={{ background: '#3a2626', border: '1px solid #6a3a3a', borderRadius: 6, color: '#e0908a', fontSize: 12, padding: '4px 12px', cursor: 'pointer' }}>Close (⏎)</button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
       {quitGuard && (
         // zIndex + own compositing layer: every other overlay has a z-index, but
         // this modal had none, so over a terminal's WebGL canvas WebKit painted it
@@ -1518,7 +1558,7 @@ export default function App() {
               setChipMenu(null)
               setStage((st) => closeStaged(st, chipMenu.tabId).stage)
             })}
-            {item('Close tab', true, () => { setChipMenu(null); closeTab(chipMenu.tabId) })}
+            {item('Close tab', true, () => { setChipMenu(null); requestCloseTab(chipMenu.tabId) })}
           </div>
         )
       })()}
