@@ -8,12 +8,14 @@ import TerminalPane, { bytesToB64 } from './TerminalPane'
 import TranscriptView from './TranscriptView'
 import SearchPalette from './SearchPalette'
 import NewSessionDialog from './NewSessionDialog'
+import SettingsOverlay from './SettingsOverlay'
 import BriefingPanel from './BriefingPanel'
 import HomeView from './HomeView'
 import FindBar from './FindBar'
 import { useSessions } from './useSessions'
 import { serializeChord, effectiveKeymap, loadOverrides, KEYMAP_EVENT } from './keymap'
 import type { ActionId } from './keymap'
+import { getSetting } from './settings'
 import type { Artifact, ArtifactKind, PaneSearch, RestoreTab, ReviewPrompt, ReviewState, SessionView, Tab, TakeoverInfo } from './types'
 import { EMPTY_REVIEW, baseName, clip, sessionColor, sessionLabel, uuidv4 } from './types'
 import {
@@ -46,6 +48,7 @@ export default function App() {
   const [takeover, setTakeover] = useState<{ s: SessionView; info: TakeoverInfo | null; located: boolean; err: string | null; killing: boolean } | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [newDialog, setNewDialog] = useState(false) // ⌘N: new session in any folder
+  const [settingsOpen, setSettingsOpen] = useState(false) // ⌘, / footer gear
   // full-window Home overlay (⌘K → "usage & timeline"): global data without
   // leaving the active terminal — Esc returns exactly where you were
   const [homeOverlay, setHomeOverlay] = useState(false)
@@ -127,6 +130,8 @@ export default function App() {
   paletteOpenRef.current = paletteOpen
   const newDialogRef = useRef(newDialog)
   newDialogRef.current = newDialog
+  const settingsOpenRef = useRef(settingsOpen)
+  settingsOpenRef.current = settingsOpen
   const homeOverlayRef = useRef(homeOverlay)
   homeOverlayRef.current = homeOverlay
   const newShellRef = useRef(() => {})
@@ -198,6 +203,7 @@ export default function App() {
       case 'tab.prev': cycleTab(-1); break
       case 'tab.next': cycleTab(1); break
       case 'session.new': setNewDialog(true); break
+      case 'settings.toggle': setSettingsOpen((v) => !v); break
       default: break
     }
   }
@@ -795,6 +801,15 @@ export default function App() {
         if (action) e.preventDefault()
         return
       }
+      // Settings overlay: Esc or the toggle chord closes; everything else is
+      // swallowed. (While the Shortcuts tab RECORDS a chord, its own
+      // capture-phase listener stops propagation — no key reaches here.)
+      if (settingsOpenRef.current) {
+        if (e.key === 'Escape') { setSettingsOpen(false); return }
+        if (action === 'settings.toggle') { e.preventDefault(); setSettingsOpen(false); return }
+        if (action) e.preventDefault()
+        return
+      }
       // ⌘N dialog: its input handles Esc/arrows/Tab/Enter itself; the toggle
       // chord re-closes it, every other shortcut is swallowed.
       if (newDialogRef.current) {
@@ -887,6 +902,7 @@ export default function App() {
       const p = e.payload
       const s = sessionsRef.current.find((x) => x.session_id === p.session_id)
       const label = clip(s ? sessionLabel(s) : 'Claude session', 60)
+      if (getSetting('notifyEnabled', '1') === '0') return // Settings → General toggle
       if (p.state === 'needs_input') {
         // staged, not just active: any pane the user can SEE (split screen)
         if (document.hasFocus() && visibleRef.current.includes(p.pty_id)) return
@@ -1115,6 +1131,7 @@ export default function App() {
         onRestartForUpdate={restartForUpdate}
         collapsed={sidebarCollapsed}
         onSetCollapsed={setSidebarC}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
         {/* In-flow (not fixed at a guessed sidebar offset): it always spans
@@ -1348,6 +1365,9 @@ export default function App() {
           </div>
         </div>
       )}
+      {/* After the home overlay: same z, later in DOM — settings wins if both
+          ever mount (the keydown guards make that unreachable today). */}
+      <SettingsOverlay open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       {quitGuard && (
         // zIndex + own compositing layer: every other overlay has a z-index, but
         // this modal had none, so over a terminal's WebGL canvas WebKit painted it

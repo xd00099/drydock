@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { relAge } from './types'
+import { useChord } from './keymap'
 
 type Update = { current: string; latest: string; newer: boolean }
 type Phase = 'idle' | 'confirm' | 'downloading' | 'installing' | 'restarting' | 'failed'
@@ -12,6 +13,7 @@ type Props = {
   busyCount: number
   // App stashes the open tabs, then restarts into the new bundle
   onRestartForUpdate: () => Promise<void>
+  onOpenSettings: () => void // footer gear — same surface as ⌘,
 }
 
 /** Sidebar footer: the app version, quietly. Checks the release manifest once
@@ -21,7 +23,8 @@ type Props = {
  *  asks before restarting; if the install fails it falls back to opening the
  *  releases page. Clicking the plain version re-checks on demand — auto-check
  *  failures (offline, no releases yet) stay silent, only a manual check reports. */
-export default function VersionFooter({ busyCount, onRestartForUpdate }: Props) {
+export default function VersionFooter({ busyCount, onRestartForUpdate, onOpenSettings }: Props) {
+  const settingsChord = useChord('settings.toggle')
   const [version, setVersion] = useState('')
   const [update, setUpdate] = useState<Update | null>(null)
   const [checking, setChecking] = useState(false)
@@ -180,6 +183,13 @@ export default function VersionFooter({ busyCount, onRestartForUpdate }: Props) 
   ].filter(Boolean).join('\n')
   return (
     <div style={box}>
+      <button
+        onClick={onOpenSettings}
+        title={`Settings (${settingsChord})`}
+        style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#5b6675', fontSize: 13, padding: 0, lineHeight: 1 }}
+      >
+        ⚙︎
+      </button>
       <span
         onClick={() => check(true)}
         title={tip}

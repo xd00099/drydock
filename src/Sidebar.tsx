@@ -24,6 +24,7 @@ type Props = {
   onRestartForUpdate: () => Promise<void> // stash tabs + relaunch (App owns tabs)
   collapsed: boolean // lifted to App so ⌘B can drive it
   onSetCollapsed: (c: boolean) => void
+  onOpenSettings: () => void // footer gear — same surface as ⌘,
 }
 
 type Group = { path: string; sessions: SessionView[]; latest: number }
@@ -128,7 +129,7 @@ type Naming =
   // click-away blur) must be a no-op, not freeze an AUTO title into an override
   | { kind: 'rename-session'; sid: string; initial: string }
 
-export default function Sidebar({ onHome, sessions, folders, hidden, activeSessionId, onResume, onTranscript, onTakeover, onNewSession, onToggleStar, onHide, onDelete, onRefresh, updateBusyCount, onRestartForUpdate, collapsed, onSetCollapsed }: Props) {
+export default function Sidebar({ onHome, sessions, folders, hidden, activeSessionId, onResume, onTranscript, onTakeover, onNewSession, onToggleStar, onHide, onDelete, onRefresh, updateBusyCount, onRestartForUpdate, collapsed, onSetCollapsed, onOpenSettings }: Props) {
   // clamp on load AND on window resize: a width persisted on a big monitor must
   // not overflow a smaller window later
   const [width, setWidth] = useState(() => clampPanelWidth(loadNum('dd.sidebarWidth', 300)))
@@ -837,7 +838,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
         </div>
       )}
     </div>
-      <VersionFooter busyCount={updateBusyCount} onRestartForUpdate={onRestartForUpdate} />
+      <VersionFooter busyCount={updateBusyCount} onRestartForUpdate={onRestartForUpdate} onOpenSettings={onOpenSettings} />
     </div>
       <ResizeHandle
         onDelta={(dx) => setWidth((w) => clampPanelWidth(w + dx))}
