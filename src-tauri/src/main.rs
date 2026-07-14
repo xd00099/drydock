@@ -7,6 +7,7 @@ mod cc_data;
 mod embedder;
 mod enricher;
 mod files;
+mod fs_nav;
 mod hues;
 mod index;
 mod pty;
@@ -544,6 +545,8 @@ fn main() {
             read_saved_artifact,
             save_saved_artifact,
             notify_user,
+            fs_nav::list_dirs,
+            fs_nav::ensure_dir,
             force_quit,
             takeover::session_process_info,
             takeover::takeover_kill,
