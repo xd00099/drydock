@@ -141,6 +141,30 @@ export default function App() {
     window.addEventListener(KEYMAP_EVENT, reload)
     return () => window.removeEventListener(KEYMAP_EVENT, reload)
   }, [])
+  // ⌘1-9 / ⌘⇧[] address tabs in VISUAL order — the TabBar's lanes (sessions,
+  // then terminals) — not creation order.
+  const orderedTabs = () => {
+    const t = tabsRef.current
+    return [...t.filter((x) => !x.terminal), ...t.filter((x) => x.terminal)]
+  }
+  const gotoTab = (n: number) => {
+    const ordered = orderedTabs()
+    if (!ordered.length) return
+    const target = n === 9 ? ordered[ordered.length - 1] : ordered[n - 1]
+    if (target) setStage((st) => showTab(st, target.id))
+  }
+  const cycleTab = (d: 1 | -1) => {
+    const ordered = orderedTabs()
+    if (!ordered.length) return
+    const i = ordered.findIndex((t) => t.id === stageRef.current.active)
+    const target = i < 0
+      ? ordered[d > 0 ? 0 : ordered.length - 1]
+      : ordered[(i + d + ordered.length) % ordered.length]
+    setStage((st) => showTab(st, target.id))
+  }
+  const gotoTabRef = useRef(gotoTab)
+  gotoTabRef.current = gotoTab
+
   // Reassigned every render (same pattern as toggleZoomRef), so case arms may
   // close over fresh state directly.
   const runActionRef = useRef<(id: ActionId) => void>(() => {})
@@ -167,6 +191,8 @@ export default function App() {
       // expand + land on the Preview sub-tab (no-op when the active tab has
       // no briefing panel — plain shells don't mount one)
       case 'briefing.preview': setBriefingC(false); setPreviewNonce((n) => n + 1); break
+      case 'tab.prev': cycleTab(-1); break
+      case 'tab.next': cycleTab(1); break
       default: break
     }
   }
@@ -274,7 +300,18 @@ export default function App() {
     })
   }
 
-  const newShell = () => addTab({ title: 'shell', kind: 'pty', program: null, args: ['-l'], cwd: null, terminal: true })
+  // ⌘T: a new shell starts where you're working — the active shell's live cwd,
+  // or the active session's project folder; home only as the Home-view fallback.
+  const newShell = () => {
+    const t = tabs.find((x) => x.id === activeId)
+    let cwd: string | null = null
+    if (t?.terminal) cwd = shellDirs[t.id] ?? t.cwd ?? null
+    else if (t) {
+      const s = t.sessionId ? sessions.find((x) => x.session_id === t.sessionId) : undefined
+      cwd = s?.project_path ?? t.cwd ?? null
+    }
+    addTab({ title: 'shell', kind: 'pty', program: null, args: ['-l'], cwd, terminal: true })
+  }
 
   // Rebuild the workspace stashed just before an update restart (the backend
   // deletes the snapshot on read, so this applies exactly once). claude tabs
@@ -757,6 +794,13 @@ export default function App() {
         // palette chord: search wins — drop the overlay so it isn't buried
         if (action === 'palette.toggle') { e.preventDefault(); setHomeOverlay(false); setPaletteOpen(true); return }
         if (action) e.preventDefault()
+        return
+      }
+      // ⌘1-9: fixed tab-switch family (⌘9 = last tab) — deliberately not in
+      // the registry, so not rebindable.
+      if (e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && /^[1-9]$/.test(e.key)) {
+        e.preventDefault()
+        gotoTabRef.current(Number(e.key))
         return
       }
       if (action) {
