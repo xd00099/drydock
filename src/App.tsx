@@ -4,7 +4,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import Sidebar from './Sidebar'
 import TabBar from './TabBar'
-import TerminalPane from './TerminalPane'
+import TerminalPane, { bytesToB64 } from './TerminalPane'
 import TranscriptView from './TranscriptView'
 import SearchPalette from './SearchPalette'
 import BriefingPanel from './BriefingPanel'
@@ -963,7 +963,15 @@ export default function App() {
       const nudge = endReview
         ? 'I finished reviewing the artifact — call await_artifact_feedback to collect my final feedback if you have not already, apply it, and continue with the work.'
         : 'I left review feedback on the artifact — call await_artifact_feedback to collect and apply it.'
-      invoke('pty_write', { id: tabId, data: `${nudge}\r` }).catch(() => {})
+      // pty_write takes base64 bytes. The Enter must be a separate write after a
+      // beat: text+\r in one chunk trips the TUI's paste detection, which turns
+      // the \r into a composer newline instead of a submit (verified against a
+      // live claude PTY — single chunk parks the text unsent, split submits).
+      const enc = new TextEncoder()
+      invoke('pty_write', { id: tabId, data: bytesToB64(enc.encode(nudge)) })
+        .then(() => new Promise((r) => setTimeout(r, 200)))
+        .then(() => invoke('pty_write', { id: tabId, data: bytesToB64(enc.encode('\r')) }))
+        .catch(console.error)
     }
   }
 

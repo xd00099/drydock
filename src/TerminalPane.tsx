@@ -42,7 +42,7 @@ function b64ToBytes(b64: string): Uint8Array {
   return out
 }
 
-function bytesToB64(bytes: Uint8Array): string {
+export function bytesToB64(bytes: Uint8Array): string {
   let bin = ''
   for (const b of bytes) bin += String.fromCharCode(b)
   return btoa(bin)
