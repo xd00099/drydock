@@ -58,7 +58,7 @@ const loadStrSet = (key: string): Set<string> => {
 }
 
 const S = {
-  muted: { color: '#5b6675' } as const,
+  muted: { color: 'var(--dd-dim)' } as const,
   tabBtn: (active: boolean) =>
     ({
       flex: 1,
@@ -68,43 +68,43 @@ const S = {
       overflow: 'hidden',
       textOverflow: 'ellipsis',
       whiteSpace: 'nowrap',
-      background: active ? '#161c25' : 'transparent',
+      background: active ? 'var(--dd-surface2)' : 'transparent',
       border: 'none',
-      borderBottom: active ? '2px solid #5a7fb0' : '2px solid #1d2530',
-      color: active ? '#e8edf4' : '#7d8794',
+      borderBottom: active ? '2px solid var(--dd-accent-muted)' : '2px solid var(--dd-border)',
+      color: active ? 'var(--dd-text)' : 'var(--dd-text3)',
       cursor: 'pointer',
       fontSize: 11,
       padding: '5px 2px',
       fontFamily: 'system-ui',
     }) as const,
-  groupBtn: { display: 'flex', alignItems: 'center', gap: 4, width: '100%', background: 'none', border: 'none', cursor: 'pointer', color: '#7d8794', fontWeight: 600, fontSize: 11, padding: '3px 0', textAlign: 'left' } as const,
-  name: { color: '#d6dbe3' } as const,
+  groupBtn: { display: 'flex', alignItems: 'center', gap: 4, width: '100%', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--dd-text3)', fontWeight: 600, fontSize: 11, padding: '3px 0', textAlign: 'left' } as const,
+  name: { color: 'var(--dd-text1)' } as const,
   desc: {
-    color: '#7d8794',
+    color: 'var(--dd-text3)',
     lineHeight: 1.35,
     display: '-webkit-box',
     WebkitLineClamp: 2,
     WebkitBoxOrient: 'vertical',
     overflow: 'hidden',
   } as const,
-  chip: { fontSize: 9, color: '#9aa3af', background: '#1b2230', border: '1px solid #2c3647', borderRadius: 4, padding: '0 5px' } as const,
-  secHead: { color: '#7d8794', fontWeight: 700, fontSize: 10, letterSpacing: 0.8 } as const,
-  iconBtn: { background: 'none', border: '1px solid #2c3647', borderRadius: 4, cursor: 'pointer', color: '#9aa3af', fontSize: 12, lineHeight: 1, padding: '2px 6px' } as const,
+  chip: { fontSize: 9, color: 'var(--dd-text2)', background: 'var(--dd-row)', border: '1px solid var(--dd-border2)', borderRadius: 4, padding: '0 5px' } as const,
+  secHead: { color: 'var(--dd-text3)', fontWeight: 700, fontSize: 10, letterSpacing: 0.8 } as const,
+  iconBtn: { background: 'none', border: '1px solid var(--dd-border2)', borderRadius: 4, cursor: 'pointer', color: 'var(--dd-text2)', fontSize: 12, lineHeight: 1, padding: '2px 6px' } as const,
 }
 
 function Item({ it }: { it: TimelineItem }) {
   return (
     <li style={{ marginBottom: 6 }}>
-      <span style={{ color: it.in_progress ? '#7ec8a0' : '#c8cdd5' }}>
+      <span style={{ color: it.in_progress ? 'var(--dd-ok-bright)' : 'var(--dd-text1)' }}>
         {it.in_progress ? '◐ ' : ''}
         {it.text}
-        {it.in_progress && <span style={{ color: '#5b6675', fontStyle: 'italic' }}> — in progress</span>}
+        {it.in_progress && <span style={{ color: 'var(--dd-dim)', fontStyle: 'italic' }}> — in progress</span>}
       </span>
       {it.detail.length > 0 && (
         <ul style={{ margin: '3px 0 0', paddingLeft: 16, listStyle: 'none' }}>
           {it.detail.map((d, i) => (
-            <li key={i} style={{ color: '#9aa3af', marginBottom: 2 }}>
-              <span style={{ color: '#4a5462' }}>– </span>
+            <li key={i} style={{ color: 'var(--dd-text2)', marginBottom: 2 }}>
+              <span style={{ color: 'var(--dd-dim2)' }}>– </span>
               {d}
             </li>
           ))}
@@ -122,10 +122,10 @@ function relPath(p: string, root?: string): string {
 // Per-file status glyph, git-style: created / modified / gone from disk.
 function FileBadge({ f }: { f: FileTouch }) {
   const [glyph, color, label] = !f.resolved
-    ? ['−', '#cf6b6b', 'not on disk anymore (moved or deleted since)']
+    ? ['−', 'var(--dd-err)', 'not on disk anymore (moved or deleted since)']
     : f.created
-      ? ['+', '#5fb98a', 'created by this session']
-      : ['•', '#d6b24a', 'modified by this session']
+      ? ['+', 'var(--dd-ok)', 'created by this session']
+      : ['•', 'var(--dd-warn-muted)', 'modified by this session']
   return (
     <span
       title={label}
@@ -140,11 +140,11 @@ function FileBadge({ f }: { f: FileTouch }) {
 /// carried no measurable diff at all.
 function DiffStat({ f }: { f: FileTouch }) {
   if (f.adds === 0 && f.dels === 0)
-    return <span style={{ flex: 'none', color: '#4a5462', fontSize: 10, fontFamily: 'Menlo, monospace' }}>×{f.edits + f.writes}</span>
+    return <span style={{ flex: 'none', color: 'var(--dd-dim2)', fontSize: 10, fontFamily: 'Menlo, monospace' }}>×{f.edits + f.writes}</span>
   return (
     <span style={{ flex: 'none', display: 'flex', gap: 6, fontFamily: 'Menlo, monospace', fontSize: 10 }}>
-      {f.adds > 0 && <span style={{ color: '#5fb98a' }}>+{f.adds.toLocaleString('en-US')}</span>}
-      {f.dels > 0 && <span style={{ color: '#cf6b6b' }}>−{f.dels.toLocaleString('en-US')}</span>}
+      {f.adds > 0 && <span style={{ color: 'var(--dd-ok)' }}>+{f.adds.toLocaleString('en-US')}</span>}
+      {f.dels > 0 && <span style={{ color: 'var(--dd-err)' }}>−{f.dels.toLocaleString('en-US')}</span>}
     </span>
   )
 }
@@ -207,17 +207,17 @@ function FilesChanged({ files, projectPath, sessionId, squeeze, onTimeMachine }:
     })
 
   return (
-    <div style={{ flex: secOpen ? '0 1 auto' : 'none', maxHeight: secOpen ? (squeeze ? '40%' : '55%') : undefined, display: 'flex', flexDirection: 'column', borderTop: '1px solid #232c3a', background: '#0d1117' }}>
+    <div style={{ flex: secOpen ? '0 1 auto' : 'none', maxHeight: secOpen ? (squeeze ? '40%' : '55%') : undefined, display: 'flex', flexDirection: 'column', borderTop: '1px solid var(--dd-hover)', background: 'var(--dd-well)' }}>
       <div style={{ flex: 'none', display: 'flex', alignItems: 'baseline', gap: 8, padding: '8px 12px 6px' }}>
         <button onClick={toggleOpen} title={secOpen ? 'Collapse' : 'Expand'} style={{ ...S.groupBtn, width: 'auto', flex: 'none', gap: 5, padding: 0 }}>
-          <span style={{ width: 9, flex: 'none', color: '#4a5462' }}>{secOpen ? '▾' : '▸'}</span>
+          <span style={{ width: 9, flex: 'none', color: 'var(--dd-dim2)' }}>{secOpen ? '▾' : '▸'}</span>
           <span style={S.secHead}>FILES CHANGED</span>
         </button>
         <span style={{ display: 'flex', gap: 6, fontFamily: 'Menlo, monospace', fontSize: 11 }}>
-          <span style={{ color: '#5fb98a' }}>+{totAdds.toLocaleString('en-US')}</span>
-          <span style={{ color: '#cf6b6b' }}>−{totDels.toLocaleString('en-US')}</span>
+          <span style={{ color: 'var(--dd-ok)' }}>+{totAdds.toLocaleString('en-US')}</span>
+          <span style={{ color: 'var(--dd-err)' }}>−{totDels.toLocaleString('en-US')}</span>
         </span>
-        <span style={{ color: '#5b6675', fontSize: 10, whiteSpace: 'nowrap' }}>
+        <span style={{ color: 'var(--dd-dim)', fontSize: 10, whiteSpace: 'nowrap' }}>
           · {files.length} file{files.length === 1 ? '' : 's'}{gone > 0 ? ` · ${gone} gone` : ''}
         </span>
         <span style={{ flex: 1 }} />
@@ -240,9 +240,9 @@ function FilesChanged({ files, projectPath, sessionId, squeeze, onTimeMachine }:
               <button
                 onClick={() => toggle(g.dir)}
                 title={g.dir || 'project root'}
-                style={{ ...S.groupBtn, gap: 5, color: '#5f6b7a', fontSize: 9.5, letterSpacing: 0.5, padding: '4px 0 2px', textTransform: 'uppercase', fontFamily: 'Menlo, monospace' }}
+                style={{ ...S.groupBtn, gap: 5, color: 'var(--dd-dim)', fontSize: 9.5, letterSpacing: 0.5, padding: '4px 0 2px', textTransform: 'uppercase', fontFamily: 'Menlo, monospace' }}
               >
-                <span style={{ width: 9, flex: 'none', color: '#4a5462' }}>{isOpen ? '▾' : '▸'}</span>
+                <span style={{ width: 9, flex: 'none', color: 'var(--dd-dim2)' }}>{isOpen ? '▾' : '▸'}</span>
                 <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl' }}>
                   <span style={{ unicodeBidi: 'plaintext' }}>{g.dir || './'}</span>
                 </span>
@@ -272,7 +272,7 @@ function FilesChanged({ files, projectPath, sessionId, squeeze, onTimeMachine }:
                           background: 'none',
                           border: 'none',
                           cursor: f.resolved ? 'pointer' : 'default',
-                          color: f.resolved ? '#c8cdd5' : '#5b6675',
+                          color: f.resolved ? 'var(--dd-text1)' : 'var(--dd-dim)',
                           textDecoration: f.resolved ? 'none' : 'line-through',
                           fontFamily: 'Menlo, monospace',
                           fontSize: 11,
@@ -280,7 +280,7 @@ function FilesChanged({ files, projectPath, sessionId, squeeze, onTimeMachine }:
                         }}
                       >
                         {name}
-                        {moved && <span style={{ color: '#7fb0ff', marginLeft: 5 }} title={`moved — now at ${f.resolved}`}>↷</span>}
+                        {moved && <span style={{ color: 'var(--dd-accent)', marginLeft: 5 }} title={`moved — now at ${f.resolved}`}>↷</span>}
                       </button>
                       {onTimeMachine && (
                         <button
@@ -311,7 +311,7 @@ function FilesChanged({ files, projectPath, sessionId, squeeze, onTimeMachine }:
         })}
       </div>
       )}
-      {secOpen && err && <div style={{ flex: 'none', color: '#cf6b6b', fontSize: 10, padding: '4px 12px 8px' }}>{err}</div>}
+      {secOpen && err && <div style={{ flex: 'none', color: 'var(--dd-err)', fontSize: 10, padding: '4px 12px 8px' }}>{err}</div>}
     </div>
   )
 }
@@ -330,25 +330,25 @@ function TasksSection({ view }: { view: TasksView | null }) {
   const subjects = new Map(view.tasks.map((t) => [t.id, t.subject]))
   const glyph = (t: (typeof view.tasks)[number]): [string, string, string] =>
     t.status === 'completed'
-      ? ['✓', '#4a5462', 'completed']
+      ? ['✓', 'var(--dd-dim2)', 'completed']
       : t.status === 'in_progress'
-        ? ['◐', '#7ec8a0', 'in progress']
+        ? ['◐', 'var(--dd-ok-bright)', 'in progress']
         : t.blocked_by.length > 0
-          ? ['⊘', '#d6b24a', `waiting on: ${t.blocked_by.map((b) => subjects.get(b) ?? `#${b}`).join(', ')}`]
-          : ['○', '#7d8794', 'pending']
+          ? ['⊘', 'var(--dd-warn-muted)', `waiting on: ${t.blocked_by.map((b) => subjects.get(b) ?? `#${b}`).join(', ')}`]
+          : ['○', 'var(--dd-text3)', 'pending']
   return (
-    <div style={{ flex: open ? '0 1 auto' : 'none', maxHeight: open ? '40%' : undefined, display: 'flex', flexDirection: 'column', borderTop: '1px solid #232c3a', background: '#0d1117' }}>
+    <div style={{ flex: open ? '0 1 auto' : 'none', maxHeight: open ? '40%' : undefined, display: 'flex', flexDirection: 'column', borderTop: '1px solid var(--dd-hover)', background: 'var(--dd-well)' }}>
       <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 7, padding: '8px 12px 6px' }}>
         <button onClick={toggleOpen} title={open ? 'Collapse' : 'Expand'} style={{ ...S.groupBtn, width: 'auto', flex: 'none', gap: 5, padding: 0 }}>
-          <span style={{ width: 9, flex: 'none', color: '#4a5462' }}>{open ? '▾' : '▸'}</span>
+          <span style={{ width: 9, flex: 'none', color: 'var(--dd-dim2)' }}>{open ? '▾' : '▸'}</span>
           <span style={S.secHead}>TASKS</span>
         </button>
-        <span style={{ flex: 'none', color: '#5b6675', fontSize: 10, whiteSpace: 'nowrap' }}>
+        <span style={{ flex: 'none', color: 'var(--dd-dim)', fontSize: 10, whiteSpace: 'nowrap' }}>
           {done}/{total}{blocked.length > 0 ? ` · ${blocked.length} blocked` : ''}
         </span>
         <span style={{ flex: 1 }} />
         {view.updated_at != null && (
-          <span title={'the board\u2019s last change — a stale \u201cin progress\u201d is old news, not live'} style={{ color: '#5b6675', fontSize: 10, whiteSpace: 'nowrap' }}>
+          <span title={'the board\u2019s last change — a stale \u201cin progress\u201d is old news, not live'} style={{ color: 'var(--dd-dim)', fontSize: 10, whiteSpace: 'nowrap' }}>
             {relAge(view.updated_at)}
           </span>
         )}
@@ -357,9 +357,9 @@ function TasksSection({ view }: { view: TasksView | null }) {
         <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 12px 10px' }}>
           {active?.active_form && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-              <span style={{ color: '#7ec8a0', fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>◐ now: {active.active_form}</span>
-              <span style={{ flex: 1, minWidth: 24, height: 3, borderRadius: 2, background: '#1b2230', overflow: 'hidden' }}>
-                <span style={{ display: 'block', height: '100%', width: `${Math.round((done / total) * 100)}%`, background: '#5fb98a' }} />
+              <span style={{ color: 'var(--dd-ok-bright)', fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>◐ now: {active.active_form}</span>
+              <span style={{ flex: 1, minWidth: 24, height: 3, borderRadius: 2, background: 'var(--dd-row)', overflow: 'hidden' }}>
+                <span style={{ display: 'block', height: '100%', width: `${Math.round((done / total) * 100)}%`, background: 'var(--dd-ok)' }} />
               </span>
             </div>
           )}
@@ -368,7 +368,7 @@ function TasksSection({ view }: { view: TasksView | null }) {
             return (
               <div key={t.id} title={tip} style={{ display: 'flex', gap: 7, alignItems: 'baseline', padding: '2px 0', fontSize: 11.5 }}>
                 <span style={{ width: 12, flex: 'none', textAlign: 'center', color }}>{g}</span>
-                <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: t.status === 'completed' ? '#5b6675' : t.status === 'in_progress' ? '#e8edf4' : '#9aa3af' }}>
+                <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: t.status === 'completed' ? 'var(--dd-dim)' : t.status === 'in_progress' ? 'var(--dd-text)' : 'var(--dd-text2)' }}>
                   {t.subject}
                 </span>
               </div>
@@ -411,7 +411,7 @@ function BriefingTab({ sessionId, card, starred, files, tasks, usage, projectPat
             onClick={onToggleStar}
             disabled={!onToggleStar}
             title={starred ? 'Unstar this session' : 'Star this session'}
-            style={{ background: 'none', border: 'none', cursor: onToggleStar ? 'pointer' : 'default', color: starred ? '#e8c35a' : '#3a4350', fontSize: 16, padding: 0, lineHeight: 1 }}
+            style={{ background: 'none', border: 'none', cursor: onToggleStar ? 'pointer' : 'default', color: starred ? 'var(--dd-warn-bright)' : 'var(--dd-border3)', fontSize: 16, padding: 0, lineHeight: 1 }}
           >
             ★
           </button>
@@ -421,7 +421,7 @@ function BriefingTab({ sessionId, card, starred, files, tasks, usage, projectPat
               defaultValue={editing}
               maxLength={60}
               placeholder="Session name — empty clears"
-              style={{ flex: 1, minWidth: 0, background: '#10141a', border: '1px solid #4f7fd9', borderRadius: 4, color: '#e8edf4', fontSize: 13, fontWeight: 600, fontFamily: 'system-ui', padding: '2px 6px', outline: 'none' }}
+              style={{ flex: 1, minWidth: 0, background: 'var(--dd-bg1)', border: '1px solid var(--dd-accent-strong)', borderRadius: 4, color: 'var(--dd-text)', fontSize: 13, fontWeight: 600, fontFamily: 'system-ui', padding: '2px 6px', outline: 'none' }}
               onFocus={(e) => e.currentTarget.select()}
               onKeyDown={(e) => {
                 // an Enter/Esc confirming an IME composition (pinyin) is part
@@ -433,13 +433,13 @@ function BriefingTab({ sessionId, card, starred, files, tasks, usage, projectPat
               onBlur={(e) => commitRename(e.currentTarget.value)}
             />
           ) : (
-            <div style={{ flex: 1, color: '#e8edf4', fontWeight: 600, fontSize: 13, lineHeight: 1.3 }}>{label || card?.summary || 'Session'}</div>
+            <div style={{ flex: 1, color: 'var(--dd-text)', fontWeight: 600, fontSize: 13, lineHeight: 1.3 }}>{label || card?.summary || 'Session'}</div>
           )}
           {onRename && editing === null && (
             <button
               onClick={() => setEditing(label ?? '')}
               title="Rename session (a Drydock-only name — claude's own session is untouched)"
-              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#5b6675', fontSize: 12, padding: 0, lineHeight: 1.3 }}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--dd-dim)', fontSize: 12, padding: 0, lineHeight: 1.3 }}
             >
               ✎
             </button>
@@ -471,13 +471,13 @@ function BriefingTab({ sessionId, card, starred, files, tasks, usage, projectPat
             ) : (
               <div style={S.muted}>no timeline yet</div>
             )}
-            <div style={{ color: '#5b6675', fontSize: 10, marginTop: 12 }}>card from {relAge(card.generated_at)} ago</div>
+            <div style={{ color: 'var(--dd-dim)', fontSize: 10, marginTop: 12 }}>card from {relAge(card.generated_at)} ago</div>
           </>
         ) : (
           <div style={S.muted}>no briefing card yet</div>
         )}
         <button
-          style={{ marginTop: 10, background: '#1d2530', color: '#e8edf4', border: '1px solid #2c3647', borderRadius: 5, padding: '4px 12px', cursor: 'pointer', fontSize: 12 }}
+          style={{ marginTop: 10, background: 'var(--dd-border)', color: 'var(--dd-text)', border: '1px solid var(--dd-border2)', borderRadius: 5, padding: '4px 12px', cursor: 'pointer', fontSize: 12 }}
           onClick={() => invoke('refresh_card', { sessionId }).catch(console.error)}
         >
           Refresh card
@@ -525,7 +525,7 @@ function SkillsSection({ projectPath }: { projectPath?: string }) {
     <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
       <span style={S.secHead}>SKILLS</span>
       {Array.isArray(state) && state.length > 0 && (
-        <span style={{ color: '#5b6675', fontSize: 10 }}>{state.length} · plugin, personal &amp; project</span>
+        <span style={{ color: 'var(--dd-dim)', fontSize: 10 }}>{state.length} · plugin, personal &amp; project</span>
       )}
     </div>
   )
@@ -546,9 +546,9 @@ function SkillsSection({ projectPath }: { projectPath?: string }) {
         return (
           <div key={plugin} style={{ marginBottom: 4 }}>
             <button style={S.groupBtn} onClick={() => toggle(plugin)} title={open ? 'Collapse' : 'Expand'}>
-              <span style={{ width: 10, color: '#5b6675' }}>{open ? '▾' : '▸'}</span>
+              <span style={{ width: 10, color: 'var(--dd-dim)' }}>{open ? '▾' : '▸'}</span>
               <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{plugin}</span>
-              <span style={{ color: '#5b6675', fontWeight: 400 }}>{list.length}</span>
+              <span style={{ color: 'var(--dd-dim)', fontWeight: 400 }}>{list.length}</span>
             </button>
             {open &&
               list.map((s) => (
@@ -566,15 +566,15 @@ function SkillsSection({ projectPath }: { projectPath?: string }) {
 
 // Connection-health dot color per status token from `claude mcp list`.
 const STATUS_COLOR: Record<string, string> = {
-  connected: '#5fb98a',
-  failed: '#cf6b6b',
-  pending: '#d6b24a',
-  unknown: '#5b6675',
-  checking: '#3a4350',
+  connected: 'var(--dd-ok)',
+  failed: 'var(--dd-err)',
+  pending: 'var(--dd-warn-muted)',
+  unknown: 'var(--dd-dim)',
+  checking: 'var(--dd-border3)',
 }
 
 function StatusDot({ status, title }: { status: string; title: string }) {
-  return <span title={title} style={{ width: 8, height: 8, borderRadius: '50%', flex: 'none', background: STATUS_COLOR[status] ?? '#5b6675' }} />
+  return <span title={title} style={{ width: 8, height: 8, borderRadius: '50%', flex: 'none', background: STATUS_COLOR[status] ?? 'var(--dd-dim)' }} />
 }
 
 // A small on/off switch. `on` = Drydock offers this server to the sessions it
@@ -585,9 +585,9 @@ function Toggle({ on, busy, onClick, title }: { on: boolean; busy: boolean; onCl
       onClick={onClick}
       disabled={busy}
       title={title}
-      style={{ flex: 'none', width: 26, height: 15, borderRadius: 8, border: '1px solid #2c3647', background: on ? '#2f6b4f' : '#222a36', position: 'relative', cursor: busy ? 'default' : 'pointer', padding: 0, opacity: busy ? 0.5 : 1 }}
+      style={{ flex: 'none', width: 26, height: 15, borderRadius: 8, border: '1px solid var(--dd-border2)', background: on ? 'var(--dd-ok-bg)' : 'var(--dd-hover)', position: 'relative', cursor: busy ? 'default' : 'pointer', padding: 0, opacity: busy ? 0.5 : 1 }}
     >
-      <span style={{ position: 'absolute', top: 1, left: on ? 12 : 1, width: 11, height: 11, borderRadius: '50%', background: '#cdd5df', transition: 'left .12s' }} />
+      <span style={{ position: 'absolute', top: 1, left: on ? 12 : 1, width: 11, height: 11, borderRadius: '50%', background: 'var(--dd-text1)', transition: 'left .12s' }} />
     </button>
   )
 }
@@ -781,12 +781,12 @@ function McpSection({ projectPath }: { projectPath?: string }) {
   // Pinned-section layout, same recipe as FILES CHANGED: seam on top, darker
   // ground, own scroll, bounded height — skills can never bury a dead server.
   return (
-    <div style={{ flex: secOpen ? '0 1 auto' : 'none', maxHeight: secOpen ? '55%' : undefined, display: 'flex', flexDirection: 'column', borderTop: '1px solid #232c3a', background: '#0d1117' }}>
+    <div style={{ flex: secOpen ? '0 1 auto' : 'none', maxHeight: secOpen ? '55%' : undefined, display: 'flex', flexDirection: 'column', borderTop: '1px solid var(--dd-hover)', background: 'var(--dd-well)' }}>
       <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 7, padding: '8px 12px 6px' }}>
         {/* label and age SHRINK (ellipsize) at narrow widths; the dot, the
             count, and ↻ are flex:none so the signal + the cure never clip */}
         <button onClick={toggleOpen} title={secOpen ? 'Collapse' : 'Expand'} style={{ ...S.groupBtn, width: 'auto', flex: '0 1 auto', minWidth: 0, gap: 5, padding: 0 }}>
-          <span style={{ width: 9, flex: 'none', color: '#4a5462' }}>{secOpen ? '▾' : '▸'}</span>
+          <span style={{ width: 9, flex: 'none', color: 'var(--dd-dim2)' }}>{secOpen ? '▾' : '▸'}</span>
           <span style={{ ...S.secHead, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>MCP SERVERS</span>
         </button>
         {worst && (
@@ -796,7 +796,7 @@ function McpSection({ projectPath }: { projectPath?: string }) {
           />
         )}
         {servers !== null && servers.length > 0 && (
-          <span style={{ flex: 'none', color: '#5b6675', fontSize: 10, whiteSpace: 'nowrap' }}>
+          <span style={{ flex: 'none', color: 'var(--dd-dim)', fontSize: 10, whiteSpace: 'nowrap' }}>
             {servers.length}{failed > 0 ? ` · ${failed} failed` : ''}
           </span>
         )}
@@ -810,7 +810,7 @@ function McpSection({ projectPath }: { projectPath?: string }) {
               ? `${checkErr}\nlast good check: ${checkedAt ? ageText(checkedAt) : 'never'}`
               : checkedAt ? `health checked ${ageText(checkedAt)}` : undefined
           }
-          style={{ color: checkErr ? '#cf6b6b' : '#5b6675', fontSize: 10, whiteSpace: 'nowrap', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}
+          style={{ color: checkErr ? 'var(--dd-err)' : 'var(--dd-dim)', fontSize: 10, whiteSpace: 'nowrap', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}
         >
           {checking ? 'checking…' : checkErr ? 'check failed' : hasExternal && checkedAt ? relAge(checkedAt) : ''}
         </span>
@@ -828,11 +828,11 @@ function McpSection({ projectPath }: { projectPath?: string }) {
       {secOpen && (
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 12px 10px' }}>
       {checkErr && (
-        <div title={checkErr} style={{ color: '#cf6b6b', fontSize: 10, marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <div title={checkErr} style={{ color: 'var(--dd-err)', fontSize: 10, marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {checkErr}
         </div>
       )}
-      <div style={{ color: '#5b6675', fontSize: 10, marginBottom: 8, lineHeight: 1.4 }}>toggling applies to new sessions · secrets hidden</div>
+      <div style={{ color: 'var(--dd-dim)', fontSize: 10, marginBottom: 8, lineHeight: 1.4 }}>toggling applies to new sessions · secrets hidden</div>
       {servers === null ? (
         <div style={S.muted}>loading…</div>
       ) : servers.length === 0 ? (
@@ -847,7 +847,7 @@ function McpSection({ projectPath }: { projectPath?: string }) {
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 {hasTools ? (
                   <button onClick={() => toggleExpand(s.name)} title={open ? 'Hide tools' : 'Show tools'} style={{ ...S.groupBtn, width: 10, flex: 'none', padding: 0 }}>
-                    <span style={{ color: '#5b6675' }}>{open ? '▾' : '▸'}</span>
+                    <span style={{ color: 'var(--dd-dim)' }}>{open ? '▾' : '▸'}</span>
                   </button>
                 ) : (
                   <span style={{ width: 10, flex: 'none' }} />
@@ -855,7 +855,7 @@ function McpSection({ projectPath }: { projectPath?: string }) {
                 <StatusDot status={dot.status} title={dot.title} />
                 <span style={{ ...S.name, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={s.name}>{s.name}</span>
                 <span style={S.chip}>{s.kind}</span>
-                <span style={{ color: '#4a5462', fontSize: 9 }}>{s.scope}</span>
+                <span style={{ color: 'var(--dd-dim2)', fontSize: 9 }}>{s.scope}</span>
                 <Toggle
                   on={s.enabled}
                   busy={busy.has(s.name)}
@@ -864,7 +864,7 @@ function McpSection({ projectPath }: { projectPath?: string }) {
                 />
               </div>
               {s.detail && (
-                <div style={{ color: '#7d8794', wordBreak: 'break-all', fontFamily: 'Menlo, monospace', fontSize: 11, marginTop: 1, paddingLeft: 16 }}>{s.detail}</div>
+                <div style={{ color: 'var(--dd-text3)', wordBreak: 'break-all', fontFamily: 'Menlo, monospace', fontSize: 11, marginTop: 1, paddingLeft: 16 }}>{s.detail}</div>
               )}
               {open &&
                 s.tools.map((t) => (
@@ -896,8 +896,8 @@ function ProjectTab({ projectPath }: { projectPath?: string }) {
       {/* pinned above the scroll: the scope must stay visible however far the
           skills list is scrolled — both sections below answer to it */}
       {proj && (
-        <div style={{ flex: 'none', padding: '12px 12px 0', color: '#7d8794' }}>
-          for project: <span style={{ color: '#c8cdd5' }}>{proj}</span>
+        <div style={{ flex: 'none', padding: '12px 12px 0', color: 'var(--dd-text3)' }}>
+          for project: <span style={{ color: 'var(--dd-text1)' }}>{proj}</span>
         </div>
       )}
       <div style={{ flex: '1 1 auto', minHeight: 0, overflowY: 'auto', padding: proj ? '8px 12px 12px' : 12 }}>
@@ -1147,7 +1147,7 @@ function PreviewTab({
         {actions(current)}
         {reviewTarget && (
           <button
-            style={{ ...S.iconBtn, ...(reviewOn ? { background: accent, color: '#17130a', border: `1px solid ${accent}` } : {}) }}
+            style={{ ...S.iconBtn, ...(reviewOn ? { background: accent, color: 'var(--dd-warn-bg)', border: `1px solid ${accent}` } : {}) }}
             title={'Annotate mode (⌘I) — click elements or select text in the artifact to comment'}
             onClick={() => setReviewOn((v) => !v)}
           >
@@ -1160,7 +1160,7 @@ function PreviewTab({
           when a message appears/expires; long errors ellipsize (full text in title) */}
       <div
         title={msg?.text}
-        style={{ padding: '0 12px 6px', fontSize: 10, lineHeight: '12px', height: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: msg?.error ? '#cf6b6b' : '#7ec8a0' }}
+        style={{ padding: '0 12px 6px', fontSize: 10, lineHeight: '12px', height: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: msg?.error ? 'var(--dd-err)' : 'var(--dd-ok-bright)' }}
       >
         {msg?.text ?? ''}
       </div>
@@ -1168,7 +1168,7 @@ function PreviewTab({
         <select
           value={current.id}
           onChange={(e) => setSelectedId(e.target.value)}
-          style={{ margin: '0 12px 8px', background: '#161c25', color: '#d6dbe3', border: '1px solid #2c3647', borderRadius: 4, padding: '3px 4px', fontSize: 11 }}
+          style={{ margin: '0 12px 8px', background: 'var(--dd-surface2)', color: 'var(--dd-text1)', border: '1px solid var(--dd-border2)', borderRadius: 4, padding: '3px 4px', fontSize: 11 }}
         >
           {items.map((a, i) => (
             <option key={a.id} value={a.id}>{i + 1}. {a.title} ({a.kind}){a.saved?.rewound ? ' · rewound' : a.saved ? ' · saved' : ''}</option>
@@ -1206,15 +1206,15 @@ function PreviewTab({
         // quit guard (100); translateZ(0) gives it its own compositing layer so
         // it's clickable over a terminal's WebGL canvas in WKWebView. tabIndex
         // lets it hold focus so Esc lands here, not in a just-clicked iframe.
-        <div ref={overlayRef} tabIndex={-1} style={{ position: 'fixed', inset: 0, zIndex: 90, background: '#0b0e13', display: 'flex', flexDirection: 'column', transform: 'translateZ(0)', outline: 'none' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid #1d2530' }}>
-            <span style={{ flex: 1, color: '#e8edf4', fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{current.title}</span>
+        <div ref={overlayRef} tabIndex={-1} style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'var(--dd-bg0)', display: 'flex', flexDirection: 'column', transform: 'translateZ(0)', outline: 'none' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid var(--dd-border)' }}>
+            <span style={{ flex: 1, color: 'var(--dd-text)', fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{current.title}</span>
             {current.saved && <span style={S.chip}>saved</span>}
             <span style={S.chip}>{current.kind}</span>
             {actions(current)}
             {reviewTarget && (
               <button
-                style={{ ...S.iconBtn, ...(reviewOn ? { background: accent, color: '#17130a', border: `1px solid ${accent}` } : {}) }}
+                style={{ ...S.iconBtn, ...(reviewOn ? { background: accent, color: 'var(--dd-warn-bg)', border: `1px solid ${accent}` } : {}) }}
                 title={'Annotate mode (⌘I) — click elements or select text in the artifact to comment'}
                 onClick={() => setReviewOn((v) => !v)}
               >
@@ -1281,27 +1281,27 @@ function ReviewPanel({
       ? 'Claude is waiting for your feedback'
       : 'Feedback queues here until Claude checks for it'
   return (
-    <div style={{ flex: 'none', maxHeight: '45%', display: 'flex', flexDirection: 'column', borderTop: `2px solid ${accent}`, background: '#0d1117', fontFamily: 'system-ui' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 10px 0', fontSize: 10, color: '#7d8794', flex: 'none' }}>
-        <span style={{ width: 7, height: 7, borderRadius: '50%', background: busy ? '#f4c95d' : review.presence === 'listening' ? '#7ec8a0' : '#5b6675', flex: 'none' }} />
+    <div style={{ flex: 'none', maxHeight: '45%', display: 'flex', flexDirection: 'column', borderTop: `2px solid ${accent}`, background: 'var(--dd-well)', fontFamily: 'system-ui' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 10px 0', fontSize: 10, color: 'var(--dd-text3)', flex: 'none' }}>
+        <span style={{ width: 7, height: 7, borderRadius: '50%', background: busy ? 'var(--dd-warn-bright)' : review.presence === 'listening' ? 'var(--dd-ok-bright)' : 'var(--dd-dim)', flex: 'none' }} />
         <span style={{ flex: 1 }}>{presenceLine}</span>
       </div>
       <div ref={logRef} style={{ overflowY: 'auto', padding: '6px 10px', display: 'flex', flexDirection: 'column', gap: 4, minHeight: 40 }}>
         {review.chat.map((c, i) => (
-          <div key={i} style={{ fontSize: 11, lineHeight: 1.4, color: c.role === 'agent' ? '#9fb3d1' : '#d6dbe3', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
-            <span style={{ color: '#5b6675' }}>{c.role === 'agent' ? 'claude · ' : 'you · '}</span>
+          <div key={i} style={{ fontSize: 11, lineHeight: 1.4, color: c.role === 'agent' ? 'var(--dd-accent-muted)' : 'var(--dd-text1)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+            <span style={{ color: 'var(--dd-dim)' }}>{c.role === 'agent' ? 'claude · ' : 'you · '}</span>
             {c.text}
           </div>
         ))}
         {review.prompts.map((p, i) => (
-          <div key={`q${i}`} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 11, lineHeight: 1.4, background: '#161c25', border: `1px solid ${accent}`, borderRadius: 6, padding: '4px 6px' }}>
-            <span style={{ flex: 1, color: '#d6dbe3', overflowWrap: 'anywhere' }}>
+          <div key={`q${i}`} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 11, lineHeight: 1.4, background: 'var(--dd-surface2)', border: `1px solid ${accent}`, borderRadius: 6, padding: '4px 6px' }}>
+            <span style={{ flex: 1, color: 'var(--dd-text1)', overflowWrap: 'anywhere' }}>
               {p.tag !== 'message' && (
                 <span style={{ color: accent }}>{p.tag === 'text' ? `“${clip(p.text, 40)}” ` : `⟨${p.tag}⟩ `}</span>
               )}
               {p.prompt}
             </span>
-            <button onClick={() => onDiscard?.(i)} title="Discard this annotation" style={{ background: 'none', border: 'none', color: '#5b6675', cursor: 'pointer', fontSize: 11, padding: 0, lineHeight: 1.4 }}>
+            <button onClick={() => onDiscard?.(i)} title="Discard this annotation" style={{ background: 'none', border: 'none', color: 'var(--dd-dim)', cursor: 'pointer', fontSize: 11, padding: 0, lineHeight: 1.4 }}>
               ✕
             </button>
           </div>
@@ -1323,14 +1323,14 @@ function ReviewPanel({
           placeholder={busy ? 'Claude is applying your feedback…' : 'Message Claude about this artifact…'}
           disabled={busy}
           rows={2}
-          style={{ flex: 1, resize: 'none', background: '#10141a', color: '#e8edf4', border: '1px solid #2c3647', borderRadius: 6, padding: '6px 8px', fontSize: 11, fontFamily: 'system-ui' }}
+          style={{ flex: 1, resize: 'none', background: 'var(--dd-bg1)', color: 'var(--dd-text)', border: '1px solid var(--dd-border2)', borderRadius: 6, padding: '6px 8px', fontSize: 11, fontFamily: 'system-ui' }}
         />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <button
             onClick={() => send(false)}
             disabled={!canSend}
             title="Send queued annotations + message to Claude"
-            style={{ background: canSend ? accent : '#2a2f3a', color: canSend ? '#17130a' : '#5b6675', border: 'none', borderRadius: 6, padding: '5px 10px', fontSize: 11, fontWeight: 700, cursor: canSend ? 'pointer' : 'default', whiteSpace: 'nowrap' }}
+            style={{ background: canSend ? accent : 'var(--dd-hover)', color: canSend ? 'var(--dd-warn-bg)' : 'var(--dd-dim)', border: 'none', borderRadius: 6, padding: '5px 10px', fontSize: 11, fontWeight: 700, cursor: canSend ? 'pointer' : 'default', whiteSpace: 'nowrap' }}
           >
             Send{review.prompts.length ? ` (${review.prompts.length})` : ''}
           </button>
@@ -1338,7 +1338,7 @@ function ReviewPanel({
             onClick={() => send(true)}
             disabled={busy}
             title="Send everything and end the review — Claude stops polling"
-            style={{ background: 'none', color: busy ? '#3c4557' : '#7d8794', border: '1px solid #2c3647', borderRadius: 6, padding: '3px 10px', fontSize: 10, cursor: busy ? 'default' : 'pointer', whiteSpace: 'nowrap' }}
+            style={{ background: 'none', color: busy ? 'var(--dd-dim2)' : 'var(--dd-text3)', border: '1px solid var(--dd-border2)', borderRadius: 6, padding: '3px 10px', fontSize: 10, cursor: busy ? 'default' : 'pointer', whiteSpace: 'nowrap' }}
           >
             Send & end
           </button>
@@ -1416,8 +1416,8 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
   // collapsed: a thin rail with an expand button, mirroring the left sidebar
   if (collapsed) {
     return (
-      <div style={{ width: 30, minWidth: 30, height: '100%', background: '#0b0e13', borderLeft: '1px solid #1d2530', display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 8 }}>
-        <button onClick={() => onSetCollapsed(false)} title={`Expand panel (${panelChord})`} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#7d8794', fontSize: 15, padding: 0 }}>«</button>
+      <div style={{ width: 30, minWidth: 30, height: '100%', background: 'var(--dd-bg0)', borderLeft: '1px solid var(--dd-border)', display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 8 }}>
+        <button onClick={() => onSetCollapsed(false)} title={`Expand panel (${panelChord})`} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--dd-text3)', fontSize: 15, padding: 0 }}>«</button>
       </div>
     )
   }
@@ -1428,9 +1428,9 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
         onDelta={(dx) => setWidth((w) => clampPanelWidth(w - dx))}
         onEnd={() => localStorage.setItem('dd.briefingWidth', String(widthRef.current))}
       />
-      <div style={{ width, minWidth: width, boxSizing: 'border-box', background: '#0b0e13', fontFamily: 'system-ui', fontSize: 12, display: 'flex', flexDirection: 'column', height: '100%' }}>
+      <div style={{ width, minWidth: width, boxSizing: 'border-box', background: 'var(--dd-bg0)', fontFamily: 'system-ui', fontSize: 12, display: 'flex', flexDirection: 'column', height: '100%' }}>
         <div style={{ display: 'flex', alignItems: 'stretch', gap: 6, padding: '12px 12px 0', flex: 'none' }}>
-          <button onClick={() => onSetCollapsed(true)} title={`Collapse panel (${panelChord})`} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#7d8794', fontSize: 15, padding: 0, lineHeight: 1, alignSelf: 'flex-end', marginBottom: 4 }}>»</button>
+          <button onClick={() => onSetCollapsed(true)} title={`Collapse panel (${panelChord})`} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--dd-text3)', fontSize: 15, padding: 0, lineHeight: 1, alignSelf: 'flex-end', marginBottom: 4 }}>»</button>
           <div style={{ display: 'flex', flex: 1, gap: 2, minWidth: 0 }}>
             {TABS.map((t) => (
               <button key={t.id} onClick={() => selectTab(t.id)} style={S.tabBtn(t.id === tab)}>
@@ -1448,7 +1448,7 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
             artifacts={artifacts}
             sessionId={sessionId}
             review={review ?? null}
-            accent={reviewAccent ?? '#f4c95d'}
+            accent={reviewAccent ?? 'var(--dd-warn-bright)'}
             onQueue={onReviewQueue}
             onDiscard={onReviewDiscard}
             onSend={onReviewSend}

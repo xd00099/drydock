@@ -47,7 +47,7 @@ export default function SearchPalette({ open, onClose, onPick, onOverlay }: Prop
   const results = resp.results
   return (
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', display: 'flex', justifyContent: 'center', paddingTop: 80, zIndex: 95 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ width: 640, maxHeight: '70vh', background: '#161c25', borderRadius: 10, overflow: 'hidden', display: 'flex', flexDirection: 'column', fontFamily: 'system-ui', fontSize: 13, color: '#c8cdd5' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: 640, maxHeight: '70vh', background: 'var(--dd-surface2)', borderRadius: 10, overflow: 'hidden', display: 'flex', flexDirection: 'column', fontFamily: 'system-ui', fontSize: 13, color: 'var(--dd-text1)' }}>
         <input
           ref={inputRef}
           value={q}
@@ -72,10 +72,10 @@ export default function SearchPalette({ open, onClose, onPick, onOverlay }: Prop
             if (e.key === 'Enter' && results[sel]) { onPick(results[sel].session, e.metaKey); onClose() }
           }}
           placeholder="search all sessions…  (proj:x  starred:  live:  ·  Enter resume · ⌘Enter transcript)"
-          style={{ padding: '12px 14px', background: '#0b0e13', border: 'none', outline: 'none', color: '#e8edf4', fontSize: 14 }}
+          style={{ padding: '12px 14px', background: 'var(--dd-bg0)', border: 'none', outline: 'none', color: 'var(--dd-text)', fontSize: 14 }}
         />
         {resp.semantic !== 'ready' && q && (
-          <div style={{ padding: '4px 14px', color: '#5b6675', fontSize: 11 }}>
+          <div style={{ padding: '4px 14px', color: 'var(--dd-dim)', fontSize: 11 }}>
             {resp.semantic === 'indexing' ? 'semantic index catching up — keyword results' : 'keyword search'}
           </div>
         )}
@@ -85,11 +85,11 @@ export default function SearchPalette({ open, onClose, onPick, onOverlay }: Prop
         {onOverlay && (q === '' || /^(usage|recaps?|log|timeline|home)/i.test(q.trim())) && (
           <button
             onClick={onOverlay}
-            style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid #1d2530', color: '#9aa3af', cursor: 'pointer', padding: '7px 14px', fontSize: 12, fontFamily: 'system-ui' }}
+            style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid var(--dd-border)', color: 'var(--dd-text2)', cursor: 'pointer', padding: '7px 14px', fontSize: 12, fontFamily: 'system-ui' }}
           >
-            <span style={{ color: '#5a7fb0' }}>◱</span>
+            <span style={{ color: 'var(--dd-accent-muted)' }}>◱</span>
             <span style={{ flex: 1 }}>Usage &amp; recap log</span>
-            <span style={{ color: '#4a5462', fontSize: 10 }}>overlay · ⌘0 for Home</span>
+            <span style={{ color: 'var(--dd-dim2)', fontSize: 10 }}>overlay · ⌘0 for Home</span>
           </button>
         )}
         <div ref={listRef} style={{ overflowY: 'auto' }}>
@@ -98,7 +98,7 @@ export default function SearchPalette({ open, onClose, onPick, onOverlay }: Prop
               key={r.session.session_id}
               onClick={() => { onPick(r.session, false); onClose() }}
               onMouseEnter={() => setSel(i)}
-              style={{ padding: '8px 14px', background: i === sel ? '#1d2530' : 'transparent', cursor: 'pointer' }}
+              style={{ padding: '8px 14px', background: i === sel ? 'var(--dd-border)' : 'transparent', cursor: 'pointer' }}
             >
               {/* flex, not float: a float that doesn't fit drops BELOW the title
                   line; here the title ellipsizes and the metadata stays put */}
@@ -108,14 +108,14 @@ export default function SearchPalette({ open, onClose, onPick, onOverlay }: Prop
                     <LiveIndicator status={r.session.live_status} />
                   </span>
                 )}
-                <span style={{ color: '#e8edf4', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{clip(sessionLabel(r.session), 52)}</span>
-                {r.session.starred && <span style={{ color: '#e8c35a', flexShrink: 0 }}> ★</span>}
-                <span style={{ marginLeft: 'auto', paddingLeft: 8, flexShrink: 0, whiteSpace: 'nowrap', color: '#5b6675' }}>{clip(shortPath(r.session.project_path), 40)} · {relAge(r.session.last_message_at)}</span>
+                <span style={{ color: 'var(--dd-text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{clip(sessionLabel(r.session), 52)}</span>
+                {r.session.starred && <span style={{ color: 'var(--dd-warn-bright)', flexShrink: 0 }}> ★</span>}
+                <span style={{ marginLeft: 'auto', paddingLeft: 8, flexShrink: 0, whiteSpace: 'nowrap', color: 'var(--dd-dim)' }}>{clip(shortPath(r.session.project_path), 40)} · {relAge(r.session.last_message_at)}</span>
               </div>
-              {r.snippet && <div style={{ color: '#7d8794', fontSize: 12, marginTop: 2 }}>{clip(r.snippet, 90)}</div>}
+              {r.snippet && <div style={{ color: 'var(--dd-text3)', fontSize: 12, marginTop: 2 }}>{clip(r.snippet, 90)}</div>}
             </div>
           ))}
-          {q && results.length === 0 && <div style={{ padding: 14, color: '#5b6675' }}>no matches</div>}
+          {q && results.length === 0 && <div style={{ padding: 14, color: 'var(--dd-dim)' }}>no matches</div>}
         </div>
       </div>
     </div>

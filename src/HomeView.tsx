@@ -20,9 +20,9 @@ type Props = {
 }
 
 const S = {
-  h: { fontSize: 10, letterSpacing: 1, color: '#5b6675', fontWeight: 700, margin: '0 0 8px' } as const,
-  card: { background: '#0b0e13', border: '1px solid #1d2530', borderRadius: 8, padding: '10px 12px' } as const,
-  dim: { color: '#5b6675' } as const,
+  h: { fontSize: 10, letterSpacing: 1, color: 'var(--dd-dim)', fontWeight: 700, margin: '0 0 8px' } as const,
+  card: { background: 'var(--dd-bg0)', border: '1px solid var(--dd-border)', borderRadius: 8, padding: '10px 12px' } as const,
+  dim: { color: 'var(--dd-dim)' } as const,
 }
 
 export default function HomeView({ sessions, sessionsReady, onFocusSession }: Props) {
@@ -49,7 +49,7 @@ export default function HomeView({ sessions, sessionsReady, onFocusSession }: Pr
   const maxTokens = Math.max(1, ...recent.map((d) => d.tokens))
 
   return (
-    <div style={{ height: '100%', overflowY: 'auto', padding: '18px 22px', fontFamily: 'system-ui', fontSize: 12, color: '#c8cdd5', boxSizing: 'border-box' }}>
+    <div style={{ height: '100%', overflowY: 'auto', padding: '18px 22px', fontFamily: 'system-ui', fontSize: 12, color: 'var(--dd-text1)', boxSizing: 'border-box' }}>
       <div style={{ ...S.dim, fontSize: 12, marginBottom: 14 }}>
         Pick a session on the left, {newChord} starts one in any folder, or ＋ for a shell — {homeChord} returns here anytime.
       </div>
@@ -61,13 +61,13 @@ export default function HomeView({ sessions, sessionsReady, onFocusSession }: Pr
               key={s.session_id}
               onClick={() => onFocusSession(s.session_id)}
               title={s.attention ?? 'waiting for your input'}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(232,163,61,.07)', border: '1px solid #3a3122', borderLeft: '3px solid #e8a33d', borderRadius: 6, padding: '6px 12px', cursor: 'pointer', textAlign: 'left', color: '#c8cdd5', fontSize: 12, maxWidth: 320 }}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(232,163,61,.07)', border: '1px solid var(--dd-warn-bg)', borderLeft: '3px solid var(--dd-warn)', borderRadius: 6, padding: '6px 12px', cursor: 'pointer', textAlign: 'left', color: 'var(--dd-text1)', fontSize: 12, maxWidth: 320 }}
             >
-              <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#e8a33d', flex: 'none' }} />
+              <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--dd-warn)', flex: 'none' }} />
               <span style={{ minWidth: 0 }}>
                 <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sessionLabel(s)}</span>
                 {s.attention && (
-                  <span style={{ display: 'block', color: '#5b6675', fontSize: 10.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.attention}</span>
+                  <span style={{ display: 'block', color: 'var(--dd-dim)', fontSize: 10.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.attention}</span>
                 )}
               </span>
             </button>
@@ -89,7 +89,7 @@ export default function HomeView({ sessions, sessionsReady, onFocusSession }: Pr
                   <span
                     key={d.date}
                     title={`${d.date} · ${fmtTokens(d.tokens)} tokens · ${d.messages} messages · ${d.sessions} sessions`}
-                    style={{ flex: 1, height: `${Math.max(4, Math.round((d.tokens / maxTokens) * 100))}%`, background: '#24405e', borderRadius: '1px 1px 0 0' }}
+                    style={{ flex: 1, height: `${Math.max(4, Math.round((d.tokens / maxTokens) * 100))}%`, background: 'var(--dd-accent-bg)', borderRadius: '1px 1px 0 0' }}
                   />
                 ))}
               </div>
@@ -104,11 +104,11 @@ export default function HomeView({ sessions, sessionsReady, onFocusSession }: Pr
               <div style={S.h}>MODELS · ALL TIME</div>
               {usage!.models.slice(0, 5).map((m) => (
                 <div key={m.model} style={{ display: 'flex', gap: 8, alignItems: 'baseline', padding: '2px 0', fontSize: 11.5 }}>
-                  <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#c8cdd5' }}>{m.model.replace(/^claude-/, '')}</span>
-                  <span title={`${fmtTokens(m.input)} in · ${fmtTokens(m.output)} out`} style={{ flex: 'none', fontFamily: 'Menlo, monospace', fontSize: 10.5, color: '#7ec8a0' }}>
+                  <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--dd-text1)' }}>{m.model.replace(/^claude-/, '')}</span>
+                  <span title={`${fmtTokens(m.input)} in · ${fmtTokens(m.output)} out`} style={{ flex: 'none', fontFamily: 'Menlo, monospace', fontSize: 10.5, color: 'var(--dd-ok-bright)' }}>
                     {fmtTokens(m.output)}
                   </span>
-                  {m.cost_usd > 0 && <span style={{ flex: 'none', fontFamily: 'Menlo, monospace', fontSize: 10.5, color: '#9aa3af' }}>${m.cost_usd.toFixed(2)}</span>}
+                  {m.cost_usd > 0 && <span style={{ flex: 'none', fontFamily: 'Menlo, monospace', fontSize: 10.5, color: 'var(--dd-text2)' }}>${m.cost_usd.toFixed(2)}</span>}
                 </div>
               ))}
               <div style={{ ...S.dim, fontSize: 9.5, marginTop: 4 }}>output tokens · from Claude Code's own stats</div>
@@ -125,11 +125,11 @@ export default function HomeView({ sessions, sessionsReady, onFocusSession }: Pr
                     onClick={() => s && onFocusSession(t.session_id)}
                     disabled={!s}
                     title={`${t.label}\n${t.project}\n${fmtTokens(t.output_tokens)} out · ${fmtTokens(t.total_tokens)} total (cache reads excluded)`}
-                    style={{ display: 'flex', alignItems: 'baseline', gap: 8, width: '100%', background: 'none', border: 'none', padding: '2px 0', cursor: s ? 'pointer' : 'default', textAlign: 'left', fontSize: 11.5, color: '#c8cdd5', opacity: s ? 1 : 0.5 }}
+                    style={{ display: 'flex', alignItems: 'baseline', gap: 8, width: '100%', background: 'none', border: 'none', padding: '2px 0', cursor: s ? 'pointer' : 'default', textAlign: 'left', fontSize: 11.5, color: 'var(--dd-text1)', opacity: s ? 1 : 0.5 }}
                   >
                     <span style={{ flex: 'none', width: 7, height: 7, borderRadius: '50%', alignSelf: 'center', background: sessionColor(t.session_id, 1, s?.hue ?? null) }} />
                     <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.label}</span>
-                    <span style={{ flex: 'none', fontFamily: 'Menlo, monospace', fontSize: 10.5, color: '#7ec8a0' }}>{fmtTokens(t.output_tokens)}</span>
+                    <span style={{ flex: 'none', fontFamily: 'Menlo, monospace', fontSize: 10.5, color: 'var(--dd-ok-bright)' }}>{fmtTokens(t.output_tokens)}</span>
                   </button>
                 )
               })}

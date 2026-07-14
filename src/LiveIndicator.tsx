@@ -4,7 +4,7 @@ import type { SessionView } from './types'
 // a brighter half-arc spinning over it. Signals a session that's actively working.
 // inline-block + middle baseline so it sits correctly in both flex rows (sidebar)
 // and inline text rows (search palette).
-function Spinner({ size = 11, color = '#8ab4f8' }: { size?: number; color?: string }) {
+function Spinner({ size = 11, color = 'var(--dd-accent)' }: { size?: number; color?: string }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" style={{ flexShrink: 0, display: 'inline-block', verticalAlign: 'middle' }}>
       <title>running</title>
@@ -25,7 +25,7 @@ export default function LiveIndicator({ status }: { status: SessionView['live_st
       <span
         className="dd-attn"
         title="waiting for your input"
-        style={{ flexShrink: 0, width: 8, height: 8, borderRadius: '50%', background: '#e8a33d', display: 'inline-block', verticalAlign: 'middle' }}
+        style={{ flexShrink: 0, width: 8, height: 8, borderRadius: '50%', background: 'var(--dd-warn)', display: 'inline-block', verticalAlign: 'middle' }}
       />
     )
   if (status === 'busy') return <Spinner />
@@ -33,7 +33,7 @@ export default function LiveIndicator({ status }: { status: SessionView['live_st
     return (
       <span
         title="idle — open in a terminal"
-        style={{ flexShrink: 0, width: 8, height: 8, borderRadius: '50%', background: '#4ec77e', display: 'inline-block', verticalAlign: 'middle' }}
+        style={{ flexShrink: 0, width: 8, height: 8, borderRadius: '50%', background: 'var(--dd-ok)', display: 'inline-block', verticalAlign: 'middle' }}
       />
     )
   return null

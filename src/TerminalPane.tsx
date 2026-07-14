@@ -6,6 +6,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { PaneSearch } from './types'
+import { getSearchDecorations, getXtermTheme, THEME_EVENT } from './theme'
 import '@xterm/xterm/css/xterm.css'
 
 type Props = {
@@ -27,13 +28,8 @@ type Props = {
 // muted slate wash, the active one bright yellow (the renderer's
 // minimumContrastRatio auto-darkens text that would be unreadable on it). The
 // *OverviewRuler colors are required by the addon's types but inert — we don't
-// enable an overview ruler.
-const SEARCH_DECORATIONS = {
-  matchBackground: '#3a4656',
-  matchOverviewRuler: '#3a4656',
-  activeMatchBackground: '#e8c35a',
-  activeMatchColorOverviewRuler: '#e8c35a',
-}
+// enable an overview ruler. Resolved per call: xterm parses these itself, so
+// CSS variables won't do — theme.ts hands back concrete hexes per theme.
 
 function b64ToBytes(b64: string): Uint8Array {
   const bin = atob(b64)
@@ -163,7 +159,7 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
         // addon report the exact "i of n" via onDidChangeResults.
         const opts: ISearchOptions = {
           caseSensitive: false,
-          ...(withDecorations ? { decorations: SEARCH_DECORATIONS } : null),
+          ...(withDecorations ? { decorations: getSearchDecorations() } : null),
         }
         return dir === 'prev'
           ? search.findPrevious(query, opts)
@@ -226,31 +222,9 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
       // Full Drydock palette, not just the background: xterm's default is the
       // saturated Tango set with pure-white text and a 30%-alpha white selection
       // — which reads as a foreign app embedded in ours, and makes the ⌘F match
-      // a faint wash. Opaque selection keeps the found text obvious.
-      theme: {
-        background: '#10141a',
-        foreground: '#c8cdd5',
-        cursor: '#7fb0ff',
-        cursorAccent: '#10141a',
-        selectionBackground: '#3d5878',
-        selectionInactiveBackground: '#2c3647',
-        black: '#1d2530',
-        red: '#cf6b6b',
-        green: '#7ec8a0',
-        yellow: '#e8c35a',
-        blue: '#7fb0ff',
-        magenta: '#c792ea',
-        cyan: '#7ecfc0',
-        white: '#c8cdd5',
-        brightBlack: '#7d8794',
-        brightRed: '#e8907a',
-        brightGreen: '#a3dcbd',
-        brightYellow: '#f0d38a',
-        brightBlue: '#9cc3ff',
-        brightMagenta: '#dab6f4',
-        brightCyan: '#a2e0d5',
-        brightWhite: '#e8edf4',
-      },
+      // a faint wash. Opaque selection keeps the found text obvious. The palette
+      // lives in theme.ts (xterm's canvas can't read the CSS tokens).
+      theme: getXtermTheme(),
     })
     const fit = new FitAddon()
     const search = new SearchAddon()
@@ -353,8 +327,14 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
     })
     ro.observe(host)
 
+    // Appearance change: re-theme the canvas in place (CSS vars cover the
+    // rest of the app; xterm needs the palette handed over explicitly).
+    const onTheme = () => { term.options.theme = getXtermTheme() }
+    window.addEventListener(THEME_EVENT, onTheme)
+
     return () => {
       disposed = true
+      window.removeEventListener(THEME_EVENT, onTheme)
       ro.disconnect()
       viewport?.removeEventListener('scroll', healScroll)
       dataSub.dispose()
@@ -388,7 +368,7 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
 
   // Opaque: confines a split pane's session tint to its thin mat, and hides
   // the cell-remainder strip xterm leaves (the grid snaps to whole cells).
-  return <div ref={hostRef} style={{ width: '100%', height: '100%', background: '#10141a' }} />
+  return <div ref={hostRef} style={{ width: '100%', height: '100%', background: 'var(--dd-bg1)' }} />
 })
 
 export default TerminalPane

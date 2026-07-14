@@ -4,8 +4,11 @@ import { marked } from 'marked'
 import type { Artifact } from './types'
 
 // Theme for wrapped fragments (svg/markdown, and bare HTML fragments). A full
-// HTML document keeps its own <head>/<style>.
-const FRAME_CSS = `:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;padding:16px;background:#0f1115;color:#e8edf4;font-family:system-ui,-apple-system,sans-serif;font-size:14px;line-height:1.55}a{color:#7fb0ff}h1,h2,h3{line-height:1.25}pre{background:#161c25;padding:12px;border-radius:6px;overflow:auto}code{font-family:Menlo,Monaco,monospace;font-size:13px}table{border-collapse:collapse}td,th{border:1px solid #2c3647;padding:4px 8px}svg{max-width:100%;height:auto}img{max-width:100%}blockquote{margin:0;padding-left:12px;border-left:3px solid #2c3647;color:#9aa3af}`
+// HTML document keeps its own <head>/<style>. Injected into the sandboxed
+// srcdoc iframe, whose document has NO access to the app's --dd-* tokens —
+// concrete hexes on purpose (artifact content renders on its own dark canvas
+// regardless of the app theme).
+const FRAME_CSS = `:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;padding:16px;background:#0d1117;color:#e8edf4;font-family:system-ui,-apple-system,sans-serif;font-size:14px;line-height:1.55}a{color:#7fb0ff}h1,h2,h3{line-height:1.25}pre{background:#161c25;padding:12px;border-radius:6px;overflow:auto}code{font-family:Menlo,Monaco,monospace;font-size:13px}table{border-collapse:collapse}td,th{border:1px solid #2c3647;padding:4px 8px}svg{max-width:100%;height:auto}img{max-width:100%}blockquote{margin:0;padding-left:12px;border-left:3px solid #2c3647;color:#9aa3af}`
 
 // base target=_blank: clicking a link in a sandboxed srcdoc frame would
 // otherwise navigate the frame ITSELF away from the artifact (self-navigation
@@ -60,7 +63,7 @@ export default function ArtifactView({
   onReviewMsg?: (msg: Record<string, unknown>) => void
 }) {
   const srcDoc = useMemo(() => (artifact.kind === 'html' ? '' : toSrcDoc(artifact)), [artifact])
-  const baseStyle: React.CSSProperties = { width: '100%', height: '100%', border: 'none', background: '#0f1115', ...style }
+  const baseStyle: React.CSSProperties = { width: '100%', height: '100%', border: 'none', background: 'var(--dd-well)', ...style }
   const frameRef = useRef<HTMLIFrameElement | null>(null)
 
   // Push the current mode + accent into the frame's review SDK. Re-sent on every

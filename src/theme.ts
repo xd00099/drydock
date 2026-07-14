@@ -54,7 +54,7 @@ const XTERM_DARK = {
   magenta: '#c792ea',
   cyan: '#7ecfc0',
   white: '#c8cdd5',
-  brightBlack: '#5b6675',
+  brightBlack: '#7d8794',
   brightRed: '#e8907a',
   brightGreen: '#a3dcbd',
   brightYellow: '#f0d38a',
@@ -91,4 +91,23 @@ const XTERM_LIGHT = {
 
 export function getXtermTheme() {
   return resolvedTheme() === 'light' ? XTERM_LIGHT : XTERM_DARK
+}
+
+/** ⌘F match decoration colors. Also consumed by xterm's own color parser
+ *  (NOT the DOM), so these must be concrete hexes, resolved per theme at
+ *  call time. Dark values match the shipped ones. */
+export function getSearchDecorations() {
+  return resolvedTheme() === 'light'
+    ? {
+        matchBackground: '#c8d4e4',
+        matchOverviewRuler: '#c8d4e4',
+        activeMatchBackground: '#e6c74f',
+        activeMatchColorOverviewRuler: '#e6c74f',
+      }
+    : {
+        matchBackground: '#3a4656',
+        matchOverviewRuler: '#3a4656',
+        activeMatchBackground: '#e8c35a',
+        activeMatchColorOverviewRuler: '#e8c35a',
+      }
 }

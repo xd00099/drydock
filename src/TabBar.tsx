@@ -38,13 +38,13 @@ function terminalLabels(termTabs: Tab[], dirs: Record<number, string>): Record<n
 
 const S = {
   lane: { display: 'flex', alignItems: 'center', gap: 2, padding: '3px 6px', overflowX: 'auto', whiteSpace: 'nowrap' } as const,
-  laneLabel: { flexShrink: 0, fontSize: 9, letterSpacing: 1, color: '#4a5462', marginRight: 6, width: 58, textAlign: 'right' } as const,
+  laneLabel: { flexShrink: 0, fontSize: 9, letterSpacing: 1, color: 'var(--dd-dim2)', marginRight: 6, width: 58, textAlign: 'right' } as const,
   // userSelect none: chips are drag handles — a drag across labels must not
   // leave text selections behind
   chip: { flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6, padding: '3px 8px', borderRadius: 5, cursor: 'pointer', borderLeft: '3px solid transparent', borderBottom: '2px solid transparent', userSelect: 'none' } as const,
-  close: { color: '#5b6675' } as const,
-  plus: { flexShrink: 0, background: 'none', border: 'none', color: '#7d8794', cursor: 'pointer', fontSize: 14 } as const,
-  mark: { flexShrink: 0, width: 2, height: 16, background: '#7fb0ff', borderRadius: 1 } as const,
+  close: { color: 'var(--dd-dim)' } as const,
+  plus: { flexShrink: 0, background: 'none', border: 'none', color: 'var(--dd-text3)', cursor: 'pointer', fontSize: 14 } as const,
+  mark: { flexShrink: 0, width: 2, height: 16, background: 'var(--dd-accent)', borderRadius: 1 } as const,
 }
 
 export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs, unread, draggedId, insertMark, onChipPress, onChipDouble, onChipMenu, onSelect, onClose, onNewShell, onHome }: Props) {
@@ -81,17 +81,17 @@ export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs,
           // wash when inactive, stronger when active; the solid strip stays at left
           background: t.sessionId
             ? sessionColor(t.sessionId, t.id === activeId ? 0.3 : staged ? 0.18 : 0.1, hue)
-            : t.id === activeId ? '#1d2530' : staged ? '#161c25' : 'transparent',
+            : t.id === activeId ? 'var(--dd-border)' : staged ? 'var(--dd-surface2)' : 'transparent',
           borderLeftColor: accent ?? 'transparent',
           // "on stage" underline: a split can show several tabs at once — every
           // visible one wears the mark; the focused one also gets the strong wash
-          borderBottomColor: staged ? (t.sessionId ? sessionColor(t.sessionId, 1, hue) : '#5a7fb0') : 'transparent',
-          color: t.exited ? '#5b6675' : '#c8cdd5',
+          borderBottomColor: staged ? (t.sessionId ? sessionColor(t.sessionId, 1, hue) : 'var(--dd-accent-muted)') : 'transparent',
+          color: t.exited ? 'var(--dd-dim)' : 'var(--dd-text1)',
           opacity: t.id === draggedId ? 0.4 : 1,
         }}
       >
         {attention && (
-          <span className="dd-attn" title="waiting for your input" style={{ flexShrink: 0, width: 7, height: 7, borderRadius: '50%', background: '#e8a33d' }} />
+          <span className="dd-attn" title="waiting for your input" style={{ flexShrink: 0, width: 7, height: 7, borderRadius: '50%', background: 'var(--dd-warn)' }} />
         )}
         {/* a transcript tab is a READER, not a dead terminal: ≣ prefix instead
             of the (misleading) ·ended suffix */}
@@ -101,7 +101,7 @@ export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs,
           {t.exited && t.kind !== 'transcript' ? ' ·ended' : ''}
         </span>
         {unread[t.id] ? (
-          <span title={`${unread[t.id]} new artifact${unread[t.id] > 1 ? 's' : ''}`} style={{ background: '#5a7fb0', color: '#0b0e13', borderRadius: 8, fontSize: 9, fontWeight: 700, padding: '0 5px', lineHeight: '14px' }}>{unread[t.id]}</span>
+          <span title={`${unread[t.id]} new artifact${unread[t.id] > 1 ? 's' : ''}`} style={{ background: 'var(--dd-accent-muted)', color: 'var(--dd-bg0)', borderRadius: 8, fontSize: 9, fontWeight: 700, padding: '0 5px', lineHeight: '14px' }}>{unread[t.id]}</span>
         ) : null}
         <span style={S.close} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onClose(t.id) }}>✕</span>
       </div>
@@ -125,7 +125,7 @@ export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs,
   }
 
   return (
-    <div data-tabbar="1" style={{ background: '#0b0e13', borderBottom: '1px solid #1d2530', fontFamily: 'system-ui', fontSize: 12 }}>
+    <div data-tabbar="1" style={{ background: 'var(--dd-bg0)', borderBottom: '1px solid var(--dd-border)', fontFamily: 'system-ui', fontSize: 12 }}>
       {sessionTabs.length > 0 && (
         <div data-lane="s" style={S.lane}>
           <span style={S.laneLabel}>SESSIONS</span>
@@ -143,7 +143,7 @@ export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs,
           <button onClick={onHome} title={`Home — pick or start a session (${homeChord})`} style={S.plus}>＋</button>
         </div>
       )}
-      <div data-lane="t" style={{ ...S.lane, borderTop: sessionTabs.length > 0 ? '1px solid #161c25' : undefined }}>
+      <div data-lane="t" style={{ ...S.lane, borderTop: sessionTabs.length > 0 ? '1px solid var(--dd-surface2)' : undefined }}>
         <span style={S.laneLabel}>TERMINALS</span>
         {laneChips(termTabs.map((t) => ({ t, el: chip(t, termNames[t.id], undefined, shellDirs[t.id] ?? 'shell') })), true)}
         <button onClick={onNewShell} title={`New shell tab (${shellChord})`} style={S.plus}>＋</button>

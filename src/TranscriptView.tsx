@@ -98,7 +98,7 @@ const chipBtn: React.CSSProperties = {
   background: 'none',
   border: 'none',
   cursor: 'pointer',
-  color: '#7d8794',
+  color: 'var(--dd-text3)',
   fontFamily: 'Menlo, monospace',
   fontSize: 11,
   padding: '1px 0',
@@ -106,9 +106,9 @@ const chipBtn: React.CSSProperties = {
 }
 
 const hBtn: React.CSSProperties = {
-  background: '#1d2530',
-  color: '#e8edf4',
-  border: '1px solid #2c3647',
+  background: 'var(--dd-border)',
+  color: 'var(--dd-text)',
+  border: '1px solid var(--dd-border2)',
   borderRadius: 5,
   padding: '4px 12px',
   cursor: 'pointer',
@@ -317,7 +317,7 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
         <mark
           key={m.gi}
           ref={isActive ? activeMarkRef : undefined}
-          style={{ background: isActive ? '#e8c35a' : '#3a4656', color: isActive ? '#10141a' : 'inherit', borderRadius: 2 }}
+          style={{ background: isActive ? 'var(--dd-warn-bright)' : 'var(--dd-border3)', color: isActive ? 'var(--dd-bg1)' : 'inherit', borderRadius: 2 }}
         >
           {text.slice(m.start, m.start + m.len)}
         </mark>,
@@ -349,18 +349,18 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
       case 'user':
         if (e.meta)
           return (
-            <div key={idx} style={{ margin: '6px 0', color: '#4a5462', fontSize: 11, whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>
+            <div key={idx} style={{ margin: '6px 0', color: 'var(--dd-dim2)', fontSize: 11, whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>
               {renderText(e.text, marks)}
             </div>
           )
         return (
-          <div key={idx} style={{ margin: '12px 0', padding: '6px 10px', borderLeft: '3px solid #5a7fb0', background: 'rgba(90,127,176,.09)', borderRadius: 4, color: '#c9d7ee', whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>
+          <div key={idx} style={{ margin: '12px 0', padding: '6px 10px', borderLeft: '3px solid var(--dd-accent-muted)', background: 'rgba(90,127,176,.09)', borderRadius: 4, color: 'var(--dd-accent-text)', whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>
             {renderText(e.text, marks)}
           </div>
         )
       case 'assistant':
         return (
-          <div key={idx} style={{ margin: '8px 0', color: '#c8cdd5' }}>
+          <div key={idx} style={{ margin: '8px 0', color: 'var(--dd-text1)' }}>
             {searching ? (
               <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>{renderText(e.text, marks)}</div>
             ) : (
@@ -376,13 +376,13 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
         )
       case 'recap':
         return (
-          <div key={idx} style={{ margin: '12px 0', padding: '6px 10px', borderLeft: '3px solid #e8c35a', background: 'rgba(232,195,90,.07)', borderRadius: 4, color: '#e8c35a', whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>
+          <div key={idx} style={{ margin: '12px 0', padding: '6px 10px', borderLeft: '3px solid var(--dd-warn-bright)', background: 'rgba(232,195,90,.07)', borderRadius: 4, color: 'var(--dd-warn-bright)', whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>
             ※ {renderText(e.text, marks)}
           </div>
         )
       case 'compact':
         return (
-          <div key={idx} style={{ textAlign: 'center', color: '#4a5462', fontSize: 11, margin: '12px 0' }}>
+          <div key={idx} style={{ textAlign: 'center', color: 'var(--dd-dim2)', fontSize: 11, margin: '12px 0' }}>
             — conversation compacted —
           </div>
         )
@@ -397,7 +397,7 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
               </span>
             </button>
             {open && (
-              <div style={{ margin: '2px 0 6px 16px', color: '#7d8794', fontStyle: 'italic', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', fontSize: 11 }}>
+              <div style={{ margin: '2px 0 6px 16px', color: 'var(--dd-text3)', fontStyle: 'italic', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', fontSize: 11 }}>
                 {e.text}
               </div>
             )}
@@ -410,17 +410,17 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
           <div key={idx} style={{ margin: '2px 0' }}>
             <button style={chipBtn} onClick={() => toggleRow(idx)} title={open ? 'Collapse' : 'Show input & result'}>
               <span style={{ flexShrink: 0 }}>{open ? '▾' : '▸'}</span>
-              <span style={{ color: '#7ecfc0', flexShrink: 0 }}>⏺ {e.tool ?? 'tool'}</span>
+              <span style={{ color: 'var(--dd-teal)', flexShrink: 0 }}>⏺ {e.tool ?? 'tool'}</span>
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{e.text}</span>
               {r.result && (
-                <span style={{ flexShrink: 0, color: r.result.error ? '#cf6b6b' : '#5fb98a' }}>{r.result.error ? '✗' : '✓'}</span>
+                <span style={{ flexShrink: 0, color: r.result.error ? 'var(--dd-err)' : 'var(--dd-ok)' }}>{r.result.error ? '✗' : '✓'}</span>
               )}
             </button>
             {open && (
-              <div style={{ margin: '2px 0 8px 16px', padding: '6px 8px', background: '#0b0e13', border: '1px solid #1d2530', borderRadius: 4, fontSize: 11, fontFamily: 'Menlo, monospace', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', maxHeight: 260, overflowY: 'auto' }}>
-                <div style={{ color: '#9aa3af' }}>{e.text || '(no input summary)'}</div>
+              <div style={{ margin: '2px 0 8px 16px', padding: '6px 8px', background: 'var(--dd-bg0)', border: '1px solid var(--dd-border)', borderRadius: 4, fontSize: 11, fontFamily: 'Menlo, monospace', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', maxHeight: 260, overflowY: 'auto' }}>
+                <div style={{ color: 'var(--dd-text2)' }}>{e.text || '(no input summary)'}</div>
                 {r.result && (
-                  <div style={{ marginTop: 6, color: r.result.error ? '#cf6b6b' : '#7d8794' }}>{r.result.text || '(no output)'}</div>
+                  <div style={{ marginTop: 6, color: r.result.error ? 'var(--dd-err)' : 'var(--dd-text3)' }}>{r.result.text || '(no output)'}</div>
                 )}
                 {r.result?.persisted_path && (
                   <button
@@ -454,7 +454,7 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
     const idx = shownStart + i
     if (r.e.ts != null && (prevTs == null || r.e.ts - prevTs > 15 * 60_000)) {
       body.push(
-        <div key={`t${idx}`} style={{ textAlign: 'center', color: '#3a4350', fontSize: 10, margin: '10px 0 2px' }}>
+        <div key={`t${idx}`} style={{ textAlign: 'center', color: 'var(--dd-border3)', fontSize: 10, margin: '10px 0 2px' }}>
           {fmtTime(r.e.ts, prevTs)}
         </div>,
       )
@@ -489,9 +489,9 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
       }}
       // opaque: a split pane's session tint stays in the pane's thin mat —
       // never washing the reading surface (or shifting it with focus)
-      style={{ position: 'relative', height: '100%', display: 'flex', flexDirection: 'column', background: '#10141a', color: '#c8cdd5', fontFamily: 'system-ui', fontSize: 13 }}
+      style={{ position: 'relative', height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--dd-bg1)', color: 'var(--dd-text1)', fontFamily: 'system-ui', fontSize: 13 }}
     >
-      <div style={{ padding: '6px 10px', background: '#161c25', display: 'flex', alignItems: 'center', gap: 10 }}>
+      <div style={{ padding: '6px 10px', background: 'var(--dd-surface2)', display: 'flex', alignItems: 'center', gap: 10 }}>
         <span style={{ flexShrink: 0 }}>
           {live
             ? onFocusLive
@@ -518,25 +518,25 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
           Export .md
         </button>
         {msg && (
-          <span title={msg.text} style={{ color: msg.error ? '#cf6b6b' : '#7ec8a0', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+          <span title={msg.text} style={{ color: msg.error ? 'var(--dd-err)' : 'var(--dd-ok-bright)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
             {msg.text}
           </span>
         )}
         {fallback && (
-          <span style={{ marginLeft: 'auto', color: '#5b6675', fontSize: 11, flexShrink: 0 }} title="The session's .jsonl is gone (or not synced yet); showing the indexed text.">
+          <span style={{ marginLeft: 'auto', color: 'var(--dd-dim)', fontSize: 11, flexShrink: 0 }} title="The session's .jsonl is gone (or not synced yet); showing the indexed text.">
             indexed text only
           </span>
         )}
       </div>
       {agents.length > 0 && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px', background: '#10141a', borderBottom: '1px solid #161c25', overflowX: 'auto', flexShrink: 0 }}>
-          <span style={{ color: '#5b6675', fontSize: 11, flexShrink: 0 }}>⑂ {agents.length} subagent{agents.length > 1 ? 's' : ''}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px', background: 'var(--dd-bg1)', borderBottom: '1px solid var(--dd-surface2)', overflowX: 'auto', flexShrink: 0 }}>
+          <span style={{ color: 'var(--dd-dim)', fontSize: 11, flexShrink: 0 }}>⑂ {agents.length} subagent{agents.length > 1 ? 's' : ''}</span>
           {agents.map((a) => (
             <button
               key={a.agent_id}
               onClick={() => setAgentOpen(a)}
               title={`${a.agent_type ?? 'agent'}${a.description ? ` — ${a.description}` : ''}\nOpen this agent's conversation`}
-              style={{ flexShrink: 0, background: '#141b26', border: '1px solid #2c3647', borderRadius: 10, color: '#8ea0b5', padding: '1px 9px', fontSize: 11, cursor: 'pointer', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+              style={{ flexShrink: 0, background: 'var(--dd-btn)', border: '1px solid var(--dd-border2)', borderRadius: 10, color: 'var(--dd-text2)', padding: '1px 9px', fontSize: 11, cursor: 'pointer', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
             >
               {a.agent_type ?? 'agent'}{a.description ? ` · ${clip(a.description, 24)}` : ''}
             </button>
@@ -555,7 +555,7 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
       >
         {shownStart > 0 && (
           <button
-            style={{ ...chipBtn, color: '#5a7fb0', margin: '0 auto 8px', display: 'block' }}
+            style={{ ...chipBtn, color: 'var(--dd-accent-muted)', margin: '0 auto 8px', display: 'block' }}
             onClick={() => {
               const el = scrollerRef.current
               prevHeightRef.current = el ? el.scrollHeight - el.scrollTop : null
@@ -566,7 +566,7 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
           </button>
         )}
         {body}
-        {rows.length === 0 && <div style={{ color: '#5b6675' }}>no indexed content yet</div>}
+        {rows.length === 0 && <div style={{ color: 'var(--dd-dim)' }}>no indexed content yet</div>}
         <div ref={bottomRef} />
       </div>
       {agentOpen && <AgentPane sessionId={sessionId} agent={agentOpen} onClose={() => setAgentOpen(null)} />}
@@ -616,7 +616,7 @@ function AgentPane({ sessionId, agent, onClose }: { sessionId: string; agent: Ag
     switch (e.kind) {
       case 'user':
         return (
-          <div key={i} style={{ margin: '10px 0', padding: '6px 10px', background: e.meta ? 'transparent' : '#141b26', border: '1px solid #1d2530', borderRadius: 6, color: e.meta ? '#5b6675' : '#dbe2ea', whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>
+          <div key={i} style={{ margin: '10px 0', padding: '6px 10px', background: e.meta ? 'transparent' : 'var(--dd-btn)', border: '1px solid var(--dd-border)', borderRadius: 6, color: e.meta ? 'var(--dd-dim)' : 'var(--dd-text1)', whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>
             {e.text}
           </div>
         )
@@ -635,11 +635,11 @@ function AgentPane({ sessionId, agent, onClose }: { sessionId: string; agent: Ag
           <div key={i} style={{ margin: '2px 0' }}>
             <button style={chipBtn} onClick={() => setOpen((p) => { const n = new Set(p); if (o) n.delete(i); else n.add(i); return n })}>
               <span style={{ flexShrink: 0 }}>{o ? '▾' : '▸'}</span>
-              <span style={{ color: e.error ? '#cf6b6b' : '#7ecfc0', flexShrink: 0 }}>{label}</span>
+              <span style={{ color: e.error ? 'var(--dd-err)' : 'var(--dd-teal)', flexShrink: 0 }}>{label}</span>
               {!o && <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{clip(e.text.replace(/\s+/g, ' '), 80)}</span>}
             </button>
             {o && (
-              <div style={{ margin: '2px 0 6px 16px', color: '#7d8794', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', fontSize: 11 }}>{e.text}</div>
+              <div style={{ margin: '2px 0 6px 16px', color: 'var(--dd-text3)', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', fontSize: 11 }}>{e.text}</div>
             )}
           </div>
         )
@@ -657,19 +657,19 @@ function AgentPane({ sessionId, agent, onClose }: { sessionId: string; agent: Ag
         if (e.nativeEvent.isComposing || e.keyCode === 229) return
         if (e.key === 'Escape') { e.stopPropagation(); onClose() }
       }}
-      style={{ position: 'absolute', inset: 0, background: '#10141a', display: 'flex', flexDirection: 'column', zIndex: 20, outline: 'none' }}
+      style={{ position: 'absolute', inset: 0, background: 'var(--dd-bg1)', display: 'flex', flexDirection: 'column', zIndex: 20, outline: 'none' }}
     >
-      <div style={{ padding: '6px 10px', background: '#161c25', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+      <div style={{ padding: '6px 10px', background: 'var(--dd-surface2)', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
         <button style={hBtn} onClick={onClose} title="Back to the session transcript (Esc)">‹ back</button>
-        <span style={{ color: '#8ea0b5', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <span style={{ color: 'var(--dd-text2)', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           subagent · {agent.agent_type ?? agent.agent_id}{agent.description ? ` — ${agent.description}` : ''}
         </span>
       </div>
-      <div style={{ flex: 1, overflowY: 'auto', padding: 12, fontFamily: 'Menlo, monospace', fontSize: 12, color: '#c8cdd5' }}>
-        {err && <div style={{ color: '#cf6b6b' }}>{err}</div>}
-        {entries === null && !err && <div style={{ color: '#5b6675' }}>loading…</div>}
+      <div style={{ flex: 1, overflowY: 'auto', padding: 12, fontFamily: 'Menlo, monospace', fontSize: 12, color: 'var(--dd-text1)' }}>
+        {err && <div style={{ color: 'var(--dd-err)' }}>{err}</div>}
+        {entries === null && !err && <div style={{ color: 'var(--dd-dim)' }}>loading…</div>}
         {entries?.map(row)}
-        {entries?.length === 0 && <div style={{ color: '#5b6675' }}>empty agent transcript</div>}
+        {entries?.length === 0 && <div style={{ color: 'var(--dd-dim)' }}>empty agent transcript</div>}
       </div>
     </div>
   )

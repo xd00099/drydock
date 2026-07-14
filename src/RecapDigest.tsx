@@ -28,9 +28,9 @@ const PAGE = 30
 type Cursor = { ts: number; sid: string }
 
 const S = {
-  h: { fontSize: 10, letterSpacing: 1, color: '#5b6675', fontWeight: 700, margin: '0 0 8px' } as const,
-  day: { fontSize: 9.5, letterSpacing: 1, color: '#4a5462', fontWeight: 700, margin: '12px 0 4px' } as const,
-  dim: { color: '#5b6675' } as const,
+  h: { fontSize: 10, letterSpacing: 1, color: 'var(--dd-dim)', fontWeight: 700, margin: '0 0 8px' } as const,
+  day: { fontSize: 9.5, letterSpacing: 1, color: 'var(--dd-dim2)', fontWeight: 700, margin: '12px 0 4px' } as const,
+  dim: { color: 'var(--dd-dim)' } as const,
 }
 
 function dayLabel(ts: number): string {
@@ -147,26 +147,26 @@ export default function RecapDigest({ sessions, sessionsReady, onFocusSession }:
                       <LiveIndicator status={s.live_status} />
                     </span>
                   )}
-                  <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12, color: '#e8edf4' }}>
+                  <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12, color: 'var(--dd-text)' }}>
                     {baseName(r.project_path)}
-                    {r.label && <span style={{ color: '#9aa3af' }}> · {r.label}</span>}
+                    {r.label && <span style={{ color: 'var(--dd-text2)' }}> · {r.label}</span>}
                   </span>
-                  <span style={{ marginLeft: 'auto', flex: 'none', color: '#4a5462', fontFamily: 'Menlo, monospace', fontSize: 10 }}>{fmtTime(r.last_message_at)}</span>
+                  <span style={{ marginLeft: 'auto', flex: 'none', color: 'var(--dd-dim2)', fontFamily: 'Menlo, monospace', fontSize: 10 }}>{fmtTime(r.last_message_at)}</span>
                   {hasTimeline && (
-                    <span style={{ flex: 'none', color: '#5b6675', fontSize: 10, width: 10, textAlign: 'center' }}>{open ? '▾' : '▸'}</span>
+                    <span style={{ flex: 'none', color: 'var(--dd-dim)', fontSize: 10, width: 10, textAlign: 'center' }}>{open ? '▾' : '▸'}</span>
                   )}
                   <button
                     onClick={(e) => { e.stopPropagation(); onFocusSession(r.session_id) }}
                     disabled={!s}
                     title={expired ? 'transcript no longer indexed — expired or deleted' : 'Open this session'}
-                    style={{ flex: 'none', background: 'none', border: 'none', color: s ? '#5a7fb0' : '#3a4250', cursor: s ? 'pointer' : 'default', fontSize: 12, padding: '0 2px' }}
+                    style={{ flex: 'none', background: 'none', border: 'none', color: s ? 'var(--dd-accent-muted)' : 'var(--dd-border3)', cursor: s ? 'pointer' : 'default', fontSize: 12, padding: '0 2px' }}
                   >
                     ↗
                   </button>
                 </div>
                 <div
                   onClick={() => hasTimeline && toggle(r.session_id)}
-                  style={{ margin: '2px 0 0 15px', fontSize: 11.5, color: '#8d97a5', cursor: hasTimeline ? 'pointer' : 'default', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}
+                  style={{ margin: '2px 0 0 15px', fontSize: 11.5, color: 'var(--dd-text3)', cursor: hasTimeline ? 'pointer' : 'default', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}
                 >
                   {r.summary}
                 </div>
@@ -174,8 +174,8 @@ export default function RecapDigest({ sessions, sessionsReady, onFocusSession }:
                   <div style={{ margin: '4px 0 2px 15px' }}>
                     {r.timeline.map((t, i) => (
                       <div key={i} style={{ display: 'flex', gap: 6, padding: '1px 0', fontSize: 11.5 }}>
-                        <span style={{ flex: 'none', color: t.in_progress ? '#e8a33d' : '#5f9e7d' }}>{t.in_progress ? '◐' : '✓'}</span>
-                        <span style={{ minWidth: 0, color: t.in_progress ? '#c8cdd5' : '#7d8794' }}>{t.text}</span>
+                        <span style={{ flex: 'none', color: t.in_progress ? 'var(--dd-warn)' : 'var(--dd-ok)' }}>{t.in_progress ? '◐' : '✓'}</span>
+                        <span style={{ minWidth: 0, color: t.in_progress ? 'var(--dd-text1)' : 'var(--dd-text3)' }}>{t.text}</span>
                       </div>
                     ))}
                   </div>
@@ -194,7 +194,7 @@ export default function RecapDigest({ sessions, sessionsReady, onFocusSession }:
             load({ ts: tail.last_message_at, sid: tail.session_id })
           }}
           disabled={busy}
-          style={{ marginTop: 10, background: '#141b26', border: '1px solid #2c3647', borderRadius: 5, color: '#9aa3af', fontSize: 11, padding: '3px 10px', cursor: busy ? 'default' : 'pointer' }}
+          style={{ marginTop: 10, background: 'var(--dd-btn)', border: '1px solid var(--dd-border2)', borderRadius: 5, color: 'var(--dd-text2)', fontSize: 11, padding: '3px 10px', cursor: busy ? 'default' : 'pointer' }}
         >
           {busy ? 'loading…' : 'show earlier'}
         </button>

@@ -111,7 +111,7 @@ body,
   margin: 0;
   padding: 0;
   height: 100%;
-  background: #10141a;
+  background: var(--dd-bg1);
   /* the app is a fixed viewport-filling shell: any accidental overflow (e.g. a
      panel wider than the window) must clip, not pan/rubber-band the document */
   overflow: hidden;
@@ -130,19 +130,19 @@ body,
 .md > :first-child { margin-top: 0; }
 .md > :last-child { margin-bottom: 0; }
 .md p, .md ul, .md ol, .md pre, .md blockquote, .md table { margin: 6px 0; }
-.md h1, .md h2, .md h3, .md h4 { margin: 10px 0 4px; line-height: 1.25; color: #e8edf4; }
+.md h1, .md h2, .md h3, .md h4 { margin: 10px 0 4px; line-height: 1.25; color: var(--dd-text); }
 .md h1 { font-size: 15px; }
 .md h2 { font-size: 14px; }
 .md h3, .md h4 { font-size: 13px; }
-.md a { color: #7fb0ff; }
-.md code { font-family: Menlo, Monaco, monospace; font-size: 11px; background: #1b2230; border-radius: 3px; padding: 1px 4px; }
-.md pre { background: #0b0e13; border: 1px solid #1d2530; border-radius: 6px; padding: 8px 10px; overflow-x: auto; }
+.md a { color: var(--dd-accent); }
+.md code { font-family: Menlo, Monaco, monospace; font-size: 11px; background: var(--dd-row); border-radius: 3px; padding: 1px 4px; }
+.md pre { background: var(--dd-bg0); border: 1px solid var(--dd-border); border-radius: 6px; padding: 8px 10px; overflow-x: auto; }
 .md pre code { background: none; padding: 0; }
 .md ul, .md ol { padding-left: 20px; }
-.md blockquote { margin-left: 0; padding-left: 10px; border-left: 3px solid #2c3647; color: #9aa3af; }
+.md blockquote { margin-left: 0; padding-left: 10px; border-left: 3px solid var(--dd-border2); color: var(--dd-text2); }
 .md table { border-collapse: collapse; }
-.md td, .md th { border: 1px solid #2c3647; padding: 3px 8px; }
-.md hr { border: none; border-top: 1px solid #1d2530; }
+.md td, .md th { border: 1px solid var(--dd-border2); padding: 3px 8px; }
+.md hr { border: none; border-top: 1px solid var(--dd-border); }
 .md img { max-width: 100%; }
 
 /* Attention pulse: the "needs your input" dot in the sidebar/tabs. */
@@ -154,7 +154,7 @@ body,
 
 /* "Files changed" rows: quiet until hovered; the Finder-reveal button only
    materializes on hover so the diffstat column stays clean. */
-.dd-filerow:hover { background: #141a24; }
+.dd-filerow:hover { background: var(--dd-btn); }
 .dd-filerow .dd-reveal { visibility: hidden; }
 .dd-filerow:hover .dd-reveal { visibility: visible; }
 
@@ -170,12 +170,12 @@ body,
    keeping rows quiet (same pattern as the file rows' Finder button). */
 .dd-sessrow .dd-rowbtn { visibility: hidden; }
 .dd-sessrow:hover .dd-rowbtn { visibility: visible; }
-.dd-rowbtn:hover { color: #cfe0f5 !important; }
+.dd-rowbtn:hover { color: var(--dd-accent-text) !important; }
 
 /* Split screen: an unfocused pane whose session is blocked on you pulses its
    frame amber (the split-mode sibling of the sidebar/tab dd-attn dot). */
 @keyframes dd-ringpulse {
-  0%, 100% { border-color: #e8a33d; }
+  0%, 100% { border-color: var(--dd-warn); }
   50% { border-color: rgba(232, 163, 61, 0.3); }
 }
 .dd-attnpane { animation: dd-ringpulse 1.2s ease-in-out infinite; }

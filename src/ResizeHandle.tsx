@@ -63,7 +63,7 @@ export default function ResizeHandle({ onDelta, onEnd }: Props) {
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       title="Drag to resize"
-      style={{ flexShrink: 0, width: 5, minWidth: 5, height: '100%', cursor: 'col-resize', background: hover ? '#2c3647' : '#1d2530' }}
+      style={{ flexShrink: 0, width: 5, minWidth: 5, height: '100%', cursor: 'col-resize', background: hover ? 'var(--dd-border2)' : 'var(--dd-border)' }}
     />
   )
 }

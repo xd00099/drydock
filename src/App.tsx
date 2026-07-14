@@ -1132,7 +1132,7 @@ export default function App() {
   }
 
   return (
-    <div style={{ display: 'flex', width: '100vw', height: '100vh', background: '#10141a' }}>
+    <div style={{ display: 'flex', width: '100vw', height: '100vh', background: 'var(--dd-bg1)' }}>
       <Sidebar
         onHome={() => goHomeRef.current()}
         sessions={sessions}
@@ -1157,7 +1157,7 @@ export default function App() {
         {/* In-flow (not fixed at a guessed sidebar offset): it always spans
             exactly the main column at any sidebar width or collapse state. */}
         {claudeVersion === null && (
-          <div style={{ background: '#5a3030', color: '#f0d0d0', padding: '4px 12px', fontFamily: 'system-ui', fontSize: 12 }}>
+          <div style={{ background: 'var(--dd-err-bg-strong)', color: 'var(--dd-err-text)', padding: '4px 12px', fontFamily: 'system-ui', fontSize: 12 }}>
             claude CLI not found in your login shell — resume/new sessions won't start. Install Claude Code or fix your PATH, then restart Drydock. Shell tabs still work.
           </div>
         )}
@@ -1219,11 +1219,11 @@ export default function App() {
                         border: `2px solid ${
                           t.sessionId
                             ? sessionColor(t.sessionId, t.id === activeId ? 1 : 0.45, sess?.hue)
-                            : t.id === activeId ? '#3d5878' : '#232c3a'
+                            : t.id === activeId ? 'var(--dd-accent-border)' : 'var(--dd-hover)'
                         }`,
                         background: t.sessionId
                           ? sessionColor(t.sessionId, t.id === activeId ? 0.12 : 0.06, sess?.hue)
-                          : '#10141a',
+                          : 'var(--dd-bg1)',
                       }
                     : { position: 'absolute', inset: 8, display: shown ? 'block' : 'none' }
                 }
@@ -1330,7 +1330,7 @@ export default function App() {
             initialUnread={(unread[activeTab.id] ?? 0) > 0}
             artifacts={artifactsByTab[activeTab.id] ?? EMPTY_ARTIFACTS}
             review={activeTab.kind === 'pty' && !activeTab.exited ? reviewByTab[activeTab.id] ?? EMPTY_REVIEW : null}
-            reviewAccent={activeTab.sessionId ? sessionColor(activeTab.sessionId, 1, s?.hue) : '#f4c95d'}
+            reviewAccent={activeTab.sessionId ? sessionColor(activeTab.sessionId, 1, s?.hue) : 'var(--dd-warn-bright)'}
             onReviewQueue={(p) => reviewQueue(activeTab.id, p)}
             onReviewDiscard={(i) => reviewDiscard(activeTab.id, i)}
             onReviewSend={(m, end) => reviewSend(activeTab.id, m, end)}
@@ -1364,14 +1364,14 @@ export default function App() {
         <div
           ref={(el) => { if (el && !el.dataset.focused) { el.dataset.focused = '1'; el.focus() } }}
           tabIndex={-1}
-          style={{ position: 'fixed', inset: 0, zIndex: 85, background: '#0b0e13', display: 'flex', flexDirection: 'column', transform: 'translateZ(0)', outline: 'none' }}
+          style={{ position: 'fixed', inset: 0, zIndex: 85, background: 'var(--dd-bg0)', display: 'flex', flexDirection: 'column', transform: 'translateZ(0)', outline: 'none' }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid #1d2530', fontFamily: 'system-ui' }}>
-            <span style={{ flex: 1, color: '#e8edf4', fontWeight: 600, fontSize: 13 }}>Usage & recap log</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid var(--dd-border)', fontFamily: 'system-ui' }}>
+            <span style={{ flex: 1, color: 'var(--dd-text)', fontWeight: 600, fontSize: 13 }}>Usage & recap log</span>
             <button
               onClick={() => setHomeOverlay(false)}
               title="Close (Esc)"
-              style={{ background: 'none', border: '1px solid #2c3647', borderRadius: 4, cursor: 'pointer', color: '#9aa3af', fontSize: 12, lineHeight: 1, padding: '2px 6px' }}
+              style={{ background: 'none', border: '1px solid var(--dd-border2)', borderRadius: 4, cursor: 'pointer', color: 'var(--dd-text2)', fontSize: 12, lineHeight: 1, padding: '2px 6px' }}
             >
               ✕
             </button>
@@ -1400,14 +1400,14 @@ export default function App() {
             ref={(el) => { if (el && !el.dataset.focused) { el.dataset.focused = '1'; el.focus() } }}
             tabIndex={-1}
             style={{ position: 'fixed', inset: 0, zIndex: 105, background: 'rgba(4,6,10,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', transform: 'translateZ(0)', outline: 'none' }}>
-            <div style={{ background: '#11161f', border: '1px solid #2c3647', borderRadius: 10, padding: '18px 22px', width: 380, fontFamily: 'system-ui' }}>
-              <div style={{ color: '#e8edf4', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Close live session?</div>
-              <div style={{ color: '#9aa3af', fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
+            <div style={{ background: 'var(--dd-surface)', border: '1px solid var(--dd-border2)', borderRadius: 10, padding: '18px 22px', width: 380, fontFamily: 'system-ui' }}>
+              <div style={{ color: 'var(--dd-text)', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Close live session?</div>
+              <div style={{ color: 'var(--dd-text2)', fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
                 {clip(s ? sessionLabel(s) : t?.title ?? 'This session', 60)} is still running — closing the tab ends it here (resume any time from the sidebar).
               </div>
               <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                <button onClick={() => setConfirmClose(null)} style={{ background: 'none', border: '1px solid #2c3647', borderRadius: 6, color: '#9aa3af', fontSize: 12, padding: '4px 12px', cursor: 'pointer' }}>Cancel (Esc)</button>
-                <button onClick={() => { closeTab(confirmClose); setConfirmClose(null) }} style={{ background: '#3a2626', border: '1px solid #6a3a3a', borderRadius: 6, color: '#e0908a', fontSize: 12, padding: '4px 12px', cursor: 'pointer' }}>Close (⏎)</button>
+                <button onClick={() => setConfirmClose(null)} style={{ background: 'none', border: '1px solid var(--dd-border2)', borderRadius: 6, color: 'var(--dd-text2)', fontSize: 12, padding: '4px 12px', cursor: 'pointer' }}>Cancel (Esc)</button>
+                <button onClick={() => { closeTab(confirmClose); setConfirmClose(null) }} style={{ background: 'var(--dd-err-bg)', border: '1px solid var(--dd-err-border)', borderRadius: 6, color: 'var(--dd-err-bright)', fontSize: 12, padding: '4px 12px', cursor: 'pointer' }}>Close (⏎)</button>
               </div>
             </div>
           </div>
@@ -1420,16 +1420,16 @@ export default function App() {
         // z-110 (above the takeover dialog's 100): a quit requested mid-takeover
         // must sit on top, matching the keydown handler's quit-guard-first order.
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 110, transform: 'translateZ(0)' }}>
-          <div style={{ background: '#161c25', color: '#e8edf4', padding: 20, borderRadius: 8, fontFamily: 'system-ui', fontSize: 13 }}>
+          <div style={{ background: 'var(--dd-surface2)', color: 'var(--dd-text)', padding: 20, borderRadius: 8, fontFamily: 'system-ui', fontSize: 13 }}>
             <div style={{ marginBottom: 12 }}>Sessions are still running in tabs. Quit anyway?</div>
             <button
-              style={{ background: '#7a2e2e', color: '#fff', border: 'none', padding: '5px 12px', borderRadius: 5, cursor: 'pointer', fontSize: 12, marginRight: 8 }}
+              style={{ background: 'var(--dd-err-bg-strong)', color: 'var(--dd-white)', border: 'none', padding: '5px 12px', borderRadius: 5, cursor: 'pointer', fontSize: 12, marginRight: 8 }}
               onClick={() => invoke('force_quit')}
             >
               Quit anyway
             </button>
             <button
-              style={{ background: '#1d2530', color: '#e8edf4', border: '1px solid #2c3647', borderRadius: 5, padding: '4px 12px', cursor: 'pointer', fontSize: 12 }}
+              style={{ background: 'var(--dd-border)', color: 'var(--dd-text)', border: '1px solid var(--dd-border2)', borderRadius: 5, padding: '4px 12px', cursor: 'pointer', fontSize: 12 }}
               onClick={() => setQuitGuard(false)}
             >
               Cancel
@@ -1439,40 +1439,40 @@ export default function App() {
       )}
       {takeover && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, transform: 'translateZ(0)' }}>
-          <div style={{ background: '#161c25', color: '#e8edf4', padding: 20, borderRadius: 8, fontFamily: 'system-ui', fontSize: 13, maxWidth: 440 }}>
+          <div style={{ background: 'var(--dd-surface2)', color: 'var(--dd-text)', padding: 20, borderRadius: 8, fontFamily: 'system-ui', fontSize: 13, maxWidth: 440 }}>
             <div style={{ fontWeight: 600, marginBottom: 8 }}>Take over this session?</div>
             {!takeover.located ? (
-              <div style={{ color: '#9aa3af', marginBottom: 12 }}>locating the process…</div>
+              <div style={{ color: 'var(--dd-text2)', marginBottom: 12 }}>locating the process…</div>
             ) : takeover.info ? (
               <div style={{ marginBottom: 12, lineHeight: 1.6 }}>
                 <div>
                   Stops <span style={{ fontFamily: 'Menlo, monospace', fontSize: 12 }}>claude</span> (pid {takeover.info.pid}) in{' '}
                   <b>{takeover.info.app ?? 'another terminal'}</b>
-                  {takeover.info.tty ? <span style={{ color: '#9aa3af' }}> · {takeover.info.tty}</span> : null}
-                  {takeover.info.cwd ? <span style={{ color: '#9aa3af' }}> — {clip(takeover.info.cwd, 44)}</span> : null}
+                  {takeover.info.tty ? <span style={{ color: 'var(--dd-text2)' }}> · {takeover.info.tty}</span> : null}
+                  {takeover.info.cwd ? <span style={{ color: 'var(--dd-text2)' }}> — {clip(takeover.info.cwd, 44)}</span> : null}
                   , then resumes the session here.
                 </div>
                 {takeover.info.status === 'busy' && (
-                  <div style={{ color: '#e8a33d', marginTop: 6 }}>
+                  <div style={{ color: 'var(--dd-warn)', marginTop: 6 }}>
                     Mid-task right now — the in-flight turn will be lost. Everything already in the transcript survives.
                   </div>
                 )}
               </div>
             ) : (
-              <div style={{ color: '#9aa3af', marginBottom: 12 }}>
+              <div style={{ color: 'var(--dd-text2)', marginBottom: 12 }}>
                 The process is already gone — the session just hasn't settled to "ended" yet. Resume it directly.
               </div>
             )}
-            {takeover.err && <div style={{ color: '#cf6b6b', marginBottom: 10 }}>{takeover.err}</div>}
+            {takeover.err && <div style={{ color: 'var(--dd-err)', marginBottom: 10 }}>{takeover.err}</div>}
             <button
-              style={{ background: takeover.info ? '#7a2e2e' : '#2e4a7a', color: '#fff', border: 'none', padding: '5px 12px', borderRadius: 5, cursor: takeover.located && !takeover.killing ? 'pointer' : 'default', fontSize: 12, marginRight: 8, opacity: takeover.located && !takeover.killing ? 1 : 0.6 }}
+              style={{ background: takeover.info ? 'var(--dd-err-bg-strong)' : 'var(--dd-accent-border)', color: 'var(--dd-white)', border: 'none', padding: '5px 12px', borderRadius: 5, cursor: takeover.located && !takeover.killing ? 'pointer' : 'default', fontSize: 12, marginRight: 8, opacity: takeover.located && !takeover.killing ? 1 : 0.6 }}
               disabled={!takeover.located || takeover.killing}
               onClick={confirmTakeover}
             >
               {takeover.killing ? 'Taking over…' : takeover.info ? 'Take over' : 'Resume here'}
             </button>
             <button
-              style={{ background: '#1d2530', color: '#e8edf4', border: '1px solid #2c3647', borderRadius: 5, padding: '4px 12px', cursor: 'pointer', fontSize: 12 }}
+              style={{ background: 'var(--dd-border)', color: 'var(--dd-text)', border: '1px solid var(--dd-border2)', borderRadius: 5, padding: '4px 12px', cursor: 'pointer', fontSize: 12 }}
               disabled={takeover.killing}
               onClick={() => setTakeover(null)}
             >
@@ -1486,8 +1486,8 @@ export default function App() {
         <div
           style={{
             position: 'fixed', left: dragXY.x + 10, top: dragXY.y + 12, zIndex: 95, pointerEvents: 'none',
-            background: '#1d2530', border: '1px solid #2c3647', borderRadius: 5, padding: '3px 8px',
-            color: '#c8cdd5', fontFamily: 'system-ui', fontSize: 12, whiteSpace: 'nowrap',
+            background: 'var(--dd-border)', border: '1px solid var(--dd-border2)', borderRadius: 5, padding: '3px 8px',
+            color: 'var(--dd-text1)', fontFamily: 'system-ui', fontSize: 12, whiteSpace: 'nowrap',
           }}
         >
           {clip(chipDrag.label, 30)}
@@ -1533,9 +1533,9 @@ export default function App() {
             title={enabled ? undefined : tip}
             style={{
               padding: '5px 12px', fontSize: 12, borderRadius: 4, whiteSpace: 'nowrap',
-              color: enabled ? '#c8cdd5' : '#5b6675', cursor: enabled ? 'pointer' : 'default',
+              color: enabled ? 'var(--dd-text1)' : 'var(--dd-dim)', cursor: enabled ? 'pointer' : 'default',
             }}
-            onPointerEnter={(e) => { if (enabled) (e.currentTarget as HTMLElement).style.background = '#1d2530' }}
+            onPointerEnter={(e) => { if (enabled) (e.currentTarget as HTMLElement).style.background = 'var(--dd-border)' }}
             onPointerLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent' }}
           >
             {label}
@@ -1546,7 +1546,7 @@ export default function App() {
             data-chipmenu="1"
             style={{
               position: 'fixed', left: chipMenu.x, top: chipMenu.y, zIndex: 95,
-              background: '#161c25', border: '1px solid #2c3647', borderRadius: 6, padding: 4,
+              background: 'var(--dd-surface2)', border: '1px solid var(--dd-border2)', borderRadius: 6, padding: 4,
               fontFamily: 'system-ui', boxShadow: '0 6px 20px rgba(0,0,0,.45)',
             }}
           >

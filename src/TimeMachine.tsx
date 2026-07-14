@@ -170,10 +170,10 @@ export default function TimeMachine({ sessionId, initialPath, onClose }: Props) 
           onClose()
         }
       }}
-      style={{ position: 'fixed', inset: 0, zIndex: 90, background: '#0b0e13', display: 'flex', flexDirection: 'column', transform: 'translateZ(0)', outline: 'none', fontFamily: 'system-ui', fontSize: 12, color: '#c8cdd5' }}
+      style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'var(--dd-bg0)', display: 'flex', flexDirection: 'column', transform: 'translateZ(0)', outline: 'none', fontFamily: 'system-ui', fontSize: 12, color: 'var(--dd-text1)' }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid #1d2530' }}>
-        <span style={{ flex: 1, color: '#e8edf4', fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid var(--dd-border)' }}>
+        <span style={{ flex: 1, color: 'var(--dd-text)', fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           ⏱ File time machine{file ? ` — ${file}` : ''}
         </span>
         {history && history.length > 1 && (
@@ -185,7 +185,7 @@ export default function TimeMachine({ sessionId, initialPath, onClose }: Props) 
               const withBlob = f ? f.versions.filter((v) => v.backup_file) : []
               setVer(withBlob.length ? withBlob[withBlob.length - 1].version : null)
             }}
-            style={{ maxWidth: 340, background: '#161c25', color: '#d6dbe3', border: '1px solid #2c3647', borderRadius: 4, padding: '3px 4px', fontSize: 11 }}
+            style={{ maxWidth: 340, background: 'var(--dd-surface2)', color: 'var(--dd-text1)', border: '1px solid var(--dd-border2)', borderRadius: 4, padding: '3px 4px', fontSize: 11 }}
           >
             {history.map((f) => (
               <option key={f.path} value={f.path}>
@@ -197,17 +197,17 @@ export default function TimeMachine({ sessionId, initialPath, onClose }: Props) 
         <button
           onClick={onClose}
           title="Close (Esc)"
-          style={{ background: 'none', border: '1px solid #2c3647', borderRadius: 4, cursor: 'pointer', color: '#9aa3af', fontSize: 12, lineHeight: 1, padding: '2px 6px' }}
+          style={{ background: 'none', border: '1px solid var(--dd-border2)', borderRadius: 4, cursor: 'pointer', color: 'var(--dd-text2)', fontSize: 12, lineHeight: 1, padding: '2px 6px' }}
         >
           ✕
         </button>
       </div>
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
-        <div style={{ width: 210, flex: 'none', borderRight: '1px solid #1d2530', overflowY: 'auto', padding: 10 }}>
+        <div style={{ width: 210, flex: 'none', borderRight: '1px solid var(--dd-border)', overflowY: 'auto', padding: 10 }}>
           {history === null ? (
-            <div style={{ color: err ? '#cf6b6b' : '#5b6675' }}>{err ?? 'loading checkpoints…'}</div>
+            <div style={{ color: err ? 'var(--dd-err)' : 'var(--dd-dim)' }}>{err ?? 'loading checkpoints…'}</div>
           ) : versions.length === 0 ? (
-            <div style={{ color: '#5b6675' }}>
+            <div style={{ color: 'var(--dd-dim)' }}>
               {err ?? 'No file checkpoints for this session — Claude Code keeps them only for files it edited (and prunes old ones).'}
             </div>
           ) : (
@@ -215,26 +215,26 @@ export default function TimeMachine({ sessionId, initialPath, onClose }: Props) 
               <button
                 key={v.version}
                 onClick={() => setVer(v.version)}
-                style={{ display: 'block', width: '100%', textAlign: 'left', background: v.version === ver ? '#161c25' : 'none', border: 'none', borderLeft: `3px solid ${v.version === ver ? '#5a7fb0' : 'transparent'}`, borderRadius: 6, padding: '6px 8px', marginBottom: 4, cursor: 'pointer', color: '#c8cdd5' }}
+                style={{ display: 'block', width: '100%', textAlign: 'left', background: v.version === ver ? 'var(--dd-surface2)' : 'none', border: 'none', borderLeft: `3px solid ${v.version === ver ? 'var(--dd-accent-muted)' : 'transparent'}`, borderRadius: 6, padding: '6px 8px', marginBottom: 4, cursor: 'pointer', color: 'var(--dd-text1)' }}
               >
-                <div style={{ ...mono, fontSize: 10, color: '#5b6675' }}>
+                <div style={{ ...mono, fontSize: 10, color: 'var(--dd-dim)' }}>
                   v{v.version}
                   {v.ts ? ` · ${relAge(v.ts)} ago` : ''}
                 </div>
-                <div style={{ fontSize: 11, color: '#9aa3af' }}>{v === versions[0] ? 'first backup' : `changes since v${versions[Math.max(0, versions.indexOf(v) - 1)].version}`}</div>
+                <div style={{ fontSize: 11, color: 'var(--dd-text2)' }}>{v === versions[0] ? 'first backup' : `changes since v${versions[Math.max(0, versions.indexOf(v) - 1)].version}`}</div>
               </button>
             ))
           )}
         </div>
         <div style={{ flex: 1, minWidth: 0, overflow: 'auto', padding: '10px 14px' }}>
           {diff === null ? (
-            <div style={{ color: '#5b6675' }}>pick a checkpoint on the left</div>
+            <div style={{ color: 'var(--dd-dim)' }}>pick a checkpoint on the left</div>
           ) : diff === 'loading' ? (
-            <div style={{ color: '#5b6675' }}>loading…</div>
+            <div style={{ color: 'var(--dd-dim)' }}>loading…</div>
           ) : diff === 'unreadable' ? (
-            <div style={{ color: '#cf6b6b' }}>couldn’t read this version (too large or binary)</div>
+            <div style={{ color: 'var(--dd-err)' }}>couldn’t read this version (too large or binary)</div>
           ) : diff === 'identical' ? (
-            <div style={{ color: '#5b6675' }}>no line changes between these checkpoints (whitespace/line-ending identical too)</div>
+            <div style={{ color: 'var(--dd-dim)' }}>no line changes between these checkpoints (whitespace/line-ending identical too)</div>
           ) : (
             <pre style={{ ...mono, margin: 0, lineHeight: 1.6 }}>
               {diff.map((l, i) => (
@@ -242,7 +242,7 @@ export default function TimeMachine({ sessionId, initialPath, onClose }: Props) 
                   key={i}
                   style={{
                     whiteSpace: 'pre',
-                    color: l.kind === 'add' ? '#5fb98a' : l.kind === 'del' ? '#cf6b6b' : l.kind === 'gap' ? '#4a5462' : '#8a93a1',
+                    color: l.kind === 'add' ? 'var(--dd-ok)' : l.kind === 'del' ? 'var(--dd-err)' : l.kind === 'gap' ? 'var(--dd-dim2)' : 'var(--dd-text3)',
                     background: l.kind === 'add' ? 'rgba(95,185,138,.07)' : l.kind === 'del' ? 'rgba(207,107,107,.07)' : 'transparent',
                   }}
                 >

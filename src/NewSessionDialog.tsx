@@ -26,12 +26,12 @@ export function splitPath(resolved: string): { dir: string; partial: string } {
 
 const S = {
   scrim: { position: 'fixed', inset: 0, zIndex: 80, background: 'rgba(4,6,10,0.55)', display: 'flex', justifyContent: 'center', paddingTop: '18vh' } as React.CSSProperties,
-  box: { width: 560, maxHeight: '50vh', alignSelf: 'flex-start', background: '#11161f', border: '1px solid #2c3647', borderRadius: 10, boxShadow: '0 18px 50px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui' } as React.CSSProperties,
-  input: { background: 'none', border: 'none', outline: 'none', color: '#e8edf4', fontSize: 14, padding: '13px 14px', fontFamily: 'ui-monospace, monospace' } as React.CSSProperties,
+  box: { width: 560, maxHeight: '50vh', alignSelf: 'flex-start', background: 'var(--dd-surface)', border: '1px solid var(--dd-border2)', borderRadius: 10, boxShadow: '0 18px 50px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui' } as React.CSSProperties,
+  input: { background: 'none', border: 'none', outline: 'none', color: 'var(--dd-text)', fontSize: 14, padding: '13px 14px', fontFamily: 'ui-monospace, monospace' } as React.CSSProperties,
   hint: { padding: '0 14px 9px', fontSize: 11, fontFamily: 'ui-monospace, monospace' } as React.CSSProperties,
-  list: { overflowY: 'auto', borderTop: '1px solid #1d2530', padding: '4px 0' } as React.CSSProperties,
-  row: (sel: boolean) => ({ padding: '5px 14px', fontSize: 12, fontFamily: 'ui-monospace, monospace', cursor: 'pointer', color: sel ? '#e8edf4' : '#9aa3af', background: sel ? '#1b2330' : 'none', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }) as React.CSSProperties,
-  cap: { padding: '6px 14px 2px', fontSize: 10, color: '#5b6675', textTransform: 'uppercase' as const, letterSpacing: 0.5 },
+  list: { overflowY: 'auto', borderTop: '1px solid var(--dd-border)', padding: '4px 0' } as React.CSSProperties,
+  row: (sel: boolean) => ({ padding: '5px 14px', fontSize: 12, fontFamily: 'ui-monospace, monospace', cursor: 'pointer', color: sel ? 'var(--dd-text)' : 'var(--dd-text2)', background: sel ? 'var(--dd-row)' : 'none', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }) as React.CSSProperties,
+  cap: { padding: '6px 14px 2px', fontSize: 10, color: 'var(--dd-dim)', textTransform: 'uppercase' as const, letterSpacing: 0.5 },
 }
 
 export default function NewSessionDialog({ open, recents, onLaunch, onClose }: {
@@ -101,12 +101,12 @@ export default function NewSessionDialog({ open, recents, onLaunch, onClose }: {
   }
 
   const hint = err
-    ? <span style={{ color: '#e07a6a' }}>{err}</span>
+    ? <span style={{ color: 'var(--dd-err)' }}>{err}</span>
     : !resolved || resolved === '~'
-      ? <span style={{ color: '#5b6675' }}>type a folder — bare names go under {parent}</span>
+      ? <span style={{ color: 'var(--dd-dim)' }}>type a folder — bare names go under {parent}</span>
       : exists
-        ? <span style={{ color: '#5b6675' }}>open {resolved}</span>
-        : <span style={{ color: '#7fbf7f' }}>will create {resolved}</span>
+        ? <span style={{ color: 'var(--dd-dim)' }}>open {resolved}</span>
+        : <span style={{ color: 'var(--dd-ok-bright)' }}>will create {resolved}</span>
 
   return (
     <div style={S.scrim} onClick={onClose}>

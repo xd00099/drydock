@@ -33,15 +33,15 @@ export default function FindBar({ query, onQuery, matches, focusNonce, onNext, o
       : matches.index >= 0
         ? `${matches.index + 1}/${matches.count}`
         : `${matches.count}`
-  const btn = { background: 'none', border: 'none', color: '#9aa3af', cursor: 'pointer', fontSize: 13, padding: '0 4px' } as const
+  const btn = { background: 'none', border: 'none', color: 'var(--dd-text2)', cursor: 'pointer', fontSize: 13, padding: '0 4px' } as const
   // inline style overrides the UA's :disabled look, so dim it explicitly
   const dis = !matches.count
-  const navBtn = { ...btn, ...(dis ? { color: '#5b6675', cursor: 'default' as const } : null) }
+  const navBtn = { ...btn, ...(dis ? { color: 'var(--dd-dim)', cursor: 'default' as const } : null) }
   return (
     <div
       style={{
         position: 'absolute', top: 8, right: 16, zIndex: 50, display: 'flex', alignItems: 'center', gap: 4,
-        background: '#1b2230', border: '1px solid #2c3647', borderRadius: 6, padding: '4px 6px',
+        background: 'var(--dd-row)', border: '1px solid var(--dd-border2)', borderRadius: 6, padding: '4px 6px',
         boxShadow: '0 6px 20px rgba(0,0,0,.4)', fontFamily: 'system-ui', fontSize: 12,
       }}
     >
@@ -51,12 +51,12 @@ export default function FindBar({ query, onQuery, matches, focusNonce, onNext, o
         onChange={(e) => onQuery(e.target.value)}
         onKeyDown={onKeyDown}
         placeholder="Find in session…"
-        style={{ width: 180, background: '#0b0e13', border: '1px solid #2c3647', borderRadius: 4, color: '#e8edf4', padding: '3px 6px', outline: 'none', fontSize: 12 }}
+        style={{ width: 180, background: 'var(--dd-bg0)', border: '1px solid var(--dd-border2)', borderRadius: 4, color: 'var(--dd-text)', padding: '3px 6px', outline: 'none', fontSize: 12 }}
       />
-      <span style={{ color: matches.count || !query ? '#7d8794' : '#e8907a', minWidth: 44, textAlign: 'center' }}>{label}</span>
+      <span style={{ color: matches.count || !query ? 'var(--dd-text3)' : 'var(--dd-err-bright)', minWidth: 44, textAlign: 'center' }}>{label}</span>
       <button style={navBtn} title="Previous (⇧⏎ or ↑)" onClick={onPrev} disabled={dis}>↑</button>
       <button style={navBtn} title="Next (⏎ or ↓)" onClick={onNext} disabled={dis}>↓</button>
-      <button style={{ ...btn, color: '#7d8794' }} title="Close (Esc)" onClick={onClose}>✕</button>
+      <button style={{ ...btn, color: 'var(--dd-text3)' }} title="Close (Esc)" onClick={onClose}>✕</button>
     </div>
   )
 }

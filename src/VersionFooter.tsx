@@ -108,15 +108,15 @@ export default function VersionFooter({ busyCount, onRestartForUpdate, onOpenSet
     gap: 6,
     height: 26,
     padding: '0 10px',
-    borderTop: '1px solid #161d28',
-    background: '#0b0e13',
+    borderTop: '1px solid var(--dd-border-faint)',
+    background: 'var(--dd-bg0)',
     fontFamily: 'system-ui',
     fontSize: 11,
-    color: '#5b6675',
+    color: 'var(--dd-dim)',
   }
   const btn: React.CSSProperties = {
-    display: 'flex', alignItems: 'center', gap: 5, background: '#141b26',
-    border: '1px solid #2c4468', borderRadius: 5, color: '#9cc3ff',
+    display: 'flex', alignItems: 'center', gap: 5, background: 'var(--dd-btn)',
+    border: '1px solid var(--dd-accent-border)', borderRadius: 5, color: 'var(--dd-accent-text)',
     padding: '2px 8px', fontSize: 11, cursor: 'pointer',
   }
 
@@ -124,13 +124,13 @@ export default function VersionFooter({ busyCount, onRestartForUpdate, onOpenSet
     if (phase === 'confirm') {
       return (
         <div style={box}>
-          <span style={{ color: '#c9a35f' }}>{busyCount || 'some'} working —</span>
-          <button onClick={install} style={{ ...btn, borderColor: '#6a4a2c', color: '#e0b070', padding: '2px 6px' }}>
+          <span style={{ color: 'var(--dd-warn-muted)' }}>{busyCount || 'some'} working —</span>
+          <button onClick={install} style={{ ...btn, borderColor: 'var(--dd-warn-border)', color: 'var(--dd-warn-muted)', padding: '2px 6px' }}>
             restart anyway
           </button>
           <button
             onClick={() => setPhase('idle')}
-            style={{ ...btn, background: 'none', border: '1px solid #2c3647', color: '#7d8794', padding: '2px 6px' }}
+            style={{ ...btn, background: 'none', border: '1px solid var(--dd-border2)', color: 'var(--dd-text3)', padding: '2px 6px' }}
           >
             wait
           </button>
@@ -145,7 +145,7 @@ export default function VersionFooter({ busyCount, onRestartForUpdate, onOpenSet
           : phase === 'installing' ? 'Installing…' : 'Restarting…'
       return (
         <div style={box}>
-          <span style={{ color: '#9cc3ff' }}>{label}</span>
+          <span style={{ color: 'var(--dd-accent-text)' }}>{label}</span>
         </div>
       )
     }
@@ -155,7 +155,7 @@ export default function VersionFooter({ busyCount, onRestartForUpdate, onOpenSet
           <button
             onClick={() => invoke('open_releases_page').catch(() => {})}
             title={`${installErr ?? 'update failed'}\nOpens the releases page to update manually`}
-            style={{ ...btn, borderColor: '#6a4a2c', color: '#c9a35f' }}
+            style={{ ...btn, borderColor: 'var(--dd-warn-border)', color: 'var(--dd-warn-muted)' }}
           >
             ⚠ update failed — get v{update.latest} manually
           </button>
@@ -186,14 +186,14 @@ export default function VersionFooter({ busyCount, onRestartForUpdate, onOpenSet
       <button
         onClick={onOpenSettings}
         title={`Settings (${settingsChord})`}
-        style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#5b6675', fontSize: 13, padding: 0, lineHeight: 1 }}
+        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--dd-dim)', fontSize: 13, padding: 0, lineHeight: 1 }}
       >
         ⚙︎
       </button>
       <span
         onClick={() => check(true)}
         title={tip}
-        style={{ cursor: 'pointer', color: flash === 'fail' ? '#c9a35f' : flash === 'ok' ? '#5fb98a' : '#5b6675' }}
+        style={{ cursor: 'pointer', color: flash === 'fail' ? 'var(--dd-warn-muted)' : flash === 'ok' ? 'var(--dd-ok)' : 'var(--dd-dim)' }}
       >
         {label}
       </span>
