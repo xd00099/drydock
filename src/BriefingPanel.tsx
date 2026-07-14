@@ -29,6 +29,9 @@ type Props = {
   onReviewQueue?: (p: ReviewPrompt) => void
   onReviewDiscard?: (index: number) => void
   onReviewSend?: (message: string, endReview: boolean) => void
+  collapsed: boolean // lifted to App so ⌘J can drive it
+  onSetCollapsed: (c: boolean) => void
+  previewNonce: number // ⌘⇧J: each bump jumps to the artifact preview sub-tab
 }
 
 const TABS: { id: RightTab; label: string }[] = [
@@ -1344,12 +1347,11 @@ function ReviewPanel({
   )
 }
 
-export default function BriefingPanel({ sessionId, projectPath, starred, artifacts, label, onToggleStar, onRename, initialUnread, review, reviewAccent, onReviewQueue, onReviewDiscard, onReviewSend }: Props) {
+export default function BriefingPanel({ sessionId, projectPath, starred, artifacts, label, onToggleStar, onRename, initialUnread, review, reviewAccent, onReviewQueue, onReviewDiscard, onReviewSend, collapsed, onSetCollapsed, previewNonce }: Props) {
   const [card, setCard] = useState<CardView | null>(null)
   const [files, setFiles] = useState<FileTouch[]>([])
   const [tasks, setTasks] = useState<TasksView | null>(null)
   const [usage, setUsage] = useState<SessionUsage | null>(null)
-  const [collapsed, setCollapsed] = useState(() => localStorage.getItem('dd.briefingCollapsed') === '1')
   // clamp on load AND on window resize: a width persisted (or auto-widened) on a
   // big monitor must not overflow a smaller window later
   const [width, setWidth] = useState(() => clampPanelWidth(loadNum('dd.briefingWidth', 252)))
@@ -1387,7 +1389,7 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
   useEffect(() => {
     if (artifacts.length > seenArtifacts.current) {
       setTab('preview'); localStorage.setItem('dd.rightTab', 'preview')
-      setCollapsed(false); localStorage.setItem('dd.briefingCollapsed', '0')
+      onSetCollapsed(false)
       setWidth((w) => {
         const next = Math.max(w, clampPanelWidth(Math.round(window.innerWidth / 3)))
         localStorage.setItem('dd.briefingWidth', String(next))
@@ -1397,15 +1399,23 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
     seenArtifacts.current = artifacts.length
   }, [artifacts.length])
 
-  const toggleCollapsed = () =>
-    setCollapsed((c) => { const n = !c; localStorage.setItem('dd.briefingCollapsed', n ? '1' : '0'); return n })
   const selectTab = (t: RightTab) => { setTab(t); localStorage.setItem('dd.rightTab', t) }
+
+  // ⌘⇧J: App bumps the nonce; jump to the artifact preview sub-tab.
+  const nonceSeen = useRef(previewNonce)
+  useEffect(() => {
+    if (previewNonce !== nonceSeen.current) {
+      nonceSeen.current = previewNonce
+      selectTab('preview')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewNonce])
 
   // collapsed: a thin rail with an expand button, mirroring the left sidebar
   if (collapsed) {
     return (
       <div style={{ width: 30, minWidth: 30, height: '100%', background: '#0b0e13', borderLeft: '1px solid #1d2530', display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 8 }}>
-        <button onClick={toggleCollapsed} title="Expand panel" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#7d8794', fontSize: 15, padding: 0 }}>«</button>
+        <button onClick={() => onSetCollapsed(false)} title="Expand panel (⌘J)" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#7d8794', fontSize: 15, padding: 0 }}>«</button>
       </div>
     )
   }
@@ -1418,7 +1428,7 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
       />
       <div style={{ width, minWidth: width, boxSizing: 'border-box', background: '#0b0e13', fontFamily: 'system-ui', fontSize: 12, display: 'flex', flexDirection: 'column', height: '100%' }}>
         <div style={{ display: 'flex', alignItems: 'stretch', gap: 6, padding: '12px 12px 0', flex: 'none' }}>
-          <button onClick={toggleCollapsed} title="Collapse panel" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#7d8794', fontSize: 15, padding: 0, lineHeight: 1, alignSelf: 'flex-end', marginBottom: 4 }}>»</button>
+          <button onClick={() => onSetCollapsed(true)} title="Collapse panel (⌘J)" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#7d8794', fontSize: 15, padding: 0, lineHeight: 1, alignSelf: 'flex-end', marginBottom: 4 }}>»</button>
           <div style={{ display: 'flex', flex: 1, gap: 2, minWidth: 0 }}>
             {TABS.map((t) => (
               <button key={t.id} onClick={() => selectTab(t.id)} style={S.tabBtn(t.id === tab)}>

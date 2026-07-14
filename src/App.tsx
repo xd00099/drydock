@@ -48,6 +48,13 @@ export default function App() {
   // leaving the active terminal — Esc returns exactly where you were
   const [homeOverlay, setHomeOverlay] = useState(false)
   const [claudeVersion, setClaudeVersion] = useState<string | null | 'checking'>('checking')
+  // Panel collapse lives here (not in the panels) so ⌘B/⌘J can drive it; the
+  // panels render it. Same localStorage keys as before the lift.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('dd.sidebarCollapsed') === '1')
+  const [briefingCollapsed, setBriefingCollapsed] = useState(() => localStorage.getItem('dd.briefingCollapsed') === '1')
+  const [previewNonce, setPreviewNonce] = useState(0)
+  const setSidebarC = (c: boolean) => { setSidebarCollapsed(c); localStorage.setItem('dd.sidebarCollapsed', c ? '1' : '0') }
+  const setBriefingC = (c: boolean) => { setBriefingCollapsed(c); localStorage.setItem('dd.briefingCollapsed', c ? '1' : '0') }
   const [shellDirs, setShellDirs] = useState<Record<number, string>>({})
   // Artifacts a session rendered (right-panel Preview), kept in memory per tab
   // id; `unread` counts artifacts that arrived for a non-active tab.
@@ -155,6 +162,11 @@ export default function App() {
       case 'pane.focus.right': focusNavRef.current('ArrowRight'); break
       case 'pane.focus.up': focusNavRef.current('ArrowUp'); break
       case 'pane.focus.down': focusNavRef.current('ArrowDown'); break
+      case 'sidebar.toggle': setSidebarC(!sidebarCollapsed); break
+      case 'briefing.toggle': setBriefingC(!briefingCollapsed); break
+      // expand + land on the Preview sub-tab (no-op when the active tab has
+      // no briefing panel — plain shells don't mount one)
+      case 'briefing.preview': setBriefingC(false); setPreviewNonce((n) => n + 1); break
       default: break
     }
   }
@@ -1034,6 +1046,8 @@ export default function App() {
         onRefresh={refresh}
         updateBusyCount={updateBusyCount}
         onRestartForUpdate={restartForUpdate}
+        collapsed={sidebarCollapsed}
+        onSetCollapsed={setSidebarC}
       />
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
         {/* In-flow (not fixed at a guessed sidebar offset): it always spans
@@ -1222,6 +1236,9 @@ export default function App() {
             onRename={
               s ? (name) => invoke('set_session_name', { sessionId: s.session_id, name }).then(refresh).catch(console.error) : undefined
             }
+            collapsed={briefingCollapsed}
+            onSetCollapsed={setBriefingC}
+            previewNonce={previewNonce}
           />
         )
       })()}

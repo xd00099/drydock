@@ -22,6 +22,8 @@ type Props = {
   onRefresh: () => void // re-pull the snapshot after a folder mutation
   updateBusyCount: number // claude tabs mid-turn — gates the update restart
   onRestartForUpdate: () => Promise<void> // stash tabs + relaunch (App owns tabs)
+  collapsed: boolean // lifted to App so ⌘B can drive it
+  onSetCollapsed: (c: boolean) => void
 }
 
 type Group = { path: string; sessions: SessionView[]; latest: number }
@@ -126,8 +128,7 @@ type Naming =
   // click-away blur) must be a no-op, not freeze an AUTO title into an override
   | { kind: 'rename-session'; sid: string; initial: string }
 
-export default function Sidebar({ onHome, sessions, folders, hidden, activeSessionId, onResume, onTranscript, onTakeover, onNewSession, onToggleStar, onHide, onDelete, onRefresh, updateBusyCount, onRestartForUpdate }: Props) {
-  const [collapsed, setCollapsed] = useState(() => localStorage.getItem('dd.sidebarCollapsed') === '1')
+export default function Sidebar({ onHome, sessions, folders, hidden, activeSessionId, onResume, onTranscript, onTakeover, onNewSession, onToggleStar, onHide, onDelete, onRefresh, updateBusyCount, onRestartForUpdate, collapsed, onSetCollapsed }: Props) {
   // clamp on load AND on window resize: a width persisted on a big monitor must
   // not overflow a smaller window later
   const [width, setWidth] = useState(() => clampPanelWidth(loadNum('dd.sidebarWidth', 300)))
@@ -226,9 +227,6 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
   }, [drag])
-
-  const toggleSidebar = () =>
-    setCollapsed((c) => { const n = !c; localStorage.setItem('dd.sidebarCollapsed', n ? '1' : '0'); return n })
 
   const toggleGroup = (path: string) =>
     setClosed((prev) => {
@@ -332,7 +330,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
   if (collapsed) {
     return (
       <div style={S.rail}>
-        <button style={{ ...S.btn, fontSize: 15 }} title="Expand sidebar" onClick={toggleSidebar}>»</button>
+        <button style={{ ...S.btn, fontSize: 15 }} title="Expand sidebar (⌘B)" onClick={() => onSetCollapsed(false)}>»</button>
       </div>
     )
   }
@@ -550,7 +548,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
         >
           <NewFolderGlyph />
         </button>
-        <button style={{ ...S.btn, fontSize: 15 }} title="Collapse sidebar" onClick={toggleSidebar}>«</button>
+        <button style={{ ...S.btn, fontSize: 15 }} title="Collapse sidebar (⌘B)" onClick={() => onSetCollapsed(true)}>«</button>
       </div>
 
       {starred.length > 0 && (
