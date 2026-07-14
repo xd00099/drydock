@@ -1393,8 +1393,13 @@ export default function App() {
         const s = t?.sessionId ? sessions.find((x) => x.session_id === t.sessionId) : undefined
         return (
           // z 105: over the settings/home overlays (85) and takeover (100),
-          // under the quit guard (110); compositing layer for WebGL, as ever
-          <div style={{ position: 'fixed', inset: 0, zIndex: 105, background: 'rgba(4,6,10,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', transform: 'translateZ(0)' }}>
+          // under the quit guard (110); compositing layer for WebGL, as ever.
+          // Steal focus from the terminal: otherwise the confirming Enter also
+          // lands in xterm and gets typed into the very session being closed.
+          <div
+            ref={(el) => { if (el && !el.dataset.focused) { el.dataset.focused = '1'; el.focus() } }}
+            tabIndex={-1}
+            style={{ position: 'fixed', inset: 0, zIndex: 105, background: 'rgba(4,6,10,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', transform: 'translateZ(0)', outline: 'none' }}>
             <div style={{ background: '#11161f', border: '1px solid #2c3647', borderRadius: 10, padding: '18px 22px', width: 380, fontFamily: 'system-ui' }}>
               <div style={{ color: '#e8edf4', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Close live session?</div>
               <div style={{ color: '#9aa3af', fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
