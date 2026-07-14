@@ -58,7 +58,8 @@ export default function App() {
   // panels render it. Same localStorage keys as before the lift.
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('dd.sidebarCollapsed') === '1')
   const [briefingCollapsed, setBriefingCollapsed] = useState(() => localStorage.getItem('dd.briefingCollapsed') === '1')
-  const [previewNonce, setPreviewNonce] = useState(0)
+  // ⌘⇧B/P/J: expand the briefing panel and land on a specific sub-tab
+  const [panelJump, setPanelJump] = useState<{ tab: 'briefing' | 'project' | 'preview'; n: number }>({ tab: 'preview', n: 0 })
   const setSidebarC = (c: boolean) => { setSidebarCollapsed(c); localStorage.setItem('dd.sidebarCollapsed', c ? '1' : '0') }
   const setBriefingC = (c: boolean) => { setBriefingCollapsed(c); localStorage.setItem('dd.briefingCollapsed', c ? '1' : '0') }
   const [shellDirs, setShellDirs] = useState<Record<number, string>>({})
@@ -205,9 +206,11 @@ export default function App() {
       case 'pane.focus.down': focusNavRef.current('ArrowDown'); break
       case 'sidebar.toggle': setSidebarC(!sidebarCollapsed); break
       case 'briefing.toggle': setBriefingC(!briefingCollapsed); break
-      // expand + land on the Preview sub-tab (no-op when the active tab has
+      // expand + land on a specific sub-tab (no-op when the active tab has
       // no briefing panel — plain shells don't mount one)
-      case 'briefing.preview': setBriefingC(false); setPreviewNonce((n) => n + 1); break
+      case 'briefing.preview': setBriefingC(false); setPanelJump((p) => ({ tab: 'preview', n: p.n + 1 })); break
+      case 'briefing.tab.briefing': setBriefingC(false); setPanelJump((p) => ({ tab: 'briefing', n: p.n + 1 })); break
+      case 'briefing.tab.project': setBriefingC(false); setPanelJump((p) => ({ tab: 'project', n: p.n + 1 })); break
       case 'tab.prev': cycleTab(-1); break
       case 'tab.next': cycleTab(1); break
       case 'session.new': setNewDialog(true); break
@@ -1362,7 +1365,7 @@ export default function App() {
             }
             collapsed={briefingCollapsed}
             onSetCollapsed={setBriefingC}
-            previewNonce={previewNonce}
+            panelJump={panelJump}
           />
         )
       })()}

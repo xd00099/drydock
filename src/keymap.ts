@@ -13,6 +13,7 @@ export type ActionId =
   | 'tab.close' | 'session.star' | 'pane.zoom'
   | 'pane.focus.left' | 'pane.focus.right' | 'pane.focus.up' | 'pane.focus.down'
   | 'session.new' | 'sidebar.toggle' | 'briefing.toggle' | 'briefing.preview'
+  | 'briefing.tab.briefing' | 'briefing.tab.project'
   | 'settings.toggle' | 'tab.prev' | 'tab.next'
 
 export type Category = 'General' | 'Tabs' | 'Panels' | 'Panes'
@@ -35,7 +36,9 @@ export const ACTIONS: ActionDef[] = [
   { id: 'tab.next', label: 'Next tab', category: 'Tabs', default: 'meta+shift+]' },
   { id: 'sidebar.toggle', label: 'Toggle sidebar', category: 'Panels', default: 'meta+b' },
   { id: 'briefing.toggle', label: 'Toggle briefing panel', category: 'Panels', default: 'meta+j' },
-  { id: 'briefing.preview', label: 'Go to artifact preview', category: 'Panels', default: 'meta+shift+j' },
+  { id: 'briefing.tab.briefing', label: 'Go to Briefing tab', category: 'Panels', default: 'meta+shift+b' },
+  { id: 'briefing.tab.project', label: 'Go to Project tab', category: 'Panels', default: 'meta+shift+p' },
+  { id: 'briefing.preview', label: 'Go to Artifacts tab', category: 'Panels', default: 'meta+shift+j' },
   { id: 'pane.zoom', label: 'Zoom pane', category: 'Panes', default: 'meta+shift+enter' },
   { id: 'pane.focus.left', label: 'Focus pane left', category: 'Panes', default: 'meta+alt+arrowleft' },
   { id: 'pane.focus.right', label: 'Focus pane right', category: 'Panes', default: 'meta+alt+arrowright' },

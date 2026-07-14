@@ -63,8 +63,20 @@ export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs,
     activeChipRef.current?.scrollIntoView({ inline: 'nearest', block: 'nearest' })
   }, [activeId])
 
+  // ⌘digit badge, mirroring gotoTab's addressing exactly: visual order across
+  // both lanes; with more than 9 tabs only 1-8 are direct and ⌘9 = LAST.
+  const ordered = [...sessionTabs, ...termTabs]
+  const chipNum = (id: number): string | null => {
+    const pos = ordered.findIndex((x) => x.id === id) + 1
+    if (pos === 0) return null
+    if (ordered.length <= 9) return String(pos)
+    if (pos <= 8) return String(pos)
+    return pos === ordered.length ? '9' : null
+  }
+
   const chip = (t: Tab, label: string, accent?: string, tip?: string, attention?: boolean, hue?: number | null) => {
     const staged = stagedIds.includes(t.id)
+    const num = chipNum(t.id)
     return (
       <div
         key={t.id}
@@ -90,6 +102,9 @@ export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs,
           opacity: t.id === draggedId ? 0.4 : 1,
         }}
       >
+        {num && (
+          <span title={`⌘${num}`} style={{ flexShrink: 0, fontSize: 9, color: 'var(--dd-dim)', fontFamily: 'ui-monospace, monospace', lineHeight: 1 }}>{num}</span>
+        )}
         {attention && (
           <span className="dd-attn" title="waiting for your input" style={{ flexShrink: 0, width: 7, height: 7, borderRadius: '50%', background: 'var(--dd-warn)' }} />
         )}

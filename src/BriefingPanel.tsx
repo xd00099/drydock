@@ -32,7 +32,8 @@ type Props = {
   onReviewSend?: (message: string, endReview: boolean) => void
   collapsed: boolean // lifted to App so ⌘J can drive it
   onSetCollapsed: (c: boolean) => void
-  previewNonce: number // ⌘⇧J: each bump jumps to the artifact preview sub-tab
+  // ⌘⇧B/P/J: each bump lands on the named sub-tab (App expands the panel)
+  panelJump: { tab: RightTab; n: number }
 }
 
 const TABS: { id: RightTab; label: string }[] = [
@@ -1348,8 +1349,13 @@ function ReviewPanel({
   )
 }
 
-export default function BriefingPanel({ sessionId, projectPath, starred, artifacts, label, onToggleStar, onRename, initialUnread, review, reviewAccent, onReviewQueue, onReviewDiscard, onReviewSend, collapsed, onSetCollapsed, previewNonce }: Props) {
+export default function BriefingPanel({ sessionId, projectPath, starred, artifacts, label, onToggleStar, onRename, initialUnread, review, reviewAccent, onReviewQueue, onReviewDiscard, onReviewSend, collapsed, onSetCollapsed, panelJump }: Props) {
   const panelChord = useChord('briefing.toggle')
+  const tabChords: Record<RightTab, string> = {
+    briefing: useChord('briefing.tab.briefing'),
+    project: useChord('briefing.tab.project'),
+    preview: useChord('briefing.preview'),
+  }
   const [card, setCard] = useState<CardView | null>(null)
   const [files, setFiles] = useState<FileTouch[]>([])
   const [tasks, setTasks] = useState<TasksView | null>(null)
@@ -1403,15 +1409,15 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
 
   const selectTab = (t: RightTab) => { setTab(t); localStorage.setItem('dd.rightTab', t) }
 
-  // ⌘⇧J: App bumps the nonce; jump to the artifact preview sub-tab.
-  const nonceSeen = useRef(previewNonce)
+  // ⌘⇧B/P/J: App bumps the nonce; jump to the named sub-tab.
+  const nonceSeen = useRef(panelJump.n)
   useEffect(() => {
-    if (previewNonce !== nonceSeen.current) {
-      nonceSeen.current = previewNonce
-      selectTab('preview')
+    if (panelJump.n !== nonceSeen.current) {
+      nonceSeen.current = panelJump.n
+      selectTab(panelJump.tab)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [previewNonce])
+  }, [panelJump])
 
   // collapsed: a thin rail with an expand button, mirroring the left sidebar
   if (collapsed) {
@@ -1433,9 +1439,14 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
           <button onClick={() => onSetCollapsed(true)} title={`Collapse panel (${panelChord})`} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--dd-text3)', fontSize: 15, padding: 0, lineHeight: 1, alignSelf: 'flex-end', marginBottom: 4 }}>»</button>
           <div style={{ display: 'flex', flex: 1, gap: 2, minWidth: 0 }}>
             {TABS.map((t) => (
-              <button key={t.id} onClick={() => selectTab(t.id)} style={S.tabBtn(t.id === tab)}>
+              <button key={t.id} onClick={() => selectTab(t.id)} title={`${t.label} (${tabChords[t.id]})`} style={S.tabBtn(t.id === tab)}>
                 {t.label}
                 {t.id === 'preview' && artifacts.length > 0 ? ` (${artifacts.length})` : ''}
+                {/* chord hint only when the panel is wide enough to keep the
+                    three labels on one uncramped row */}
+                {width >= 330 && (
+                  <span style={{ marginLeft: 4, fontSize: 9, color: 'var(--dd-dim)' }}>{tabChords[t.id]}</span>
+                )}
               </button>
             ))}
           </div>
