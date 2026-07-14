@@ -157,6 +157,35 @@ function ShortcutsPanel() {
   )
 }
 
+function AppearancePanel() {
+  const [theme, setTheme] = useSetting('theme', 'dark')
+  const options: { id: string; label: string; desc: string }[] = [
+    { id: 'dark', label: 'Dark', desc: 'The original Drydock palette.' },
+    { id: 'light', label: 'Light', desc: 'Bright chrome, dark text.' },
+    { id: 'system', label: 'System', desc: 'Follow the macOS appearance.' },
+  ]
+  return (
+    <div>
+      <div style={{ ...S.rowDesc, padding: '4px 0 10px' }}>
+        Applies instantly — terminals recolor in place.
+      </div>
+      {options.map((o) => {
+        const on = theme === o.id
+        return (
+          <button key={o.id} onClick={() => setTheme(o.id)}
+            style={{ display: 'flex', alignItems: 'center', gap: 12, width: '100%', textAlign: 'left', background: on ? 'var(--dd-btn)' : 'none', border: '1px solid ' + (on ? 'var(--dd-accent-border)' : 'var(--dd-border)'), borderRadius: 8, padding: '10px 14px', marginBottom: 8, cursor: 'pointer' }}>
+            <span style={{ width: 14, height: 14, borderRadius: '50%', flexShrink: 0, border: '1px solid ' + (on ? 'var(--dd-accent)' : 'var(--dd-border3)'), background: on ? 'var(--dd-accent)' : 'none', boxShadow: on ? 'inset 0 0 0 3px var(--dd-btn)' : 'none' }} />
+            <span>
+              <span style={{ display: 'block', color: 'var(--dd-text)', fontSize: 13 }}>{o.label}</span>
+              <span style={{ display: 'block', color: 'var(--dd-dim)', fontSize: 11, marginTop: 2 }}>{o.desc}</span>
+            </span>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 export default function SettingsOverlay({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [section, setSection] = useState<Section>('shortcuts')
   if (!open) return null
@@ -177,7 +206,7 @@ export default function SettingsOverlay({ open, onClose }: { open: boolean; onCl
         <div style={S.panel}>
           {section === 'general' && <GeneralPanel />}
           {section === 'shortcuts' && <ShortcutsPanel />}
-          {section === 'appearance' && <div style={S.stub}>Theming arrives with the appearance update — for now Drydock ships dark.</div>}
+          {section === 'appearance' && <AppearancePanel />}
         </div>
       </div>
     </div>
