@@ -4,6 +4,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { SessionView, UsageOverview } from './types'
 import { fmtTokens, sessionColor, sessionLabel } from './types'
 import RecapDigest from './RecapDigest'
+import { useChord } from './keymap'
 
 // Home: the global surface, shown in the center pane whenever no tab is
 // active (⌘0 / the DRYDOCK wordmark bring it back). Also mounted inside the
@@ -25,6 +26,8 @@ const S = {
 }
 
 export default function HomeView({ sessions, sessionsReady, onFocusSession }: Props) {
+  const homeChord = useChord('home.show')
+  const newChord = useChord('session.new')
   const [usage, setUsage] = useState<UsageOverview | null>(null)
 
   const bySid = new Map(sessions.map((s) => [s.session_id, s]))
@@ -48,7 +51,7 @@ export default function HomeView({ sessions, sessionsReady, onFocusSession }: Pr
   return (
     <div style={{ height: '100%', overflowY: 'auto', padding: '18px 22px', fontFamily: 'system-ui', fontSize: 12, color: '#c8cdd5', boxSizing: 'border-box' }}>
       <div style={{ ...S.dim, fontSize: 12, marginBottom: 14 }}>
-        Pick a session on the left, or ＋ for a shell — ⌘0 returns here anytime.
+        Pick a session on the left, {newChord} starts one in any folder, or ＋ for a shell — {homeChord} returns here anytime.
       </div>
 
       {waiting.length > 0 && (

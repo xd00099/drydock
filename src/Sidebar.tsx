@@ -5,6 +5,7 @@ import { clampPanelWidth, clip, loadNum, relAge, sessionAutoLabel, sessionColor,
 import ResizeHandle from './ResizeHandle'
 import LiveIndicator from './LiveIndicator'
 import VersionFooter from './VersionFooter'
+import { useChord } from './keymap'
 
 type Props = {
   onHome: () => void // show the Home view (recap log + usage) in the center
@@ -130,6 +131,9 @@ type Naming =
   | { kind: 'rename-session'; sid: string; initial: string }
 
 export default function Sidebar({ onHome, sessions, folders, hidden, activeSessionId, onResume, onTranscript, onTakeover, onNewSession, onToggleStar, onHide, onDelete, onRefresh, updateBusyCount, onRestartForUpdate, collapsed, onSetCollapsed, onOpenSettings }: Props) {
+  const sidebarChord = useChord('sidebar.toggle')
+  const homeChord = useChord('home.show')
+  const transcriptChord = useChord('transcript.toggle')
   // clamp on load AND on window resize: a width persisted on a big monitor must
   // not overflow a smaller window later
   const [width, setWidth] = useState(() => clampPanelWidth(loadNum('dd.sidebarWidth', 300)))
@@ -331,7 +335,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
   if (collapsed) {
     return (
       <div style={S.rail}>
-        <button style={{ ...S.btn, fontSize: 15 }} title="Expand sidebar (⌘B)" onClick={() => onSetCollapsed(false)}>»</button>
+        <button style={{ ...S.btn, fontSize: 15 }} title={`Expand sidebar (${sidebarChord})`} onClick={() => onSetCollapsed(false)}>»</button>
       </div>
     )
   }
@@ -401,7 +405,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
           <span
             className="dd-rowbtn"
             role="button"
-            title={'Read transcript (read-only) — never resumes\n⌘⇧T toggles it for the active session'}
+            title={`Read transcript (read-only) — never resumes\n${transcriptChord} toggles it for the active session`}
             onClick={(e) => { e.stopPropagation(); dragSafe(() => onTranscript(s))() }}
             onPointerDown={(e) => e.stopPropagation()}
             style={{ flexShrink: 0, color: '#8ea0b5', fontSize: 12, lineHeight: 1, padding: '0 2px' }}
@@ -531,7 +535,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
       <div style={S.bar}>
         <span
           onClick={onHome}
-          title="Home — recap log & usage (⌘0)"
+          title={`Home — recap log & usage (${homeChord})`}
           style={{ flex: 1, fontWeight: 700, color: '#e8edf4', cursor: 'pointer' }}
         >
           DRYDOCK
@@ -549,7 +553,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
         >
           <NewFolderGlyph />
         </button>
-        <button style={{ ...S.btn, fontSize: 15 }} title="Collapse sidebar (⌘B)" onClick={() => onSetCollapsed(true)}>«</button>
+        <button style={{ ...S.btn, fontSize: 15 }} title={`Collapse sidebar (${sidebarChord})`} onClick={() => onSetCollapsed(true)}>«</button>
       </div>
 
       {starred.length > 0 && (

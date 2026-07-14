@@ -5,6 +5,7 @@ import { clampPanelWidth, clip, fmtTokens, loadNum, relAge, baseName, type Artif
 import ArtifactView from './ArtifactView'
 import TimeMachine from './TimeMachine'
 import ResizeHandle from './ResizeHandle'
+import { useChord } from './keymap'
 
 type RightTab = 'briefing' | 'project' | 'preview'
 
@@ -1348,6 +1349,7 @@ function ReviewPanel({
 }
 
 export default function BriefingPanel({ sessionId, projectPath, starred, artifacts, label, onToggleStar, onRename, initialUnread, review, reviewAccent, onReviewQueue, onReviewDiscard, onReviewSend, collapsed, onSetCollapsed, previewNonce }: Props) {
+  const panelChord = useChord('briefing.toggle')
   const [card, setCard] = useState<CardView | null>(null)
   const [files, setFiles] = useState<FileTouch[]>([])
   const [tasks, setTasks] = useState<TasksView | null>(null)
@@ -1415,7 +1417,7 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
   if (collapsed) {
     return (
       <div style={{ width: 30, minWidth: 30, height: '100%', background: '#0b0e13', borderLeft: '1px solid #1d2530', display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 8 }}>
-        <button onClick={() => onSetCollapsed(false)} title="Expand panel (⌘J)" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#7d8794', fontSize: 15, padding: 0 }}>«</button>
+        <button onClick={() => onSetCollapsed(false)} title={`Expand panel (${panelChord})`} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#7d8794', fontSize: 15, padding: 0 }}>«</button>
       </div>
     )
   }
@@ -1428,7 +1430,7 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
       />
       <div style={{ width, minWidth: width, boxSizing: 'border-box', background: '#0b0e13', fontFamily: 'system-ui', fontSize: 12, display: 'flex', flexDirection: 'column', height: '100%' }}>
         <div style={{ display: 'flex', alignItems: 'stretch', gap: 6, padding: '12px 12px 0', flex: 'none' }}>
-          <button onClick={() => onSetCollapsed(true)} title="Collapse panel (⌘J)" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#7d8794', fontSize: 15, padding: 0, lineHeight: 1, alignSelf: 'flex-end', marginBottom: 4 }}>»</button>
+          <button onClick={() => onSetCollapsed(true)} title={`Collapse panel (${panelChord})`} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#7d8794', fontSize: 15, padding: 0, lineHeight: 1, alignSelf: 'flex-end', marginBottom: 4 }}>»</button>
           <div style={{ display: 'flex', flex: 1, gap: 2, minWidth: 0 }}>
             {TABS.map((t) => (
               <button key={t.id} onClick={() => selectTab(t.id)} style={S.tabBtn(t.id === tab)}>

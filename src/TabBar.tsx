@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { SessionView, Tab } from './types'
 import { baseName, clip, sessionColor, sessionLabel } from './types'
+import { useChord } from './keymap'
 
 type Props = {
   tabs: Tab[]
@@ -47,6 +48,8 @@ const S = {
 }
 
 export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs, unread, draggedId, insertMark, onChipPress, onChipDouble, onChipMenu, onSelect, onClose, onNewShell, onHome }: Props) {
+  const homeChord = useChord('home.show')
+  const shellChord = useChord('shell.new')
   const sessionTabs = tabs.filter((t) => !t.terminal)
   const termTabs = tabs.filter((t) => t.terminal)
   const termNames = terminalLabels(termTabs, shellDirs)
@@ -137,13 +140,13 @@ export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs,
           )}
           {/* browser new-tab metaphor: ＋ opens Home (the launchpad), where a
               session is picked or started — spawning one blind needs a project */}
-          <button onClick={onHome} title="Home — pick or start a session (⌘0)" style={S.plus}>＋</button>
+          <button onClick={onHome} title={`Home — pick or start a session (${homeChord})`} style={S.plus}>＋</button>
         </div>
       )}
       <div data-lane="t" style={{ ...S.lane, borderTop: sessionTabs.length > 0 ? '1px solid #161c25' : undefined }}>
         <span style={S.laneLabel}>TERMINALS</span>
         {laneChips(termTabs.map((t) => ({ t, el: chip(t, termNames[t.id], undefined, shellDirs[t.id] ?? 'shell') })), true)}
-        <button onClick={onNewShell} title="New shell tab (⌘T)" style={S.plus}>＋</button>
+        <button onClick={onNewShell} title={`New shell tab (${shellChord})`} style={S.plus}>＋</button>
       </div>
     </div>
   )
