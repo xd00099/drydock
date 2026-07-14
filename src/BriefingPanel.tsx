@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { clampPanelWidth, clip, fmtTokens, loadNum, relAge, baseName, type Artifact, type ArtifactKind, type CardView, type FileTouch, type LayoutWarning, type McpServer, type ReviewPrompt, type ReviewState, type SavedArtifact, type SessionUsage, type Skill, type TasksView, type TimelineItem } from './types'
+import { clampPanelWidth, clip, fmtTokens, loadNum, relAge, baseName, type Artifact, type ArtifactKind, type CardView, type FileTouch, type McpServer, type ReviewPrompt, type ReviewState, type SavedArtifact, type SessionUsage, type Skill, type TasksView, type TimelineItem } from './types'
 import ArtifactView from './ArtifactView'
 import TimeMachine from './TimeMachine'
 import ResizeHandle from './ResizeHandle'
@@ -29,7 +29,6 @@ type Props = {
   onReviewQueue?: (p: ReviewPrompt) => void
   onReviewDiscard?: (index: number) => void
   onReviewSend?: (message: string, endReview: boolean) => void
-  onReviewLayout?: (w: LayoutWarning[]) => void
 }
 
 const TABS: { id: RightTab; label: string }[] = [
@@ -917,7 +916,6 @@ function PreviewTab({
   onQueue,
   onDiscard,
   onSend,
-  onLayout,
 }: {
   artifacts: Artifact[]
   sessionId: string | null
@@ -926,7 +924,6 @@ function PreviewTab({
   onQueue?: (p: ReviewPrompt) => void
   onDiscard?: (index: number) => void
   onSend?: (message: string, endReview: boolean) => void
-  onLayout?: (w: LayoutWarning[]) => void
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [full, setFull] = useState(false)
@@ -949,10 +946,6 @@ function PreviewTab({
   // ---- interactive review (docs/artifact-review.md) ----
   const reviewable = review !== null
   const [reviewOn, setReviewOn] = useState(false) // annotate vs explore
-  // Layout gate: which artifact the latest audit belongs to + its error count;
-  // dismissal is per-artifact (reset when the shown artifact changes).
-  const [gate, setGate] = useState<{ artifactId: string; errors: number } | null>(null)
-  const [gateDismissed, setGateDismissed] = useState(false)
 
   // ⌘I toggles annotate mode while the Artifacts tab is up. Capture-phase, and
   // the SDK forwards the same hotkey from inside the iframe (dd-artifact:toggleMode).
@@ -1075,14 +1068,10 @@ function PreviewTab({
           : null
 
   // ---- review wiring for the mounted artifact ----
-  const shownId = shown?.id ?? null
   // Review is wired ONLY to the newest LIVE artifact: annotating an old
-  // gallery/saved copy would feed stale selectors and a stale layout audit
-  // into the live session's loop.
+  // gallery/saved copy would feed stale selectors into the live session's loop.
   const latestLiveId = artifacts.length ? artifacts[artifacts.length - 1].id : null
   const reviewTarget = reviewable && !!current && !current.saved && current.id === latestLiveId && shown?.kind === 'html'
-  // a different artifact means a fresh layout gate
-  useEffect(() => { setGateDismissed(false); setGate(null) }, [shownId])
 
   // The iframe is UNTRUSTED (its scripts include the artifact's own): coerce
   // every field at this boundary so a malformed payload can neither crash the
@@ -1112,23 +1101,6 @@ function PreviewTab({
       const p = toReviewPrompt(m.prompt)
       if (p && onQueue) onQueue(p)
     } else if (t === 'dd-artifact:toggleMode') setReviewOn((v) => !v)
-    else if (t === 'dd-artifact:layout' && Array.isArray(m.layout_warnings)) {
-      const warnings = (m.layout_warnings as unknown[])
-        .map((w): LayoutWarning | null => {
-          if (!w || typeof w !== 'object') return null
-          const o = w as Record<string, unknown>
-          return {
-            kind: asStr(o.kind) || 'layout-warning',
-            selector: asStr(o.selector),
-            overflowPx: Number(o.overflowPx) || 0,
-            viewportWidth: Number(o.viewportWidth) || 0,
-            severity: o.severity === 'warning' ? 'warning' : 'error',
-          }
-        })
-        .filter((w): w is LayoutWarning => w !== null)
-      onLayout?.(warnings)
-      if (shownId) setGate({ artifactId: shownId, errors: warnings.filter((w) => w.severity === 'error').length })
-    }
   }
   // "Send & end" also leaves annotate mode — ending the review should read as
   // an ending, not stay armed for more clicks.
@@ -1136,17 +1108,6 @@ function PreviewTab({
     onSend?.(m, end)
     if (end) setReviewOn(false)
   }
-  // Curtain: mask an artifact whose in-iframe audit reported error-severity
-  // defects, until a clean audit, "Show anyway", or the safety timeout. The
-  // model hears about the same warnings through the poll, so a broken render
-  // usually fixes itself before the human ever needs the curtain lifted.
-  const gateActive = reviewTarget && !!shown && gate?.artifactId === shown.id && (gate?.errors ?? 0) > 0
-  const curtainUp = gateActive && !gateDismissed
-  useEffect(() => {
-    if (!curtainUp) return
-    const t = window.setTimeout(() => setGateDismissed(true), 12000) // review is never blocked forever
-    return () => window.clearTimeout(t)
-  }, [curtainUp])
   // Presence counts as activity: a session blocked in await_artifact_feedback
   // surfaces the panel even before the first annotation, so the user can see
   // "Claude is waiting" and reach Send & end.
@@ -1230,7 +1191,6 @@ function PreviewTab({
             ) : (
               <div style={{ ...S.muted, padding: 12 }}>loading…</div>
             )}
-            {gateActive && <LayoutGate curtain={curtainUp} errors={gate?.errors ?? 0} onReveal={() => setGateDismissed(true)} />}
           </div>
           {reviewPanelUp && review && (
             <ReviewPanel review={review} accent={accent} annotateOn={reviewOn} onDiscard={onDiscard} onSend={sendFromPanel} />
@@ -1272,7 +1232,6 @@ function PreviewTab({
               ) : (
                 <div style={{ ...S.muted, padding: 12 }}>loading…</div>
               )}
-              {gateActive && <LayoutGate curtain={curtainUp} errors={gate?.errors ?? 0} onReveal={() => setGateDismissed(true)} />}
             </div>
             {reviewPanelUp && review && (
               <ReviewPanel review={review} accent={accent} annotateOn={reviewOn} onDiscard={onDiscard} onSend={sendFromPanel} />
@@ -1280,29 +1239,6 @@ function PreviewTab({
           </div>
         </div>
       )}
-    </div>
-  )
-}
-
-/** Open-time layout gate: a curtain while the artifact's own audit reports
- *  error-severity findings (with Show anyway + auto-reveal), then a thin
- *  persistent banner once revealed. Positioned over the artifact frame. */
-function LayoutGate({ curtain, errors, onReveal }: { curtain: boolean; errors: number; onReveal: () => void }) {
-  if (curtain)
-    return (
-      <div style={{ position: 'absolute', inset: 0, background: 'rgba(11,14,19,.96)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, zIndex: 5 }}>
-        <div style={{ color: '#e8edf4', fontSize: 13, fontWeight: 600, fontFamily: 'system-ui' }}>Layout issues detected</div>
-        <div style={{ color: '#7d8794', fontSize: 11, maxWidth: 280, textAlign: 'center', lineHeight: 1.45, fontFamily: 'system-ui' }}>
-          {errors} error-severity layout {errors === 1 ? 'finding' : 'findings'}. Claude has been notified and usually re-renders a fix; this reveals on its own in a few seconds.
-        </div>
-        <button onClick={onReveal} style={{ background: '#2a2f3a', color: '#e8edf4', border: '1px solid #3c4557', borderRadius: 6, padding: '6px 12px', fontSize: 12, cursor: 'pointer', fontFamily: 'system-ui' }}>
-          Show anyway
-        </button>
-      </div>
-    )
-  return (
-    <div style={{ position: 'absolute', left: 0, right: 0, top: 0, background: 'rgba(90,45,45,.85)', color: '#f0c9c9', fontSize: 10, padding: '3px 8px', zIndex: 5, fontFamily: 'system-ui' }}>
-      layout issues detected — Claude has been notified
     </div>
   )
 }
@@ -1408,7 +1344,7 @@ function ReviewPanel({
   )
 }
 
-export default function BriefingPanel({ sessionId, projectPath, starred, artifacts, label, onToggleStar, onRename, initialUnread, review, reviewAccent, onReviewQueue, onReviewDiscard, onReviewSend, onReviewLayout }: Props) {
+export default function BriefingPanel({ sessionId, projectPath, starred, artifacts, label, onToggleStar, onRename, initialUnread, review, reviewAccent, onReviewQueue, onReviewDiscard, onReviewSend }: Props) {
   const [card, setCard] = useState<CardView | null>(null)
   const [files, setFiles] = useState<FileTouch[]>([])
   const [tasks, setTasks] = useState<TasksView | null>(null)
@@ -1504,7 +1440,6 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
             onQueue={onReviewQueue}
             onDiscard={onReviewDiscard}
             onSend={onReviewSend}
-            onLayout={onReviewLayout}
           />
         ) : tab === 'briefing' ? (
           <BriefingTab sessionId={sessionId} card={card} starred={starred} files={files} tasks={tasks} usage={usage} projectPath={projectPath} label={label} onToggleStar={onToggleStar} onRename={onRename} />

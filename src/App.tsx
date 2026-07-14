@@ -11,7 +11,7 @@ import BriefingPanel from './BriefingPanel'
 import HomeView from './HomeView'
 import FindBar from './FindBar'
 import { useSessions } from './useSessions'
-import type { Artifact, ArtifactKind, LayoutWarning, PaneSearch, RestoreTab, ReviewPrompt, ReviewState, SessionView, Tab, TakeoverInfo } from './types'
+import type { Artifact, ArtifactKind, PaneSearch, RestoreTab, ReviewPrompt, ReviewState, SessionView, Tab, TakeoverInfo } from './types'
 import { EMPTY_REVIEW, baseName, clip, sessionColor, sessionLabel, uuidv4 } from './types'
 import {
   GUTTER, canSplit, clampRatio, closeStaged, dropOnStage, focusNeighbor, hitTest,
@@ -52,7 +52,7 @@ export default function App() {
   const [artifactsByTab, setArtifactsByTab] = useState<Record<number, Artifact[]>>({})
   const [unread, setUnread] = useState<Record<number, number>>({})
   // Interactive artifact review, per tab: queued annotations, sent history,
-  // latest layout audit, and agent presence (docs/artifact-review.md). ALL
+  // and agent presence (docs/artifact-review.md). ALL
   // writes go through mutateReview: it updates the ref mirror SYNCHRONOUSLY
   // (before React flushes), so two message events in one tick (queue then
   // send) never read stale state, and reviewSend's invoke sees every queued
@@ -849,7 +849,7 @@ export default function App() {
 
   // The session's transcript rewound (Claude Code Esc-Esc): artifacts rendered
   // after the rewound-to point show a discarded future — the backend pruned
-  // them; drop them here too, and clear the review round's pills/layout (they
+  // them; drop them here too, and clear the review round's pills (they
   // annotated that discarded timeline).
   useEffect(() => {
     let cancelled = false
@@ -869,8 +869,8 @@ export default function App() {
       }
       mutateReview((prev) => {
         const cur = prev[pty]
-        if (!cur || (cur.prompts.length === 0 && cur.layout.length === 0)) return prev
-        return { ...prev, [pty]: { ...cur, prompts: [], layout: [] } }
+        if (!cur || cur.prompts.length === 0) return prev
+        return { ...prev, [pty]: { ...cur, prompts: [] } }
       })
     }).then((u) => { if (cancelled) u(); else un = u })
     return () => { cancelled = true; un?.() }
@@ -973,13 +973,6 @@ export default function App() {
         .then(() => invoke('pty_write', { id: tabId, data: bytesToB64(enc.encode('\r')) }))
         .catch(console.error)
     }
-  }
-
-  // Latest layout audit from the mounted artifact: keep for the curtain, and
-  // hand to the backend so the next poll delivers it (persistent-marked there).
-  const reviewLayout = (tabId: number, warnings: LayoutWarning[]) => {
-    invoke('report_layout_warnings', { ptyId: tabId, warnings }).catch(console.error)
-    mutateReview((prev) => ({ ...prev, [tabId]: { ...(prev[tabId] ?? EMPTY_REVIEW), layout: warnings } }))
   }
 
   // (unread badges clear via the staged-tabs effect above — landing on stage,
@@ -1213,7 +1206,6 @@ export default function App() {
             onReviewQueue={(p) => reviewQueue(activeTab.id, p)}
             onReviewDiscard={(i) => reviewDiscard(activeTab.id, i)}
             onReviewSend={(m, end) => reviewSend(activeTab.id, m, end)}
-            onReviewLayout={(w) => reviewLayout(activeTab.id, w)}
             onToggleStar={
               s ? () => invoke('set_starred', { sessionId: s.session_id, starred: !s.starred }).then(refresh) : undefined
             }

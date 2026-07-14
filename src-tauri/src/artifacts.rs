@@ -57,8 +57,6 @@ const POLL_BLOCK_MS: u64 = 25_000;
 /// artifact can't balloon memory; excess is dropped (the render still worked).
 const MAX_PROMPTS_PER_SESSION: usize = 200;
 const MAX_PROMPT_LEN: usize = 8 * 1024;
-/// Cap on remembered delivered-layout-warning keys (repeat/persistent tracking).
-const MAX_DELIVERED_LAYOUT_KEYS: usize = 200;
 
 /// System-prompt nudge injected via `--append-system-prompt`. MUST stay a single
 /// line with NO single quotes/apostrophes — it is spliced single-quoted into the
@@ -68,7 +66,7 @@ pub const NUDGE: &str = "You are running inside Drydock, which has an Artifacts 
 
 const TOOL_DESCRIPTION: &str = "Render a self-contained visual artifact (HTML page/UI mockup, SVG image/diagram, or Markdown document) in Drydock's Artifacts side panel so the user can SEE it immediately. Pass EITHER `path` (preferred — a file you already wrote; Drydock reads it, so you don't resend or regenerate its content) OR inline `content` (only for artifacts not saved to a file). Renders locally inside Drydock and is NOT published to claude.ai. For an HTML plan/mockup you want reviewed, follow the render with await_artifact_feedback to collect the user's inline annotations.";
 
-const AWAIT_TOOL_DESCRIPTION: &str = "Block until the user sends inline feedback on the HTML artifact you rendered for review, then return it. Call this after render_artifact when you want the user to annotate a plan or mockup. Returns {status:\"feedback\", prompts:[{prompt, selector, tag, text, target?}], layout_warnings?}, or {status:\"waiting\"} after a short wait when nothing has arrived yet (just call it again), or {status:\"ended\"} when the user finishes the review. Follow the returned next_step. Pass `reply` to post a short message into the review panel first.";
+const AWAIT_TOOL_DESCRIPTION: &str = "Block until the user sends inline feedback on the HTML artifact you rendered for review, then return it. Call this after render_artifact when you want the user to annotate a plan or mockup. Returns {status:\"feedback\", prompts:[{prompt, selector, tag, text, target?}]}, or {status:\"waiting\"} after a short wait when nothing has arrived yet (just call it again), or {status:\"ended\"} when the user finishes the review. Follow the returned next_step. Pass `reply` to post a short message into the review panel first.";
 
 /// Reject content larger than this (bytes). Bounds webview memory; the model
 /// gets an isError result it can react to.
@@ -162,38 +160,13 @@ pub struct ReviewPrompt {
     pub target: Option<Value>,
 }
 
-/// One render-time layout defect the in-iframe audit found. `persistent` flips to
-/// true once its `kind:selector` key has already been delivered to the model, so
-/// a re-report after a failed fix reads as "still broken", not "fresh".
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct LayoutWarning {
-    #[serde(default)]
-    pub kind: String,
-    #[serde(default)]
-    pub selector: String,
-    #[serde(default, rename = "overflowPx")]
-    pub overflow_px: f64,
-    #[serde(default, rename = "viewportWidth")]
-    pub viewport_width: f64,
-    #[serde(default)]
-    pub severity: String,
-    #[serde(default)]
-    pub persistent: bool,
-}
-
 /// One session's pending feedback, drained by `await_artifact_feedback`.
 #[derive(Default)]
 struct SessionFeedback {
     prompts: Vec<ReviewPrompt>,
-    layout: Vec<LayoutWarning>,
-    delivered_layout_keys: Vec<String>,
     /// The human ended the review. A consumable EDGE, not a latch: delivering it
     /// clears it, so a later render in the same session starts a fresh round.
     ended: bool,
-    /// A re-audit came back clean AFTER warnings were delivered — a deliverable
-    /// "your fix worked" signal (otherwise an empty audit is indistinguishable
-    /// from "nothing happened yet").
-    layout_clean: bool,
     /// Consecutive polls that timed out empty. Past a limit the next_step tells
     /// the model to stop polling (each empty round costs it a tool-call cycle).
     waiting_streak: u32,
@@ -216,30 +189,23 @@ impl FeedbackHub {
         self.cv.notify_all();
     }
 
-    /// A new HTML artifact was rendered for this session: its pending layout
-    /// report belongs to the PREVIOUS document, so clear it (delivered keys are
-    /// kept — "still broken after the re-render" must read as persistent), and
-    /// reset the empty-poll streak (a fresh render restarts engagement).
+    /// A new HTML artifact was rendered for this session: reset the empty-poll
+    /// streak (a fresh render restarts engagement).
     fn begin_render(&self, pty_id: u32) {
         let mut map = self.map.lock().unwrap();
         if let Some(fb) = map.get_mut(&pty_id) {
-            fb.layout.clear();
-            fb.layout_clean = false;
             fb.waiting_streak = 0;
         }
     }
 
     /// The session's timeline went backwards (Claude Code rewind): everything
-    /// this round accumulated — queued prompts, layout state, delivered keys,
-    /// the end flag — describes a discarded future. Start the round over.
+    /// this round accumulated — queued prompts, the end flag — describes a
+    /// discarded future. Start the round over.
     fn reset_round(&self, pty_id: u32) {
         {
             let mut map = self.map.lock().unwrap();
             if let Some(fb) = map.get_mut(&pty_id) {
                 fb.prompts.clear();
-                fb.layout.clear();
-                fb.layout_clean = false;
-                fb.delivered_layout_keys.clear();
                 fb.ended = false;
                 fb.waiting_streak = 0;
             }
@@ -250,16 +216,13 @@ impl FeedbackHub {
     /// A poll drained this batch but the response write failed (the client
     /// aborted the call while the poll was parked — Esc, timeout, crash): put
     /// the feedback BACK so the next poll delivers it instead of losing it.
-    fn requeue(&self, pty_id: u32, mut prompts: Vec<ReviewPrompt>, layout: Vec<LayoutWarning>, ended: bool) {
+    fn requeue(&self, pty_id: u32, mut prompts: Vec<ReviewPrompt>, ended: bool) {
         {
             let mut map = self.map.lock().unwrap();
             // A vanished entry means the session itself is gone — nothing to save.
             let Some(fb) = map.get_mut(&pty_id) else { return };
             prompts.append(&mut fb.prompts); // drained batch back in FRONT, order kept
             fb.prompts = prompts;
-            if fb.layout.is_empty() {
-                fb.layout = layout; // a newer audit (if any) outranks the drained one
-            }
             fb.ended |= ended;
         }
         self.cv.notify_all();
@@ -287,14 +250,8 @@ struct PollResult {
     status: String, // "feedback" | "waiting" | "ended"
     #[serde(skip_serializing_if = "Vec::is_empty")]
     prompts: Vec<ReviewPrompt>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    layout_warnings: Vec<LayoutWarning>,
     #[serde(skip_serializing_if = "is_false")]
     session_ended: bool,
-    /// True when a re-audit came back clean after warnings had been delivered —
-    /// "your layout fix worked".
-    #[serde(skip_serializing_if = "is_false")]
-    layout_clean: bool,
     next_step: String,
 }
 
@@ -504,42 +461,6 @@ impl ArtifactServer {
         removed
     }
 
-    /// Replace the current layout warnings for `pty_id` (frontend →
-    /// `report_layout_warnings`), marking any whose `kind:selector` key was
-    /// already delivered as `persistent`, and wake the poll.
-    pub fn report_layout(&self, pty_id: u32, mut warnings: Vec<LayoutWarning>) {
-        warnings.truncate(100); // a hostile page can't flood the queue
-        {
-            let mut map = self.feedback.map.lock().unwrap();
-            let fb = map.entry(pty_id).or_default();
-            // An EMPTY audit after warnings were delivered is meaningful ("the
-            // fix worked") — flag it deliverable. Empty before any delivery is
-            // just a clean page: nothing to say.
-            if warnings.is_empty() {
-                fb.layout_clean = !fb.delivered_layout_keys.is_empty();
-            } else {
-                fb.layout_clean = false;
-            }
-            for w in &mut warnings {
-                clamp_str(&mut w.kind, 64);
-                clamp_str(&mut w.selector, 1024);
-                clamp_str(&mut w.severity, 16);
-                w.persistent = fb.delivered_layout_keys.contains(&layout_key(w));
-            }
-            // Only a MEANINGFUL report counts as engagement — a routine empty
-            // audit (every iframe remount posts one) must not keep resetting
-            // the model's give-up counter.
-            if !warnings.is_empty() || fb.layout_clean {
-                fb.waiting_streak = 0;
-            }
-            fb.layout = warnings;
-        }
-        self.feedback.cv.notify_all();
-    }
-}
-
-fn layout_key(w: &LayoutWarning) -> String {
-    format!("{}:{}", w.kind, w.selector)
 }
 
 /// 128 bits of OS randomness, URL-safe base64 (header-safe charset). Fails loud
@@ -631,8 +552,7 @@ fn handle_conn(
         let ctx = PollCtx { hub: feedback, pty_id, app, block: Duration::from_millis(POLL_BLOCK_MS) };
         let routed = route_with(&req.body, cwd.as_deref(), Some(&ctx));
         for e in &routed.emits {
-            // A fresh HTML render supersedes the previous document's pending
-            // layout report and restarts the review round's engagement clock.
+            // A fresh HTML render restarts the review round's engagement clock.
             if e.kind == "html" {
                 feedback.begin_render(pty_id);
             }
@@ -666,7 +586,7 @@ fn handle_conn(
             // poll that just drained feedback must NOT lose it: put the batch
             // back so the next poll delivers it.
             if let Some(r) = routed.redeliver {
-                feedback.requeue(r.pty_id, r.prompts, r.layout, r.ended);
+                feedback.requeue(r.pty_id, r.prompts, r.ended);
             }
             return Err(e);
         }
@@ -821,7 +741,6 @@ struct Emit {
 struct Redeliver {
     pty_id: u32,
     prompts: Vec<ReviewPrompt>,
-    layout: Vec<LayoutWarning>,
     ended: bool,
 }
 
@@ -1089,7 +1008,6 @@ fn await_feedback_call(id: Value, params: Option<&Value>, ctx: Option<&PollCtx>)
     let redeliver = (result.status == "feedback").then(|| Redeliver {
         pty_id: ctx.pty_id,
         prompts: result.prompts.clone(),
-        layout: result.layout_warnings.clone(),
         ended: result.session_ended,
     });
     let text = serde_json::to_string(&result).unwrap_or_else(|_| "{\"status\":\"waiting\"}".to_string());
@@ -1106,8 +1024,8 @@ fn await_feedback_call(id: Value, params: Option<&Value>, ctx: Option<&PollCtx>)
 }
 
 /// Block up to `block` for `pty_id`'s pending feedback, draining and clearing it
-/// on delivery. Returns `feedback` (prompts and/or layout warnings), `ended` (the
-/// human ended the review, or the session went away), or `waiting` on timeout.
+/// on delivery. Returns `feedback` (queued prompts), `ended` (the human ended
+/// the review, or the session went away), or `waiting` on timeout.
 fn take_or_wait(hub: &FeedbackHub, pty_id: u32, block: Duration) -> PollResult {
     let deadline = Instant::now() + block;
     let mut map = hub.map.lock().unwrap();
@@ -1118,35 +1036,14 @@ fn take_or_wait(hub: &FeedbackHub, pty_id: u32, block: Duration) -> PollResult {
         match map.get_mut(&pty_id) {
             None => return PollResult::ended(),
             Some(fb) => {
-                if !fb.prompts.is_empty() || !fb.layout.is_empty() || fb.layout_clean {
+                if !fb.prompts.is_empty() {
                     let prompts = std::mem::take(&mut fb.prompts);
-                    let layout = std::mem::take(&mut fb.layout);
-                    let layout_clean = std::mem::take(&mut fb.layout_clean);
-                    // Delivering "clean" CLOSES the fix cycle: forget the
-                    // delivered keys, or every later empty audit (each iframe
-                    // remount posts one) would re-arm layout_clean and the
-                    // model would be told "the layout is clean now" forever.
-                    // A warning that reappears after a confirmed-clean cycle
-                    // correctly reads as fresh — it IS a regression.
-                    if layout_clean {
-                        fb.delivered_layout_keys.clear();
-                    }
-                    for w in &layout {
-                        let k = layout_key(w);
-                        if !fb.delivered_layout_keys.contains(&k) {
-                            fb.delivered_layout_keys.push(k);
-                        }
-                    }
-                    if fb.delivered_layout_keys.len() > MAX_DELIVERED_LAYOUT_KEYS {
-                        let drop = fb.delivered_layout_keys.len() - MAX_DELIVERED_LAYOUT_KEYS;
-                        fb.delivered_layout_keys.drain(0..drop);
-                    }
                     // `ended` is a consumable edge: delivering the final batch
                     // clears it, so a LATER render in this session can start a
                     // fresh review round instead of instantly reading "ended".
                     let ended = std::mem::take(&mut fb.ended);
                     fb.waiting_streak = 0;
-                    return PollResult::feedback(prompts, layout, layout_clean, ended);
+                    return PollResult::feedback(prompts, ended);
                 }
                 if fb.ended {
                     fb.ended = false; // consume the edge (see above)
@@ -1177,16 +1074,13 @@ fn take_or_wait(hub: &FeedbackHub, pty_id: u32, block: Duration) -> PollResult {
 const WAITING_STREAK_LIMIT: u32 = 8;
 
 impl PollResult {
-    fn feedback(prompts: Vec<ReviewPrompt>, layout: Vec<LayoutWarning>, layout_clean: bool, ended: bool) -> Self {
-        let fresh_error = layout.iter().any(|w| w.severity == "error" && !w.persistent);
-        PollResult {
-            status: "feedback".into(),
-            next_step: next_step_feedback(fresh_error, layout_clean, ended),
-            prompts,
-            layout_warnings: layout,
-            session_ended: ended,
-            layout_clean,
-        }
+    fn feedback(prompts: Vec<ReviewPrompt>, ended: bool) -> Self {
+        let next_step = if ended {
+            "This is the last feedback before the user ended the review. Apply it, then continue in the conversation instead of polling again.".to_string()
+        } else {
+            "Apply the annotations, re-render the artifact if needed, then call await_artifact_feedback again (pass reply to message the user in the review panel).".to_string()
+        };
+        PollResult { status: "feedback".into(), next_step, prompts, session_ended: ended }
     }
     fn waiting(streak: u32) -> Self {
         let next_step = if streak >= WAITING_STREAK_LIMIT {
@@ -1194,38 +1088,16 @@ impl PollResult {
         } else {
             "No feedback yet. Call await_artifact_feedback again to keep waiting for the user.".to_string()
         };
-        PollResult {
-            status: "waiting".into(),
-            prompts: vec![],
-            layout_warnings: vec![],
-            session_ended: false,
-            layout_clean: false,
-            next_step,
-        }
+        PollResult { status: "waiting".into(), prompts: vec![], session_ended: false, next_step }
     }
     fn ended() -> Self {
         PollResult {
             status: "ended".into(),
             prompts: vec![],
-            layout_warnings: vec![],
             session_ended: true,
-            layout_clean: false,
             next_step: "The user ended the review. Stop polling and continue in the conversation.".into(),
         }
     }
-}
-
-fn next_step_feedback(fresh_error_layout: bool, layout_clean: bool, ended: bool) -> String {
-    if ended {
-        return "This is the last feedback before the user ended the review. Apply it, then continue in the conversation instead of polling again.".into();
-    }
-    if fresh_error_layout {
-        return "Fix the error-severity layout_warnings, re-render the artifact, then call await_artifact_feedback again to recheck before asking the user to review.".into();
-    }
-    if layout_clean {
-        return "The layout audit is clean now. Ask the user to review the artifact, then call await_artifact_feedback again.".into();
-    }
-    "Apply the annotations, re-render the artifact if needed, then call await_artifact_feedback again (pass reply to message the user in the review panel).".into()
 }
 
 // ---- HTML artifact store + `artifact://` rendering --------------------------
@@ -1465,7 +1337,7 @@ fn is_full_document(html: &str) -> bool {
 const ESC_FORWARDER: &str = "<script>addEventListener('keydown',function(e){if(e.key==='Escape')parent.postMessage({type:'drydock-esc'},'*')},true)</script>";
 
 /// The interactive-review SDK injected into every served HTML artifact
-/// (annotate elements/text, layout audit — see docs/artifact-review.md). Only
+/// (annotate elements/text — see docs/artifact-review.md). Only
 /// the SERVED copy carries it; the artifact's source file is never touched.
 /// Adapted from lavish-axi (MIT © Kun Chen) — see the file header.
 const REVIEW_SDK: &str = include_str!("artifact_review_sdk.js");
@@ -1843,7 +1715,7 @@ mod tests {
         // truncate the script and break every served artifact.
         assert!(!REVIEW_SDK.to_ascii_lowercase().contains("</script"), "no closing-script sequence");
         assert!(REVIEW_SDK.contains("dd-artifact:ready"), "boot handshake present");
-        assert!(REVIEW_SDK.contains("dd-artifact:layout"), "layout audit present");
+        assert!(!REVIEW_SDK.contains("dd-artifact:layout"), "layout audit removed");
         assert!(REVIEW_SDK.contains("Kun Chen"), "MIT attribution retained");
     }
 
@@ -2066,20 +1938,6 @@ mod tests {
     }
 
     #[test]
-    fn layout_warning_is_fresh_then_persistent_on_redelivery() {
-        let srv = test_server(std::env::temp_dir());
-        let w = LayoutWarning { kind: "page-horizontal-overflow".into(), selector: "body".into(),
-            overflow_px: 12.0, viewport_width: 720.0, severity: "error".into(), persistent: false };
-        srv.report_layout(7, vec![w.clone()]);
-        let r = take_or_wait(&srv.feedback, 7, Duration::from_millis(20));
-        assert_eq!(r.layout_warnings.len(), 1);
-        assert!(!r.layout_warnings[0].persistent, "first delivery is fresh");
-        srv.report_layout(7, vec![w]);
-        let r2 = take_or_wait(&srv.feedback, 7, Duration::from_millis(20));
-        assert!(r2.layout_warnings[0].persistent, "the redelivered key reads as persistent");
-    }
-
-    #[test]
     fn feedback_is_isolated_per_pty() {
         let srv = test_server(std::env::temp_dir());
         srv.submit_feedback(1, vec![msg_prompt("", "for one")], false);
@@ -2127,13 +1985,11 @@ mod tests {
 
     #[test]
     fn poll_result_serializes_to_the_documented_envelope() {
-        let r = PollResult::feedback(vec![msg_prompt("2", "tweak")], vec![], false, false);
+        let r = PollResult::feedback(vec![msg_prompt("2", "tweak")], false);
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(v["status"], "feedback");
         assert_eq!(v["prompts"][0]["prompt"], "tweak");
-        assert!(v.get("layout_warnings").is_none(), "empty layout omitted");
         assert!(v.get("session_ended").is_none(), "false session_ended omitted");
-        assert!(v.get("layout_clean").is_none(), "false layout_clean omitted");
         assert!(v["next_step"].as_str().unwrap().contains("await_artifact_feedback"));
         // waiting envelope
         let w = serde_json::to_value(PollResult::waiting(1)).unwrap();
@@ -2167,73 +2023,15 @@ mod tests {
         assert_eq!(drained.prompts.len(), 1);
         // meanwhile the user queued more; then the aborted poll's batch returns
         srv.submit_feedback(7, vec![msg_prompt("2", "second")], false);
-        srv.feedback.requeue(7, drained.prompts, drained.layout_warnings, drained.session_ended);
+        srv.feedback.requeue(7, drained.prompts, drained.session_ended);
         let r = take_or_wait(&srv.feedback, 7, Duration::from_millis(20));
         assert_eq!(r.prompts.len(), 2);
         assert_eq!(r.prompts[0].prompt, "first", "redelivered batch keeps original order, in front");
         assert_eq!(r.prompts[1].prompt, "second");
         // requeue for a dropped session is a no-op (no resurrection)
         srv.release(7);
-        srv.feedback.requeue(7, vec![msg_prompt("", "ghost")], vec![], false);
+        srv.feedback.requeue(7, vec![msg_prompt("", "ghost")], false);
         assert!(srv.feedback.map.lock().unwrap().get(&7).is_none());
-    }
-
-    #[test]
-    fn clean_audit_after_delivered_warnings_is_deliverable() {
-        let srv = test_server(std::env::temp_dir());
-        let w = LayoutWarning { kind: "clipped-text".into(), selector: ".x".into(),
-            overflow_px: 9.0, viewport_width: 700.0, severity: "error".into(), persistent: false };
-        srv.report_layout(7, vec![w]);
-        assert_eq!(take_or_wait(&srv.feedback, 7, Duration::from_millis(20)).status, "feedback");
-        // the fix-recheck cycle reports an empty audit → deliverable "clean"
-        srv.report_layout(7, vec![]);
-        let r = take_or_wait(&srv.feedback, 7, Duration::from_millis(20));
-        assert_eq!(r.status, "feedback");
-        assert!(r.layout_clean, "clean signal delivered");
-        assert!(r.next_step.contains("clean"), "{}", r.next_step);
-        // but an empty audit with nothing ever delivered says nothing
-        let srv2 = test_server(std::env::temp_dir());
-        srv2.report_layout(8, vec![]);
-        assert_eq!(take_or_wait(&srv2.feedback, 8, Duration::from_millis(20)).status, "waiting");
-    }
-
-    #[test]
-    fn clean_signal_fires_once_not_on_every_remount() {
-        // Regression: delivering "clean" must close the fix cycle. Before, the
-        // delivered keys survived, so every iframe remount's routine empty
-        // audit re-armed layout_clean and the model was told "the layout is
-        // clean now — ask the user to review" in an endless loop.
-        let srv = test_server(std::env::temp_dir());
-        let w = LayoutWarning { kind: "clipped-text".into(), selector: ".x".into(),
-            overflow_px: 9.0, viewport_width: 700.0, severity: "error".into(), persistent: false };
-        srv.report_layout(7, vec![w.clone()]);
-        assert_eq!(take_or_wait(&srv.feedback, 7, Duration::from_millis(20)).status, "feedback");
-        srv.report_layout(7, vec![]); // the fix confirmed
-        assert!(take_or_wait(&srv.feedback, 7, Duration::from_millis(20)).layout_clean);
-        // remounts / re-renders keep posting empty audits — NO re-fire
-        for _ in 0..3 {
-            srv.report_layout(7, vec![]);
-            assert_eq!(take_or_wait(&srv.feedback, 7, Duration::from_millis(20)).status, "waiting", "clean is one-shot");
-        }
-        // a warning REAPPEARING after a confirmed-clean cycle is a regression:
-        // it reads as fresh, and a later empty audit can confirm clean again
-        srv.report_layout(7, vec![w]);
-        let again = take_or_wait(&srv.feedback, 7, Duration::from_millis(20));
-        assert!(!again.layout_warnings[0].persistent, "post-clean reappearance is fresh");
-        srv.report_layout(7, vec![]);
-        assert!(take_or_wait(&srv.feedback, 7, Duration::from_millis(20)).layout_clean, "next cycle can confirm clean once");
-    }
-
-    #[test]
-    fn empty_audit_does_not_reset_the_waiting_streak() {
-        let srv = test_server(std::env::temp_dir());
-        for _ in 0..WAITING_STREAK_LIMIT {
-            let _ = take_or_wait(&srv.feedback, 7, Duration::from_millis(1));
-        }
-        srv.report_layout(7, vec![]); // routine remount report, no delivered keys
-        let r = take_or_wait(&srv.feedback, 7, Duration::from_millis(1));
-        assert_eq!(r.status, "waiting");
-        assert!(r.next_step.contains("Stop polling"), "streak survives a meaningless report: {}", r.next_step);
     }
 
     #[test]
@@ -2296,19 +2094,15 @@ mod tests {
     }
 
     #[test]
-    fn begin_render_clears_stale_layout_but_keeps_delivered_keys() {
+    fn begin_render_resets_the_waiting_streak() {
         let srv = test_server(std::env::temp_dir());
-        let w = LayoutWarning { kind: "clipped-text".into(), selector: ".x".into(),
-            overflow_px: 9.0, viewport_width: 700.0, severity: "error".into(), persistent: false };
-        srv.report_layout(7, vec![w.clone()]);
-        let _ = take_or_wait(&srv.feedback, 7, Duration::from_millis(20)); // delivered once
-        srv.report_layout(7, vec![w.clone()]); // re-reported, now pending
-        srv.feedback.begin_render(7); // new document renders: pending report is stale
-        assert_eq!(take_or_wait(&srv.feedback, 7, Duration::from_millis(20)).status, "waiting");
-        // the new document re-reports the same defect → still reads persistent
-        srv.report_layout(7, vec![w]);
-        let r = take_or_wait(&srv.feedback, 7, Duration::from_millis(20));
-        assert!(r.layout_warnings[0].persistent, "delivered keys survive the render reset");
+        for _ in 0..WAITING_STREAK_LIMIT {
+            let _ = take_or_wait(&srv.feedback, 7, Duration::from_millis(1));
+        }
+        assert!(take_or_wait(&srv.feedback, 7, Duration::from_millis(1)).next_step.contains("Stop polling"));
+        srv.feedback.begin_render(7); // a fresh render restarts engagement
+        let r = take_or_wait(&srv.feedback, 7, Duration::from_millis(1));
+        assert!(!r.next_step.contains("Stop polling"), "render resets the give-up counter: {}", r.next_step);
     }
 
     #[test]

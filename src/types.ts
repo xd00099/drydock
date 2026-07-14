@@ -55,15 +55,6 @@ export type ReviewPrompt = {
   _ddQueueKey?: string
 }
 
-export type LayoutWarning = {
-  kind: string
-  selector: string
-  overflowPx: number
-  viewportWidth: number
-  severity: 'error' | 'warning'
-  persistent?: boolean
-}
-
 /** waiting = model not polling · listening = blocked in await_artifact_feedback
  *  · working = feedback delivered, model revising (sends disabled) */
 export type ReviewPresence = 'waiting' | 'listening' | 'working'
@@ -73,11 +64,10 @@ export type ReviewChatEntry = { role: 'user' | 'agent'; text: string }
 export type ReviewState = {
   prompts: ReviewPrompt[] // queued, not yet sent
   chat: ReviewChatEntry[] // sent feedback + agent replies
-  layout: LayoutWarning[] // latest audit report from the mounted artifact
   presence: ReviewPresence
 }
 
-export const EMPTY_REVIEW: ReviewState = { prompts: [], chat: [], layout: [], presence: 'waiting' }
+export const EMPTY_REVIEW: ReviewState = { prompts: [], chat: [], presence: 'waiting' }
 
 // In-pane "find within session" (⌘F). Each pane (terminal/transcript) exposes
 // this so the FindBar can drive it. `incremental` keeps the current match when

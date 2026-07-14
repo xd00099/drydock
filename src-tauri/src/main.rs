@@ -323,17 +323,6 @@ fn submit_artifact_feedback(
     artifacts.submit_feedback(pty_id, prompts, end_review);
 }
 
-/// The in-iframe layout audit reported (possibly empty) render-time defects for a
-/// session's artifact: record them so the next poll can surface them to the model.
-#[tauri::command]
-fn report_layout_warnings(
-    pty_id: u32,
-    warnings: Vec<artifacts::LayoutWarning>,
-    artifacts: State<'_, artifacts::ArtifactServer>,
-) {
-    artifacts.report_layout(pty_id, warnings);
-}
-
 /// Reveal an artifact's source file in Finder. Only meaningful when the model
 /// rendered from a `path`; inline-content artifacts have no file on disk.
 #[tauri::command]
@@ -549,7 +538,6 @@ fn main() {
             mcp_status,
             set_mcp_enabled,
             submit_artifact_feedback,
-            report_layout_warnings,
             reveal_artifact,
             save_artifact,
             list_saved_artifacts,
