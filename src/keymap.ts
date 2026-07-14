@@ -127,6 +127,9 @@ const RESERVED = new Set(['meta+q', 'meta+c', 'meta+v', 'meta+x', 'meta+a', 'met
 
 export function validateChord(chord: string): string | null {
   if (RESERVED.has(chord)) return `${displayChord(chord)} is reserved`
+  // the fixed ⌘1–9 tab-switch family is dispatched before the keymap lookup —
+  // a recorded ⌘digit binding would display fine but never fire
+  if (/^meta\+[1-9]$/.test(chord)) return '⌘1–9 is fixed to tab switching'
   const parts = chord.split('+')
   if (!parts.includes('meta') && !parts.includes('ctrl') && !parts.includes('alt'))
     return 'needs a modifier (⌘, ⌃, or ⌥)'

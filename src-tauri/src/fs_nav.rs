@@ -36,6 +36,28 @@ fn list_dirs_in(parent: &str, home: Option<&Path>) -> Vec<String> {
     names
 }
 
+/// Canonicalize a path whose tail may not exist yet: resolve the deepest
+/// existing ancestor (following symlinks), then re-append the pending
+/// remainder. `None` for unresolvable shapes (a `..` at a nonexistent depth).
+fn canonicalize_pending(p: &Path) -> Option<PathBuf> {
+    let mut base = p;
+    let mut rest: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        match base.canonicalize() {
+            Ok(mut c) => {
+                for seg in rest.iter().rev() {
+                    c.push(seg);
+                }
+                return Some(c);
+            }
+            Err(_) => {
+                rest.push(base.file_name()?.to_os_string());
+                base = base.parent()?;
+            }
+        }
+    }
+}
+
 fn ensure_dir_in(path: &str, home: Option<&Path>) -> Result<String, String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
@@ -45,17 +67,19 @@ fn ensure_dir_in(path: &str, home: Option<&Path>) -> Result<String, String> {
     if !p.is_absolute() {
         return Err("path must be absolute".into());
     }
-    let claude_dir = home.map(|h| h.join(".claude"));
-    let inside_claude = |q: &Path| claude_dir.as_deref().is_some_and(|c| q.starts_with(c));
-    if inside_claude(&p) {
-        return Err("Drydock does not create folders inside ~/.claude".into());
+    // Resolve symlinks BEFORE creating anything: `~/foo → ~/.claude` must be
+    // refused with nothing left on disk. The ~/.claude anchor canonicalizes
+    // the same way, so a symlinked $HOME can't skew the comparison.
+    let canon = canonicalize_pending(&p).ok_or("cannot resolve path")?;
+    if let Some(h) = home {
+        let claude = canonicalize_pending(&h.join(".claude")).ok_or("cannot resolve path")?;
+        if canon.starts_with(&claude) {
+            return Err("Drydock does not create folders inside ~/.claude".into());
+        }
     }
-    std::fs::create_dir_all(&p).map_err(|e| e.to_string())?;
-    let canon = p.canonicalize().map_err(|e| e.to_string())?;
-    if inside_claude(&canon) {
-        return Err("Drydock does not create folders inside ~/.claude".into());
-    }
-    Ok(canon.to_string_lossy().into_owned())
+    std::fs::create_dir_all(&canon).map_err(|e| e.to_string())?;
+    let real = canon.canonicalize().map_err(|e| e.to_string())?;
+    Ok(real.to_string_lossy().into_owned())
 }
 
 /// Subdirectory names of `parent` (~-expanded): dirs only, hidden skipped,
@@ -129,6 +153,18 @@ mod tests {
         std::fs::create_dir(home.join(".claude")).unwrap();
         let err = ensure_dir_in("~/.claude/evil", Some(home)).unwrap_err();
         assert!(err.contains(".claude"));
+        assert!(!home.join(".claude/evil").exists());
+    }
+
+    #[test]
+    fn refuses_symlink_escape_into_claude() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        std::fs::create_dir(home.join(".claude")).unwrap();
+        std::os::unix::fs::symlink(home.join(".claude"), home.join("innocent")).unwrap();
+        let err = ensure_dir_in("~/innocent/evil", Some(home)).unwrap_err();
+        assert!(err.contains(".claude"));
+        // the refusal must happen BEFORE anything is created through the link
         assert!(!home.join(".claude/evil").exists());
     }
 

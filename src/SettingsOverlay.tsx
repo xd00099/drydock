@@ -92,7 +92,9 @@ function ShortcutsPanel() {
       e.preventDefault()
       e.stopPropagation()
       if (e.key === 'Escape') { setRecording(null); setSteal(null); setNotice(null); return }
-      if (steal && e.key === 'Enter') {
+      // BARE Enter confirms a pending steal; a MODIFIED Enter (⇧⌘⏎ etc.) is
+      // the user recording an Enter-chord instead — fall through to record it.
+      if (steal && e.key === 'Enter' && !e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey) {
         saveOverride(steal.from, '') // loser: explicitly unbound
         saveOverride(recording, steal.chord)
         setRecording(null); setSteal(null); setNotice(null)
@@ -131,7 +133,20 @@ function ShortcutsPanel() {
               <div key={a.id} style={S.shortcutRow}>
                 <span style={{ flex: 1, color: 'var(--dd-text1)', fontSize: 12 }}>{a.label}</span>
                 {customized && !rec && (
-                  <button onClick={() => saveOverride(a.id, null)} title="Reset to default"
+                  <button
+                    onClick={() => {
+                      // restoring this action's default can collide with an
+                      // override another action took over the same chord —
+                      // apply steal semantics (the chord follows the reset,
+                      // the other action shows "unbound") instead of leaving
+                      // two rows displaying one chord with a silent loser.
+                      const rest = loadOverrides()
+                      delete rest[a.id]
+                      const other = findConflict(a.default, rest, a.id)
+                      if (other) saveOverride(other, '')
+                      saveOverride(a.id, null)
+                    }}
+                    title="Reset to default"
                     style={{ background: 'none', border: 'none', color: 'var(--dd-dim)', cursor: 'pointer', fontSize: 12, padding: 0 }}>⟲</button>
                 )}
                 <button
@@ -149,7 +164,12 @@ function ShortcutsPanel() {
         <span title="Fixed — not rebindable" style={{ minWidth: 84, textAlign: 'center', color: 'var(--dd-dim)', fontSize: 11, border: '1px solid var(--dd-border)', borderRadius: 5, padding: '3px 8px' }}>⌘1–9 🔒</span>
       </div>
       {notice && <div style={{ color: 'var(--dd-warn-muted)', fontSize: 11, padding: '10px 0' }}>{notice}</div>}
-      <button onClick={() => { localStorage.removeItem('dd.keymap'); window.dispatchEvent(new CustomEvent(KEYMAP_EVENT)) }}
+      <button onClick={() => {
+        // also abandon any in-flight recording/steal: a stale pending steal
+        // confirmed AFTER the wipe would re-unbind a just-restored action
+        setRecording(null); setSteal(null); setNotice(null)
+        localStorage.removeItem('dd.keymap'); window.dispatchEvent(new CustomEvent(KEYMAP_EVENT))
+      }}
         style={{ marginTop: 16, background: 'var(--dd-btn)', border: '1px solid var(--dd-border2)', borderRadius: 5, color: 'var(--dd-text2)', fontSize: 11, padding: '4px 10px', cursor: 'pointer' }}>
         Restore all defaults
       </button>

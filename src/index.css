@@ -55,6 +55,13 @@
   --dd-teal: #7ecfc0;
   --dd-purple: #c792ea;
   --dd-white: #fff;
+  /* Filled buttons keep white text readable in BOTH themes — their light
+     values stay saturated (unlike the err/accent surface tints above). */
+  --dd-btn-danger: #7a2e2e;
+  --dd-btn-primary: #2c4468;
+  /* Near-black ink for text ON session-accent fills (mid-lightness hsl in
+     both themes) — deliberately theme-invariant. */
+  --dd-ink: #17130a;
 }
 
 /* Light theme — hand-tuned counterparts, applied by theme.ts via the html
@@ -103,6 +110,9 @@ html[data-theme='light'] {
   --dd-teal: #177a6c;
   --dd-purple: #8a4bbf;
   --dd-white: #ffffff;
+  --dd-btn-danger: #b03434;
+  --dd-btn-primary: #2f6bd8;
+  --dd-ink: #17130a;
 }
 
 html,

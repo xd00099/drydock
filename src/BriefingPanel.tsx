@@ -1147,7 +1147,7 @@ function PreviewTab({
         {actions(current)}
         {reviewTarget && (
           <button
-            style={{ ...S.iconBtn, ...(reviewOn ? { background: accent, color: 'var(--dd-warn-bg)', border: `1px solid ${accent}` } : {}) }}
+            style={{ ...S.iconBtn, ...(reviewOn ? { background: accent, color: 'var(--dd-ink)', border: `1px solid ${accent}` } : {}) }}
             title={'Annotate mode (⌘I) — click elements or select text in the artifact to comment'}
             onClick={() => setReviewOn((v) => !v)}
           >
@@ -1214,7 +1214,7 @@ function PreviewTab({
             {actions(current)}
             {reviewTarget && (
               <button
-                style={{ ...S.iconBtn, ...(reviewOn ? { background: accent, color: 'var(--dd-warn-bg)', border: `1px solid ${accent}` } : {}) }}
+                style={{ ...S.iconBtn, ...(reviewOn ? { background: accent, color: 'var(--dd-ink)', border: `1px solid ${accent}` } : {}) }}
                 title={'Annotate mode (⌘I) — click elements or select text in the artifact to comment'}
                 onClick={() => setReviewOn((v) => !v)}
               >
@@ -1330,7 +1330,7 @@ function ReviewPanel({
             onClick={() => send(false)}
             disabled={!canSend}
             title="Send queued annotations + message to Claude"
-            style={{ background: canSend ? accent : 'var(--dd-hover)', color: canSend ? 'var(--dd-warn-bg)' : 'var(--dd-dim)', border: 'none', borderRadius: 6, padding: '5px 10px', fontSize: 11, fontWeight: 700, cursor: canSend ? 'pointer' : 'default', whiteSpace: 'nowrap' }}
+            style={{ background: canSend ? accent : 'var(--dd-hover)', color: canSend ? 'var(--dd-ink)' : 'var(--dd-dim)', border: 'none', borderRadius: 6, padding: '5px 10px', fontSize: 11, fontWeight: 700, cursor: canSend ? 'pointer' : 'default', whiteSpace: 'nowrap' }}
           >
             Send{review.prompts.length ? ` (${review.prompts.length})` : ''}
           </button>

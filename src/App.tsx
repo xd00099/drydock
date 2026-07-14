@@ -139,6 +139,11 @@ export default function App() {
   homeOverlayRef.current = homeOverlay
   const newShellRef = useRef(() => {})
   const closeActiveRef = useRef(() => {})
+  // for the once-registered keydown listener's confirm-close Enter: closeTab
+  // is recreated per render (its lane-aware landing reads fresh tabs/stage) —
+  // calling it directly from the [] effect would freeze the FIRST render's
+  // empty tabs and always land on Home
+  const closeTabRef = useRef((_id: number) => {})
   const starActiveRef = useRef(() => {})
   const openFindRef = useRef(() => {})
   const goHomeRef = useRef(() => {})
@@ -444,6 +449,7 @@ export default function App() {
 
   newShellRef.current = () => newShell()
   closeActiveRef.current = () => { if (activeId !== null) requestCloseTab(activeId) }
+  closeTabRef.current = closeTab
   starActiveRef.current = () => {
     const s = activeTab?.sessionId ? sessions.find((x) => x.session_id === activeTab.sessionId) : undefined
     if (s) invoke('set_starred', { sessionId: s.session_id, starred: !s.starred }).then(refresh)
@@ -798,6 +804,11 @@ export default function App() {
       if (e.isComposing) return // never act on keys mid-IME-composition
       const chord = serializeChord(e)
       const action = chord ? keymapRef.current.get(chord) : undefined
+      // ⌘W must NEVER reach the native File > Close Window accelerator (via
+      // WKWebView's unhandled-key re-dispatch) — even when the user rebinds
+      // or unbinds "Close tab", a muscle-memory ⌘W closing the whole window
+      // (or summoning the quit guard) is worse than a no-op.
+      if (chord === 'meta+w') e.preventDefault()
       // While a modal is up, shortcuts must not act on the tabs behind it —
       // any chord that IS a registered shortcut gets swallowed (preventDefault
       // also keeps ⌘W from reaching the native Close Window accelerator via
@@ -814,10 +825,17 @@ export default function App() {
         if (action) e.preventDefault()
         return
       }
-      // Close-guard confirm: Enter closes the live session, Esc keeps it.
+      // Close-guard confirm: BARE Enter closes the live session (a modified
+      // Enter is muscle memory for something else — ⇧⌘⏎ zoom — and must not
+      // defeat the very accident-guard this modal is), Esc keeps it.
       if (confirmCloseRef.current !== null) {
         if (e.key === 'Escape') { setConfirmClose(null); return }
-        if (e.key === 'Enter') { e.preventDefault(); closeTab(confirmCloseRef.current); setConfirmClose(null); return }
+        if (e.key === 'Enter' && !e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey) {
+          e.preventDefault()
+          closeTabRef.current(confirmCloseRef.current)
+          setConfirmClose(null)
+          return
+        }
         if (action) e.preventDefault()
         return
       }
@@ -830,9 +848,11 @@ export default function App() {
         if (action) e.preventDefault()
         return
       }
-      // ⌘N dialog: its input handles Esc/arrows/Tab/Enter itself; the toggle
-      // chord re-closes it, every other shortcut is swallowed.
+      // ⌘N dialog: its input handles arrows/Tab/Enter itself; Esc must work
+      // even when the input lost focus (a click on the hint text), and the
+      // toggle chord re-closes it. Every other shortcut is swallowed.
       if (newDialogRef.current) {
+        if (e.key === 'Escape') { setNewDialog(false); return }
         if (action === 'session.new') { e.preventDefault(); setNewDialog(false); return }
         if (action) e.preventDefault()
         return
@@ -1423,7 +1443,7 @@ export default function App() {
           <div style={{ background: 'var(--dd-surface2)', color: 'var(--dd-text)', padding: 20, borderRadius: 8, fontFamily: 'system-ui', fontSize: 13 }}>
             <div style={{ marginBottom: 12 }}>Sessions are still running in tabs. Quit anyway?</div>
             <button
-              style={{ background: 'var(--dd-err-bg-strong)', color: 'var(--dd-white)', border: 'none', padding: '5px 12px', borderRadius: 5, cursor: 'pointer', fontSize: 12, marginRight: 8 }}
+              style={{ background: 'var(--dd-btn-danger)', color: 'var(--dd-white)', border: 'none', padding: '5px 12px', borderRadius: 5, cursor: 'pointer', fontSize: 12, marginRight: 8 }}
               onClick={() => invoke('force_quit')}
             >
               Quit anyway
@@ -1465,7 +1485,7 @@ export default function App() {
             )}
             {takeover.err && <div style={{ color: 'var(--dd-err)', marginBottom: 10 }}>{takeover.err}</div>}
             <button
-              style={{ background: takeover.info ? 'var(--dd-err-bg-strong)' : 'var(--dd-accent-border)', color: 'var(--dd-white)', border: 'none', padding: '5px 12px', borderRadius: 5, cursor: takeover.located && !takeover.killing ? 'pointer' : 'default', fontSize: 12, marginRight: 8, opacity: takeover.located && !takeover.killing ? 1 : 0.6 }}
+              style={{ background: takeover.info ? 'var(--dd-btn-danger)' : 'var(--dd-btn-primary)', color: 'var(--dd-white)', border: 'none', padding: '5px 12px', borderRadius: 5, cursor: takeover.located && !takeover.killing ? 'pointer' : 'default', fontSize: 12, marginRight: 8, opacity: takeover.located && !takeover.killing ? 1 : 0.6 }}
               disabled={!takeover.located || takeover.killing}
               onClick={confirmTakeover}
             >

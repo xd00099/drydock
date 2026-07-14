@@ -70,6 +70,11 @@ describe('validateChord', () => {
   it('accepts a normal chord', () => {
     expect(validateChord('meta+shift+p')).toBeNull()
   })
+  it('refuses the fixed ⌘1–9 tab-switch family', () => {
+    expect(validateChord('meta+3')).toMatch(/tab switching/)
+    expect(validateChord('meta+9')).toMatch(/tab switching/)
+    expect(validateChord('meta+shift+3')).toBeNull() // only the bare-meta family is fixed
+  })
 })
 
 describe('findConflict', () => {

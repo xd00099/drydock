@@ -801,7 +801,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
                 Cancel
               </button>
               <button
-                style={{ background: 'var(--dd-err-bg-strong)', color: 'var(--dd-white)', border: 'none', padding: '5px 12px', borderRadius: 5, cursor: 'pointer' }}
+                style={{ background: 'var(--dd-btn-danger)', color: 'var(--dd-white)', border: 'none', padding: '5px 12px', borderRadius: 5, cursor: 'pointer' }}
                 onClick={() => { onDelete(confirmDel.session_id); setConfirmDel(null) }}
               >
                 Delete
@@ -823,7 +823,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
                 Cancel
               </button>
               <button
-                style={{ background: 'var(--dd-err-bg-strong)', color: 'var(--dd-white)', border: 'none', padding: '5px 12px', borderRadius: 5, cursor: 'pointer' }}
+                style={{ background: 'var(--dd-btn-danger)', color: 'var(--dd-white)', border: 'none', padding: '5px 12px', borderRadius: 5, cursor: 'pointer' }}
                 onClick={() => { deleteFolder(confirmDelFolder.f); setConfirmDelFolder(null) }}
               >
                 Delete folder

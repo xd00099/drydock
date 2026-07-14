@@ -8,12 +8,14 @@ import { getSetting } from './settings'
 // Enter ensure_dir's (mkdir -p) and launches. Claude-only by design — shells
 // stay on ⌘T.
 
-/** Resolve what the user typed to the path we'd actually create/open. */
+/** Resolve what the user typed to the path we'd actually create/open. An
+ *  empty/blank parent setting falls back to `~` — bare names must never
+ *  resolve to filesystem-root children. */
 export function resolveInput(raw: string, parent: string): string {
   const v = raw.trim()
   if (!v) return ''
   if (v.startsWith('/') || v === '~' || v.startsWith('~/')) return v
-  const base = parent.replace(/\/+$/, '')
+  const base = parent.replace(/\/+$/, '') || '~'
   return `${base}/${v}`
 }
 
@@ -47,6 +49,7 @@ export default function NewSessionDialog({ open, recents, onLaunch, onClose }: {
   const [busy, setBusy] = useState(false)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const seqRef = useRef(0) // stale list_dirs guard
+  const launchSeqRef = useRef(0) // Esc after Enter must cancel the pending launch
 
   const parent = getSetting('newSessionParent', '~')
   const resolved = resolveInput(value, parent)
@@ -56,7 +59,14 @@ export default function NewSessionDialog({ open, recents, onLaunch, onClose }: {
   const showRecents = value.trim() === ''
   const rows = showRecents ? recents : matches.map((m) => dir + m)
 
-  useEffect(() => { if (open) { setValue(''); setErr(null); setSel(-1); setBusy(false) } }, [open])
+  useEffect(() => {
+    if (open) { setValue(''); setErr(null); setSel(-1); setBusy(false) }
+    else launchSeqRef.current++ // closing (Esc/scrim) invalidates any in-flight launch
+  }, [open])
+  // The suggestion list describes ONE dirname; the moment the dirname changes
+  // the old children must vanish (rendering them prefixed with the NEW dir
+  // offers phantom paths — and Enter would mkdir one).
+  useEffect(() => setDirs([]), [dir])
   useEffect(() => {
     if (!open || !dir) { setDirs([]); return }
     const token = ++seqRef.current
@@ -72,11 +82,23 @@ export default function NewSessionDialog({ open, recents, onLaunch, onClose }: {
   if (!open) return null
 
   const launch = (path: string) => {
-    if (!path || path === '~' || busy) return
+    // refuse the trivial roots: `~/`, `~`, `/` — a claude session in $HOME or
+    // filesystem root is never what a stray Enter meant
+    const norm = path.replace(/\/+$/, '') || '/'
+    if (!norm || norm === '~' || norm === '/' || busy) return
     setBusy(true)
-    invoke<string>('ensure_dir', { path })
-      .then((canon) => { onLaunch(canon); onClose() })
-      .catch((e) => { setErr(String(e)); setBusy(false) })
+    const token = launchSeqRef.current
+    invoke<string>('ensure_dir', { path: norm })
+      .then((canon) => {
+        if (launchSeqRef.current !== token) return // user closed while mkdir ran
+        onLaunch(canon)
+        onClose()
+      })
+      .catch((e) => {
+        if (launchSeqRef.current !== token) return
+        setErr(String(e))
+        setBusy(false)
+      })
   }
 
   const complete = (i: number) => {
