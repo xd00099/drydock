@@ -34,6 +34,8 @@ It never wraps the `claude` binary and never writes inside `~/.claude`. It reads
 - **Semantic colors** — each session's accent color comes from an embedding of what it's *about*, so related work wears related colors across the sidebar and tabs.
 - **Readable transcripts** — open any session as a rendered document (markdown, collapsible tool calls and thinking), flip between a live terminal and its transcript with ⌘⇧T, find in-session with ⌘F, export to markdown.
 - **Artifacts** — sessions launched from Drydock can render HTML, SVG, or Markdown into a side panel via a built-in loopback MCP server. Previews are saved per session into a local gallery.
+- **Interactive review** — annotate a rendered artifact by clicking the element you mean (⌘I), send the notes back, and Claude applies them and re-renders. Plans get reviewed by pointing, not by describing.
+- **Keyboard-first, your keys** — a new-session-in-any-folder dialog (⌘N, creates missing folders), panel and tab chords, and a Settings page (⌘,) where every binding is rebindable. Dark, light, and follow-system themes.
 - **A real terminal** — xterm.js on a PTY with GPU rendering and full IME support (pinyin included). Notifications and a menu-bar tray flag any session waiting on your input.
 
 ## A quick tour
@@ -106,11 +108,16 @@ The bundle lands in `target/release/bundle/macos/Drydock.app`. For development, 
 | Shortcut | Action |
 |---|---|
 | ⌘K | Search all sessions |
+| ⌘N | New claude session in any folder (created if missing) |
 | ⌘F | Find within the active session |
 | ⌘⇧T | Toggle terminal ⇄ read-only transcript |
-| ⌘T | New shell tab |
+| ⌘T | New shell tab (in the active session's directory) |
 | ⌘W | Close the active tab |
 | ⌘D | Star / unstar the active session |
+| ⌘B / ⌘J | Toggle sidebar / briefing panel |
+| ⌘⇧J | Jump to the artifact preview |
+| ⌘1–9 · ⌘⇧[ ] | Switch tabs |
+| ⌘, | Settings — rebind any of these, pick a theme |
 
 Click a session in the sidebar to preview it (a single preview tab until you engage — typing or scrolling keeps it). Drag a session onto a folder — or onto empty space in the folder band — to organize; right-click for the same moves plus hide, delete, and transcript. Resuming an ended session reopens it in its original directory; a session live elsewhere opens read-only.
 

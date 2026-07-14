@@ -4,6 +4,45 @@ Each tagged release's `## vX.Y.Z` section becomes the GitHub release body and
 the in-app updater's release notes (extracted by `scripts/release-notes.py` in
 CI — a tag without its section fails the release).
 
+## v0.3.0 — 2026-07-13
+
+### Review artifacts by pointing at them
+
+- **Annotate, don't describe.** When a session renders an HTML/SVG/Markdown
+  artifact (a plan, a mockup, a diagram), hit ⌘I and click any element to
+  leave feedback pinned to it. Queue up notes, then **Send** — Claude
+  collects them (each tagged with the exact element you meant), applies
+  them, and re-renders. **Send & end** closes the loop and tells it to move
+  on with the work.
+- **Presence built in.** The panel shows whether Claude is listening for
+  feedback, working on it, or waiting on you — and a session sitting idle
+  gets nudged automatically when you send.
+- **Rewind-aware.** Rewinding the conversation prunes artifacts from the
+  now-abandoned branch and resets the review round, so feedback never lands
+  on a version that no longer exists.
+
+### Keyboard-first
+
+- **⌘N — start a session anywhere.** Type a path with per-segment
+  autocomplete; if the folder doesn't exist yet, Enter creates it
+  (`mkdir -p`) and launches claude there. Bare names land under a
+  configurable default parent; empty input offers your recent projects.
+  (It politely refuses `~`, `/`, and anything inside `~/.claude`.)
+- **Everything else on chords too**: ⌘B sidebar, ⌘J briefing panel,
+  ⌘⇧J jump to the artifact preview, ⌘1–9 / ⌘⇧[ ] tab switching, and ⌘T now
+  opens shells in the active session's directory instead of home.
+- **Settings (⌘, or the ⚙︎ in the footer).** Every shortcut — old and new —
+  is rebindable with conflict detection and reserved-chord protection.
+  General tab: notifications toggle, ⌘N's default parent folder, and an
+  optional confirm before closing a live session (on by default).
+
+### Light theme
+
+- **Appearance: Dark / Light / System.** The entire UI — terminals and ⌘F
+  highlighting included — recolors instantly, no restart. System follows
+  macOS. Dark remains exactly the palette you know; artifacts keep their
+  own canvas regardless of theme.
+
 ## v0.2.3 — 2026-07-13
 
 ### Take over a session running somewhere else
