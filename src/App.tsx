@@ -11,6 +11,8 @@ import BriefingPanel from './BriefingPanel'
 import HomeView from './HomeView'
 import FindBar from './FindBar'
 import { useSessions } from './useSessions'
+import { serializeChord, effectiveKeymap, loadOverrides, KEYMAP_EVENT } from './keymap'
+import type { ActionId } from './keymap'
 import type { Artifact, ArtifactKind, PaneSearch, RestoreTab, ReviewPrompt, ReviewState, SessionView, Tab, TakeoverInfo } from './types'
 import { EMPTY_REVIEW, baseName, clip, sessionColor, sessionLabel, uuidv4 } from './types'
 import {
@@ -123,6 +125,39 @@ export default function App() {
   const goHomeRef = useRef(() => {})
   const toggleTranscriptRef = useRef(() => {})
   const focusNavRef = useRef((_key: string) => {}) // ⌘⌥ arrows: move pane focus
+
+  // Effective chord→action map for the once-registered keydown dispatcher;
+  // rebuilt whenever the Settings → Shortcuts tab saves a rebind.
+  const keymapRef = useRef(effectiveKeymap(loadOverrides()))
+  useEffect(() => {
+    const reload = () => { keymapRef.current = effectiveKeymap(loadOverrides()) }
+    window.addEventListener(KEYMAP_EVENT, reload)
+    return () => window.removeEventListener(KEYMAP_EVENT, reload)
+  }, [])
+  // Reassigned every render (same pattern as toggleZoomRef), so case arms may
+  // close over fresh state directly.
+  const runActionRef = useRef<(id: ActionId) => void>(() => {})
+  runActionRef.current = (id) => {
+    switch (id) {
+      case 'palette.toggle': setPaletteOpen((v) => !v); break
+      case 'home.show': goHomeRef.current(); break
+      case 'find.open': openFindRef.current(); break
+      case 'shell.new': newShellRef.current(); break
+      case 'transcript.toggle': toggleTranscriptRef.current(); break
+      case 'tab.close': closeActiveRef.current(); break
+      case 'session.star': starActiveRef.current(); break
+      case 'pane.zoom': {
+        const a = stageRef.current.active
+        if (a !== null) toggleZoomRef.current(a)
+        break
+      }
+      case 'pane.focus.left': focusNavRef.current('ArrowLeft'); break
+      case 'pane.focus.right': focusNavRef.current('ArrowRight'); break
+      case 'pane.focus.up': focusNavRef.current('ArrowUp'); break
+      case 'pane.focus.down': focusNavRef.current('ArrowDown'); break
+      default: break
+    }
+  }
 
   // replaceSession: sweep up stale tabs (exited ptys, superseded transcripts) for that session
   const addTab = (t: Omit<Tab, 'id' | 'exited'> & { exited?: boolean }, replaceSession?: string) => {
@@ -677,69 +712,44 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.isComposing) return // never act on keys mid-IME-composition
-      // While the quit-guard modal is up, keyboard shortcuts must not act on the
-      // tabs behind it (⌘W closing a hidden tab, ⌘T opening one). Esc cancels.
-      // preventDefault also keeps ⌘W from reaching the native File > Close
-      // Window accelerator via WKWebView's unhandled-key re-dispatch.
+      const chord = serializeChord(e)
+      const action = chord ? keymapRef.current.get(chord) : undefined
+      // While a modal is up, shortcuts must not act on the tabs behind it —
+      // any chord that IS a registered shortcut gets swallowed (preventDefault
+      // also keeps ⌘W from reaching the native Close Window accelerator via
+      // WKWebView's unhandled-key re-dispatch). Priority order matches render
+      // z-order: quit guard, take-over, palette, home overlay.
       if (quitGuardRef.current) {
         if (e.key === 'Escape') setQuitGuard(false)
-        if (e.metaKey && ['k', 'f', 't', 'T', 'w', 'd', '0'].includes(e.key)) e.preventDefault()
+        if (action) e.preventDefault()
         return
       }
-      // Take-over dialog: same modal contract as the quit guard (Esc cancels
-      // unless the kill is already in flight; shortcuts must not act behind it)
+      // Take-over dialog: Esc cancels unless the kill is already in flight
       if (takeoverRef.current) {
         if (e.key === 'Escape' && !takeoverRef.current.killing) setTakeover(null)
-        if (e.metaKey && ['k', 'f', 't', 'T', 'w', 'd', '0'].includes(e.key)) e.preventDefault()
+        if (action) e.preventDefault()
         return
       }
-      // Same for the search palette (it handles its own Esc/arrows/Enter); ⌘K
-      // still toggles it closed.
-      if (paletteOpenRef.current && e.metaKey && ['f', 't', 'T', 'w', 'd', '0'].includes(e.key)) {
-        e.preventDefault()
+      // The palette handles its own Esc/arrows/Enter on its input; the toggle
+      // chord still closes it, every other shortcut is swallowed.
+      if (paletteOpenRef.current) {
+        if (action === 'palette.toggle') { e.preventDefault(); setPaletteOpen(false) }
+        else if (action) e.preventDefault()
         return
       }
       if (homeOverlayRef.current) {
         if (e.key === 'Escape') { setHomeOverlay(false); return }
-        // ⌘0 under the overlay = "Home proper": close the overlay and go
-        // there — never two mounted Homes, never a deselect behind a curtain
-        if (e.metaKey && e.key === '0') { e.preventDefault(); setHomeOverlay(false); goHomeRef.current(); return }
-        // ⌘K: search wins — drop the overlay so the palette isn't buried
-        if (e.metaKey && e.key === 'k') { e.preventDefault(); setHomeOverlay(false); setPaletteOpen(true); return }
-        // Everything else must not act on tabs hidden behind the overlay
-        // (⌘W closing an invisible tab); preventDefault keeps ⌘W from the
-        // native Close Window accelerator, same as the quit-guard branch.
-        if (e.metaKey && ['f', 't', 'T', 'w', 'd'].includes(e.key)) e.preventDefault()
+        // Home chord under the overlay = "Home proper": close the overlay and
+        // go there — never two mounted Homes, never a deselect behind a curtain
+        if (action === 'home.show') { e.preventDefault(); setHomeOverlay(false); goHomeRef.current(); return }
+        // palette chord: search wins — drop the overlay so it isn't buried
+        if (action === 'palette.toggle') { e.preventDefault(); setHomeOverlay(false); setPaletteOpen(true); return }
+        if (action) e.preventDefault()
         return
       }
-      if (e.metaKey && e.key === 'k') { e.preventDefault(); setPaletteOpen((v) => !v) }
-      // ⌘0: Home — deselect the active tab (tabs stay open; ⌘0 is a view,
-      // not a close). Closes ⌘F first: a find bar has no pane on Home.
-      if (e.metaKey && e.key === '0') { e.preventDefault(); goHomeRef.current() }
-      // ⌘F: find within the active pane (terminal scrollback or transcript text)
-      if (e.metaKey && e.key === 'f') { e.preventDefault(); openFindRef.current() }
-      // ⌘⇧T (key is 'T' with shift held): terminal ⇄ transcript for the active session
-      if (e.metaKey && e.shiftKey && e.key === 'T') { e.preventDefault(); toggleTranscriptRef.current() }
-      if (e.metaKey && e.key === 't') { e.preventDefault(); newShellRef.current() }
-      if (e.metaKey && e.key === 'w') { e.preventDefault(); closeActiveRef.current() }
-      if (e.metaKey && e.key === 'd') { e.preventDefault(); starActiveRef.current() }
-      // ⇧⌘Return: zoom toggle — the focused pane fills the stage, the split
-      // waits beneath (the palette owns Enter while it's open)
-      if (!paletteOpenRef.current && e.metaKey && e.shiftKey && e.key === 'Enter') {
+      if (action) {
         e.preventDefault()
-        const a = stageRef.current.active
-        if (a !== null) toggleZoomRef.current(a)
-      }
-      // ⌘⌥ arrows: move focus between split panes. The palette guard above
-      // only swallows its listed keys, so re-check here — arrows while the
-      // palette is open belong to the palette.
-      if (
-        !paletteOpenRef.current &&
-        e.metaKey && e.altKey &&
-        ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)
-      ) {
-        e.preventDefault()
-        focusNavRef.current(e.key)
+        runActionRef.current(action)
       }
     }
     window.addEventListener('keydown', onKey)
