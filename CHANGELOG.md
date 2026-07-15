@@ -4,6 +4,24 @@ Each tagged release's `## vX.Y.Z` section becomes the GitHub release body and
 the in-app updater's release notes (extracted by `scripts/release-notes.py` in
 CI — a tag without its section fails the release).
 
+## v0.4.0 — 2026-07-15
+
+### Five new themes
+
+- **Dracula, Nord, One Dark, Solarized Dark, and Solarized Light** join Dark,
+  Light, and System in Settings → Appearance (⌘,). Each card previews its own
+  palette, so you can compare before switching.
+- A theme restyles everything in lockstep: the app chrome, the terminal's
+  full ANSI-16 palette, and ⌘F search highlights. Open terminals recolor
+  instantly — no restart, no re-launch.
+- System mode still follows macOS light/dark, mapping to Dark and Light.
+
+### Docs
+
+- README rewritten with an accuracy pass and eight fresh screenshots — the
+  Home work-log, take-over from another terminal, split screen, the file
+  time machine, and the new theme picker all have tour sections now.
+
 ## v0.3.0 — 2026-07-13
 
 ### Review artifacts by pointing at them
