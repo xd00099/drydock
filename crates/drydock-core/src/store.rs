@@ -201,6 +201,51 @@ CREATE TABLE IF NOT EXISTS chunk_embeddings(
   chunk_id INTEGER PRIMARY KEY,
   embedding BLOB NOT NULL
 );
+-- Chunks still waiting for a vector: a materialization of the
+-- `chunks LEFT JOIN chunk_embeddings WHERE e.chunk_id IS NULL` anti-join that
+-- the embedder polls constantly. That anti-join has to touch every chunk to
+-- prove the answer is 'nothing' -- which it is 99.99% of the time -- so the
+-- app's most frequent query was also its most expensive one (~10ms x 28,800/day
+-- on a 25k-chunk index, versus ~30us against this table).
+--
+-- Maintained by TRIGGERS rather than by app code ON PURPOSE: triggers live in
+-- the database file, not in the binary, so chunks written by an OLDER Drydock
+-- build sharing this DB -- one that has never heard of this table -- still land
+-- in the queue, and its embeddings still take them out again. Nothing in
+-- apply_delta/apply_agent_chunks/replace_card_chunk knows the queue exists.
+CREATE TABLE IF NOT EXISTS embed_queue(
+  chunk_id INTEGER PRIMARY KEY,
+  is_agent INTEGER NOT NULL DEFAULT 0,
+  attempts INTEGER NOT NULL DEFAULT 0
+);
+-- Covering: gives main-transcript-before-subagent order without the temp
+-- B-tree the computed ORDER BY needed, and answers the attempts filter without
+-- touching the table.
+CREATE INDEX IF NOT EXISTS idx_embed_queue_pri ON embed_queue(is_agent, chunk_id, attempts);
+CREATE TRIGGER IF NOT EXISTS trg_embed_queue_add AFTER INSERT ON chunks
+BEGIN
+  INSERT OR IGNORE INTO embed_queue(chunk_id, is_agent)
+    VALUES (new.chunk_id, new.agent_id IS NOT NULL);
+END;
+CREATE TRIGGER IF NOT EXISTS trg_embed_queue_drop AFTER DELETE ON chunks
+BEGIN
+  DELETE FROM embed_queue WHERE chunk_id = old.chunk_id;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_embed_queue_done AFTER INSERT ON chunk_embeddings
+BEGIN
+  DELETE FROM embed_queue WHERE chunk_id = new.chunk_id;
+END;
+-- Losing a vector means the chunk is pending again (clear_embeddings on a
+-- recipe change, a card chunk being regenerated). The delete paths that drop a
+-- chunk drop its vector FIRST, so those rows get queued here and immediately
+-- dropped again by trg_embed_queue_drop -- two extra b-tree ops per deleted
+-- chunk, in exchange for this staying a one-liner that cannot get the
+-- ordering wrong.
+CREATE TRIGGER IF NOT EXISTS trg_embed_queue_redo AFTER DELETE ON chunk_embeddings
+BEGIN
+  INSERT OR IGNORE INTO embed_queue(chunk_id, is_agent)
+    SELECT chunk_id, agent_id IS NOT NULL FROM chunks WHERE chunk_id = old.chunk_id;
+END;
 -- Semantic hue per session (degrees 0..360): the angle of the session's mean
 -- chunk embedding projected on the persisted 2D basis (meta 'hue_basis_v1'),
 -- so sessions about similar things wear similar colors. embedded_chunks is
@@ -271,6 +316,28 @@ fn migrate(conn: &Connection) {
             "INSERT INTO chunks_fts(text, chunk_id, session_id)
              SELECT text, chunk_id, session_id FROM chunks
              WHERE chunk_id NOT IN (SELECT chunk_id FROM chunks_fts)",
+            [],
+        );
+    }
+    // Seed embed_queue for chunks written before the table existed. The
+    // triggers cover everything from now on (including writes from an older
+    // build sharing this file), so this only has to run once -- and it must
+    // only run once, because it is the full scan the queue exists to avoid and
+    // open() happens on every connection.
+    let embed_queue: Option<String> = conn
+        .query_row("SELECT value FROM meta WHERE key = 'embed_queue'", [], |r| r.get(0))
+        .optional()
+        .unwrap_or(None);
+    if embed_queue.as_deref() != Some("v1") {
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO embed_queue(chunk_id, is_agent)
+             SELECT c.chunk_id, c.agent_id IS NOT NULL FROM chunks c
+             LEFT JOIN chunk_embeddings e ON e.chunk_id = c.chunk_id
+             WHERE e.chunk_id IS NULL",
+            [],
+        );
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES ('embed_queue', 'v1')",
             [],
         );
     }
@@ -781,6 +848,11 @@ impl Store {
     }
 
     /// (chunk_id, text) of chunks not yet embedded, oldest first.
+    ///
+    /// This is the DEFINITION of "pending", kept because `embed_queue`
+    /// materializes exactly this set and `reconcile_embed_queue` re-derives the
+    /// queue from it. Callers on a hot path want `pending_embeddings` instead:
+    /// the computed ORDER BY here forces a temp B-tree over every chunk.
     pub fn chunks_without_embeddings(&self, limit: i64) -> Result<Vec<(i64, String)>> {
         let mut stmt = self.conn.prepare(
             "SELECT c.chunk_id, c.text FROM chunks c
@@ -792,6 +864,82 @@ impl Store {
             .query_map(params![limit], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<Result<_, _>>()?;
         Ok(rows)
+    }
+
+    /// The embedder's poll: the next chunks to embed, main-transcript chunks
+    /// before subagent ones. Same answer as `chunks_without_embeddings`, read
+    /// from `embed_queue` so that "nothing is pending" -- the steady state --
+    /// costs one descent of a covering index instead of a scan of every chunk.
+    ///
+    /// Chunks that have already failed `max_attempts` times are skipped: one
+    /// row the embedder cannot get through must not park the whole queue behind
+    /// it (`reconcile_embed_queue` un-parks them).
+    pub fn pending_embeddings(&self, limit: i64, max_attempts: i64) -> Result<Vec<(i64, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT q.chunk_id, c.text FROM embed_queue q
+             JOIN chunks c ON c.chunk_id = q.chunk_id
+             WHERE q.attempts < ?2
+             ORDER BY q.is_agent ASC, q.chunk_id ASC LIMIT ?1",
+        )?;
+        let rows: Vec<(i64, String)> = stmt
+            .query_map(params![limit, max_attempts], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// Is the queue completely empty — including rows parked past their attempt
+    /// limit? `pending_embeddings` hides those, so "the page came back empty" is
+    /// NOT the same as "every chunk has a vector", and only this may be allowed
+    /// to report the semantic index as ready. One covering-index probe.
+    pub fn embed_queue_is_empty(&self) -> Result<bool> {
+        let any: i64 =
+            self.conn.query_row("SELECT EXISTS(SELECT 1 FROM embed_queue)", [], |r| r.get(0))?;
+        Ok(any == 0)
+    }
+
+    /// Count a failed embed attempt against specific chunks. Per chunk rather
+    /// than per batch so a batch that mostly succeeded still isolates the one
+    /// row that didn't.
+    pub fn bump_embed_attempts(&self, chunk_ids: &[i64]) -> Result<()> {
+        let mut stmt =
+            self.conn.prepare("UPDATE embed_queue SET attempts = attempts + 1 WHERE chunk_id = ?1")?;
+        for id in chunk_ids {
+            stmt.execute(params![id])?;
+        }
+        Ok(())
+    }
+
+    /// Re-derive the queue from the anti-join it mirrors: enqueue what's
+    /// missing, drop rows whose chunk is gone or already embedded, and clear
+    /// the attempt counters. Returns (enqueued, dropped).
+    ///
+    /// The triggers keep the queue exact even when an older Drydock writes this
+    /// file, so this is a safety net rather than the mechanism -- but a queue
+    /// row lost to some future path that bypasses the triggers would mean a
+    /// chunk that is silently never semantically searchable, and that is worth
+    /// one scan every half hour. Resetting `attempts` is the other half: a
+    /// chunk parked for a transient reason (full disk, locked DB) gets another
+    /// chance instead of being written off for the life of the process.
+    pub fn reconcile_embed_queue(&mut self) -> Result<(usize, usize)> {
+        let tx = self.conn.transaction()?;
+        // correlated EXISTS, not IN (...): both sides resolve to rowid probes,
+        // so this costs O(queue) and never scans the 48MB embeddings table
+        let dropped = tx.execute(
+            "DELETE FROM embed_queue WHERE
+               EXISTS (SELECT 1 FROM chunk_embeddings e WHERE e.chunk_id = embed_queue.chunk_id)
+               OR NOT EXISTS (SELECT 1 FROM chunks c WHERE c.chunk_id = embed_queue.chunk_id)",
+            [],
+        )?;
+        let enqueued = tx.execute(
+            "INSERT OR IGNORE INTO embed_queue(chunk_id, is_agent)
+             SELECT c.chunk_id, c.agent_id IS NOT NULL FROM chunks c
+             LEFT JOIN chunk_embeddings e ON e.chunk_id = c.chunk_id
+             WHERE e.chunk_id IS NULL",
+            [],
+        )?;
+        tx.execute("UPDATE embed_queue SET attempts = 0 WHERE attempts > 0", [])?;
+        tx.commit()?;
+        Ok((enqueued, dropped))
     }
 
     pub fn put_embedding(&mut self, chunk_id: i64, vec: &[f32]) -> Result<()> {
@@ -1604,6 +1752,192 @@ mod tests {
         s.put_embedding(pending[0].0, &[1.0, 0.0]).unwrap();
         s.delete_session("11111111-1111-1111-1111-111111111111").unwrap();
         assert!(s.search_semantic(&[1.0, 0.0], 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn embed_queue_mirrors_the_anti_join_it_replaces() {
+        let mut s = mem();
+        let sid = "11111111-1111-1111-1111-111111111111";
+        s.apply_delta(sid, &delta("a"), &[
+            Chunk { role: "user".into(), text: "alpha".into(), ts: None },
+            Chunk { role: "user".into(), text: "beta".into(), ts: None },
+        ]).unwrap();
+        assert_eq!(s.pending_embeddings(10, 5).unwrap(), s.chunks_without_embeddings(10).unwrap());
+
+        // storing a vector is what dequeues; no app code touches the queue
+        let pending = s.pending_embeddings(10, 5).unwrap();
+        s.put_embedding(pending[0].0, &[1.0, 0.0]).unwrap();
+        assert_eq!(s.pending_embeddings(10, 5).unwrap(), s.chunks_without_embeddings(10).unwrap());
+        assert_eq!(s.pending_embeddings(10, 5).unwrap().len(), 1);
+        s.put_embedding(pending[1].0, &[0.0, 1.0]).unwrap();
+        assert!(s.pending_embeddings(10, 5).unwrap().is_empty());
+
+        // a regenerated card swaps its search chunk: the old row leaves the
+        // queue with its chunk, the new one arrives in it
+        s.put_card(sid, "sum", "[]", "card text", 4).unwrap();
+        assert_eq!(s.pending_embeddings(10, 5).unwrap(), s.chunks_without_embeddings(10).unwrap());
+        assert!(s.pending_embeddings(10, 5).unwrap().iter().any(|(_, t)| t == "card text"));
+    }
+
+    #[test]
+    fn embed_queue_catches_writes_from_a_build_that_never_heard_of_it() {
+        // An older Drydock shares this file and inserts chunks with its own
+        // SQL. The queue is trigger-maintained precisely so those rows are not
+        // lost -- and so its embeddings still take them out again.
+        let mut s = mem();
+        let sid = "11111111-1111-1111-1111-111111111111";
+        s.apply_delta(sid, &delta("a"), &[]).unwrap();
+        s.conn.execute(
+            "INSERT INTO chunks(session_id, seq, role, text, ts)
+             VALUES (?1, 99, 'user', 'written by an old build', NULL)",
+            params![sid],
+        ).unwrap();
+        let pending = s.pending_embeddings(10, 5).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].1, "written by an old build");
+
+        s.conn.execute(
+            "INSERT OR REPLACE INTO chunk_embeddings(chunk_id, embedding) VALUES (?1, x'0000')",
+            params![pending[0].0],
+        ).unwrap();
+        assert!(s.pending_embeddings(10, 5).unwrap().is_empty());
+    }
+
+    #[test]
+    fn main_chunks_embed_before_agent_chunks() {
+        let mut s = mem();
+        let sid = "11111111-1111-1111-1111-111111111111";
+        s.apply_delta(sid, &delta("a"), &[]).unwrap();
+        let agent = [Chunk { role: "user".into(), text: "agent work".into(), ts: None }];
+        assert!(s.apply_agent_chunks(sid, "agent-a", &agent, &std::collections::HashMap::new()).unwrap());
+        // the main chunk lands LAST, so chunk_id order alone would embed it last
+        s.apply_delta(sid, &delta("b"), &[
+            Chunk { role: "user".into(), text: "main work".into(), ts: None },
+        ]).unwrap();
+        let pending = s.pending_embeddings(10, 5).unwrap();
+        assert_eq!(
+            pending.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>(),
+            vec!["main work", "agent work"],
+            "the index preserves the priority the computed ORDER BY used to give"
+        );
+    }
+
+    #[test]
+    fn removing_chunks_or_vectors_keeps_the_queue_honest() {
+        let mut s = mem();
+        let sid = "11111111-1111-1111-1111-111111111111";
+        s.apply_delta(sid, &delta("a"), &[
+            Chunk { role: "user".into(), text: "alpha".into(), ts: None },
+        ]).unwrap();
+        let id = s.pending_embeddings(10, 5).unwrap()[0].0;
+        s.put_embedding(id, &[1.0, 0.0]).unwrap();
+        assert!(s.pending_embeddings(10, 5).unwrap().is_empty());
+
+        // a recipe change drops every vector: everything must come back
+        s.clear_embeddings().unwrap();
+        assert_eq!(s.pending_embeddings(10, 5).unwrap().len(), 1);
+
+        // ...and a deleted session leaves nothing behind pointing at it
+        s.delete_session(sid).unwrap();
+        assert!(s.pending_embeddings(10, 5).unwrap().is_empty());
+        let left: i64 = s.conn.query_row("SELECT COUNT(*) FROM embed_queue", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 0, "no rows for chunks that no longer exist");
+    }
+
+    #[test]
+    fn a_chunk_that_cannot_be_embedded_is_parked_then_retried() {
+        let mut s = mem();
+        let sid = "11111111-1111-1111-1111-111111111111";
+        s.apply_delta(sid, &delta("a"), &[
+            Chunk { role: "user".into(), text: "poison".into(), ts: None },
+            Chunk { role: "user".into(), text: "fine".into(), ts: None },
+        ]).unwrap();
+        let poison = s.pending_embeddings(10, 5).unwrap()[0].0;
+        for _ in 0..5 {
+            s.bump_embed_attempts(&[poison]).unwrap();
+        }
+        // the loop moves on instead of retrying the bad row forever
+        let pending = s.pending_embeddings(10, 5).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].1, "fine");
+        // parked, not abandoned: a transient failure gets another chance
+        s.reconcile_embed_queue().unwrap();
+        assert_eq!(s.pending_embeddings(10, 5).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_parked_chunk_still_counts_as_unfinished_work() {
+        // The status trap: pending_embeddings HIDES parked rows, so an empty
+        // page would otherwise be read as "every chunk is embedded" and the
+        // search palette would stop warning that semantic recall is partial.
+        let mut s = mem();
+        let sid = "11111111-1111-1111-1111-111111111111";
+        s.apply_delta(sid, &delta("a"), &[
+            Chunk { role: "user".into(), text: "poison".into(), ts: None },
+        ]).unwrap();
+        assert!(!s.embed_queue_is_empty().unwrap());
+        let poison = s.pending_embeddings(10, 5).unwrap()[0].0;
+        for _ in 0..5 {
+            s.bump_embed_attempts(&[poison]).unwrap();
+        }
+        assert!(s.pending_embeddings(10, 5).unwrap().is_empty(), "parked: nothing to hand out");
+        assert!(!s.embed_queue_is_empty().unwrap(), "but the work is NOT done");
+
+        // and once it finally lands, the queue really is empty
+        s.put_embedding(poison, &[1.0]).unwrap();
+        assert!(s.embed_queue_is_empty().unwrap());
+    }
+
+    #[test]
+    fn reconcile_repairs_a_queue_that_drifted() {
+        let mut s = mem();
+        let sid = "11111111-1111-1111-1111-111111111111";
+        s.apply_delta(sid, &delta("a"), &[
+            Chunk { role: "user".into(), text: "alpha".into(), ts: None },
+            Chunk { role: "user".into(), text: "beta".into(), ts: None },
+        ]).unwrap();
+        // whatever damage a trigger bypass could do: rows missing, plus a row
+        // for a chunk that never existed
+        s.conn.execute("DELETE FROM embed_queue", []).unwrap();
+        s.conn.execute("INSERT INTO embed_queue(chunk_id) VALUES (987654)", []).unwrap();
+
+        let (enqueued, dropped) = s.reconcile_embed_queue().unwrap();
+        assert_eq!((enqueued, dropped), (2, 1));
+        assert_eq!(s.pending_embeddings(10, 5).unwrap(), s.chunks_without_embeddings(10).unwrap());
+
+        // an already-embedded chunk is dropped from the queue, not re-embedded
+        let id = s.pending_embeddings(10, 5).unwrap()[0].0;
+        s.put_embedding(id, &[1.0]).unwrap();
+        s.conn.execute("INSERT OR IGNORE INTO embed_queue(chunk_id) VALUES (?1)", params![id]).unwrap();
+        let (_, dropped) = s.reconcile_embed_queue().unwrap();
+        assert_eq!(dropped, 1);
+        assert_eq!(s.pending_embeddings(10, 5).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn migrate_backfills_the_queue_for_a_db_written_before_it_existed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("pre-queue.db");
+        {
+            let mut s = Store::open(&path).unwrap();
+            s.apply_delta("11111111-1111-1111-1111-111111111111", &delta("a"), &[]).unwrap();
+            // rewind this file to "last written by a build with no queue":
+            // no trigger, no rows, no backfill flag
+            s.conn.execute_batch(
+                "DROP TRIGGER trg_embed_queue_add;
+                 DELETE FROM embed_queue;
+                 DELETE FROM meta WHERE key = 'embed_queue';",
+            ).unwrap();
+            s.conn.execute(
+                "INSERT INTO chunks(session_id, seq, role, text, ts)
+                 VALUES ('11111111-1111-1111-1111-111111111111', 0, 'user', 'from the old build', NULL)",
+                [],
+            ).unwrap();
+            assert!(s.pending_embeddings(10, 5).unwrap().is_empty(), "the queue really is empty");
+        }
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.pending_embeddings(10, 5).unwrap().len(), 1, "open() backfilled it");
+        assert_eq!(s.pending_embeddings(10, 5).unwrap(), s.chunks_without_embeddings(10).unwrap());
     }
 
     // delta() puts last_message_at at 1000, so this "now" is 10 min of quiet later

@@ -399,7 +399,12 @@ body,
 .md hr { border: none; border-top: 1px solid var(--dd-border); }
 .md img { max-width: 100%; }
 
-/* Attention pulse: the "needs your input" dot in the sidebar/tabs. */
+/* Attention pulse: the "needs your input" dot in the sidebar/tabs. opacity is a
+   compositor property, so the GPU replays this fade without repainting the dot.
+   It does still wake the compositor at display rate (120Hz on ProMotion) for as
+   long as the session waits — if that idle cost ever outweighs the alert, give
+   it a bounded run count (`1.2s ease-in-out 25` = 30s) and the motion stops
+   while the dot stays steady amber, since there is no fill-mode to strand it. */
 @keyframes dd-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
@@ -426,13 +431,40 @@ body,
 .dd-sessrow:hover .dd-rowbtn { visibility: visible; }
 .dd-rowbtn:hover { color: var(--dd-accent-text) !important; }
 
-/* Split screen: an unfocused pane whose session is blocked on you pulses its
-   frame amber (the split-mode sibling of the sidebar/tab dd-attn dot). */
-@keyframes dd-ringpulse {
-  0%, 100% { border-color: var(--dd-warn); }
-  50% { border-color: rgba(232, 163, 61, 0.3); }
+/* Split screen: an unfocused pane whose session is blocked on you wears a
+   pulsing amber frame (the split-mode sibling of the sidebar/tab dd-attn dot).
+   The ring is its OWN element laid over the pane's rect — not the pane's
+   border, not a ::before inside it — for two reasons. A pane sets
+   overflow:hidden, and overflow clips descendants to the PADDING box, so
+   nothing drawn inside a pane can ever paint on its 2px border ring. And out
+   here, with no clipping ancestor, the fade is a plain opacity animation the
+   GPU replays by itself; the border-color pulse this replaces was a PAINT
+   property, repainting the whole frame on the CPU every frame for as long as
+   the session waited. App.tsx makes the lit pane's own border transparent and
+   hands this ring the same rect, so the amber lands on exactly the pixels the
+   border used to own — solid at the peak, 0.3 over the pane's background at
+   the trough, which is what the old keyframes produced. The amber comes from
+   the theme token instead of a baked-in rgba, so light themes stop pulsing in
+   the dark theme's amber. */
+.dd-attnring {
+  box-sizing: border-box;
+  border: 2px solid var(--dd-warn);
+  border-radius: 4px;
+  pointer-events: none;
+  animation: dd-ringpulse 1.2s ease-in-out infinite;
 }
-.dd-attnpane { animation: dd-ringpulse 1.2s ease-in-out infinite; }
+@keyframes dd-ringpulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* Reduced motion is also a power setting. Both attention animations resolve to
+   their lit state, so "waiting on you" still reads as amber — it just stops
+   moving. (.dd-landed stays: a one-shot 0.7s flash isn't ambient motion, it's
+   the answer to "where did that row just go?", and it ends on its own.) */
+@media (prefers-reduced-motion: reduce) {
+  .dd-attn, .dd-attnring { animation: none; }
+}
 
 /* Pane divider: invisible until hovered so the gutter stays quiet. */
 .dd-divider:hover { background: rgba(127, 176, 255, 0.22); }

