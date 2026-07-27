@@ -8,9 +8,12 @@ pub struct LiveSession {
     pub status: String, // "busy" | "idle"
     pub updated_at: Option<i64>,
     pub cwd: Option<String>,
-    /// Process start time as claude recorded it (`ps -o lstart=` format), if
-    /// the CLI version wrote one. The pid-reuse defense: compared to the live
-    /// pid's actual start time before we ever signal it (see `identity_matches`).
+    /// Process start time as claude recorded it — `ps -o lstart=` SHAPE, but
+    /// rendered in UTC, and carrying no zone to say so. The pid-reuse defense:
+    /// compared to the live pid's actual start time before we ever signal it
+    /// (see `identity_matches` / `recorded_start_matches`, which compare the
+    /// instants — comparing the text made this check fail 100% of the time on
+    /// any machine not set to UTC).
     pub proc_start: Option<String>,
 }
 
@@ -252,26 +255,78 @@ pub fn live_sessions(claude_dir: &Path) -> Vec<LiveSession> {
     live_sessions_with(claude_dir, process_is_claude)
 }
 
-/// The live pid's own start time (`ps -o lstart=`) — the value claude stamps
-/// into `procStart`. `None` if the pid is gone or ps fails.
+/// When the live pid started, in epoch seconds. `None` if the pid is gone.
 ///
-/// Still forks, deliberately: this runs only on the takeover path (never on the
-/// radar's 2s tick), and `pbi_start_tvsec` could replace it only by
-/// reproducing ps(1)'s exact locale-dependent rendering byte for byte.
-///
-/// NOTE (unfixed, found 2026-07-27): claude records `procStart` in UTC while
-/// `ps -o lstart=` prints LOCAL time, so the comparison in `identity_matches`
-/// can never succeed on a machine that isn't on UTC — every session that
-/// recorded a `procStart` currently fails the identity check. Fixing that
-/// belongs with the takeover path, not here.
-pub fn process_start(pid: u32) -> Option<String> {
-    std::process::Command::new("ps")
+/// An INSTANT, not a rendered string, because the two sides of the identity
+/// check don't agree on how to render one: claude writes `procStart` in UTC,
+/// while `ps -o lstart=` prints local time. Comparing the text made
+/// `identity_matches` false for every session on any machine not set to UTC —
+/// i.e. takeover was dead — and no amount of care in the formatting would have
+/// made string equality the right tool. See `recorded_start_matches`.
+#[cfg(target_os = "macos")]
+pub fn process_start_epoch(pid: u32) -> Option<i64> {
+    match probe_process(pid) {
+        Probe::Live(info) => Some(info.key.start_sec as i64),
+        // Another uid's process: the kernel won't describe it to us, but ps will.
+        Probe::Denied => start_epoch_via_ps(pid),
+        Probe::Gone => None,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn process_start_epoch(pid: u32) -> Option<i64> {
+    start_epoch_via_ps(pid)
+}
+
+/// Start time for a process we can't inspect directly, via ps(1). Its `lstart`
+/// is rendered in LOCAL time, so that's how it is read back.
+fn start_epoch_via_ps(pid: u32) -> Option<i64> {
+    let out = std::process::Command::new("ps")
         .args(["-p", &pid.to_string(), "-o", "lstart="])
         .output()
         .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())
+        .filter(|o| o.status.success())?;
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let naive = chrono::NaiveDateTime::parse_from_str(&text, LSTART_FMT).ok()?;
+    chrono::TimeZone::from_local_datetime(&chrono::Local, &naive).earliest().map(|t| t.timestamp())
+}
+
+/// The shape both claude and ps(1) render a start time in: `Mon Jul 27
+/// 21:24:44 2026`. `%e` is the space-padded day, which is what strftime's `%c`
+/// produces in the C and en_US locales.
+const LSTART_FMT: &str = "%a %b %e %H:%M:%S %Y";
+
+/// Seconds of slack between the recorded start and the kernel's. Both are
+/// whole seconds describing the same event, so this only absorbs a rounding
+/// difference — it stays far too tight for an unrelated process to slip
+/// through, which is the entire job of this check.
+const START_TOLERANCE_SECS: i64 = 1;
+
+/// Does the `procStart` string a session recorded describe a process that
+/// started at `actual` (epoch seconds)?
+///
+/// The string carries no zone. Observed reality (every session file on this
+/// machine, across CLI 2.1.187 and 2.1.220) is that claude renders it in UTC,
+/// so that reading is tried first — but a build that rendered LOCAL time would
+/// be indistinguishable from the text alone, and silently failing every
+/// takeover is exactly the bug this replaces. So either reading is accepted:
+/// the wrong one is simply off by the UTC offset and never matches, while
+/// requiring the right one to be guessed would re-introduce the failure.
+///
+/// An unparseable string means we learned nothing, and is treated like a
+/// session that recorded no `procStart` at all (see `identity_matches_with`):
+/// the "is it still a claude" test carries the check on its own rather than
+/// making an unknown format refuse every takeover.
+fn recorded_start_matches(recorded: &str, actual: i64) -> bool {
+    let Ok(naive) = chrono::NaiveDateTime::parse_from_str(recorded.trim(), LSTART_FMT) else {
+        return true; // unreadable, so it cannot contradict anything
+    };
+    let as_utc = naive.and_utc().timestamp();
+    let as_local = chrono::TimeZone::from_local_datetime(&chrono::Local, &naive)
+        .earliest()
+        .map(|t| t.timestamp());
+    let close = |t: i64| (t - actual).abs() <= START_TOLERANCE_SECS;
+    close(as_utc) || as_local.is_some_and(close)
 }
 
 /// Exact identity of a pid-file entry: the pid is a live claude AND — when the
@@ -281,19 +336,22 @@ pub fn process_start(pid: u32) -> Option<String> {
 /// the start-time check even though it passes the command substring test. A
 /// file with no procStart (older CLI) falls back to the substring guard.
 pub fn identity_matches(s: &LiveSession) -> bool {
-    identity_matches_with(s, process_is_claude, process_start)
+    identity_matches_with(s, process_is_claude, process_start_epoch)
 }
 
 pub fn identity_matches_with(
     s: &LiveSession,
     is_claude: impl Fn(u32) -> bool,
-    start: impl Fn(u32) -> Option<String>,
+    start: impl Fn(u32) -> Option<i64>,
 ) -> bool {
     if !is_claude(s.pid) {
         return false;
     }
     match &s.proc_start {
-        Some(expected) => start(s.pid).as_deref() == Some(expected.as_str()),
+        // A pid with no readable start time can't be vouched for: it is gone
+        // (so there is nothing to take over) or unreadable, and either way we
+        // must not hand it to a kill.
+        Some(recorded) => start(s.pid).is_some_and(|actual| recorded_start_matches(recorded, actual)),
         None => true,
     }
 }
@@ -371,22 +429,105 @@ mod tests {
         assert_eq!(hit.pid, 302);
     }
 
+    /// Epoch seconds for a UTC wall-clock, for readable fixtures below.
+    fn utc(s: &str) -> i64 {
+        chrono::NaiveDateTime::parse_from_str(s, LSTART_FMT).unwrap().and_utc().timestamp()
+    }
+
     #[test]
     fn identity_matches_checks_start_time_when_present() {
         let base = LiveSession {
             pid: 42, session_id: "s".into(), status: "idle".into(),
             updated_at: None, cwd: None, proc_start: Some("Fri Jul 10 17:05:10 2026".into()),
         };
+        let started = utc("Fri Jul 10 17:05:10 2026");
         // right command, right start time → ok
-        assert!(identity_matches_with(&base, |_| true, |_| Some("Fri Jul 10 17:05:10 2026".into())));
+        assert!(identity_matches_with(&base, |_| true, |_| Some(started)));
         // right command, DIFFERENT start time (pid reused) → refused
-        assert!(!identity_matches_with(&base, |_| true, |_| Some("Thu Jan  1 00:00:00 2026".into())));
+        assert!(!identity_matches_with(&base, |_| true, |_| Some(utc("Thu Jan  1 00:00:00 2026"))));
         // not claude at all → refused regardless of start time
-        assert!(!identity_matches_with(&base, |_| false, |_| Some("Fri Jul 10 17:05:10 2026".into())));
+        assert!(!identity_matches_with(&base, |_| false, |_| Some(started)));
+        // a pid whose start time can't be read is gone or unreadable — either
+        // way it must not be handed to a kill
+        assert!(!identity_matches_with(&base, |_| true, |_| None));
         // older CLI wrote no procStart → substring guard alone decides
         let no_start = LiveSession { proc_start: None, ..base.clone() };
         assert!(identity_matches_with(&no_start, |_| true, |_| None));
         assert!(!identity_matches_with(&no_start, |_| false, |_| None));
+    }
+
+    #[test]
+    fn a_utc_recorded_start_matches_a_local_machine() {
+        // THE BUG: claude renders procStart in UTC, ps -o lstart= prints local
+        // time, and the old code compared the two as strings — so on any
+        // machine not set to UTC every takeover was refused with "session is
+        // not running anymore". Real values captured from this machine
+        // (America/Los_Angeles, UTC-7): the registry said 21:24:44 while ps
+        // said 14:24:44, for one and the same process.
+        let recorded = "Mon Jul 27 21:24:44 2026";
+        let actual = utc(recorded); // what the kernel reports for that process
+        assert!(recorded_start_matches(recorded, actual), "the UTC reading must match");
+
+        let s = LiveSession {
+            pid: 78609, session_id: "s".into(), status: "idle".into(),
+            updated_at: None, cwd: None, proc_start: Some(recorded.into()),
+        };
+        assert!(identity_matches_with(&s, |_| true, |_| Some(actual)), "takeover must be possible");
+    }
+
+    #[test]
+    fn a_locally_rendered_start_also_matches() {
+        // Robustness, not observed behaviour: the string carries no zone, so a
+        // build that wrote LOCAL time would be textually identical. Accepting
+        // both readings means such a build degrades to "no extra guard"
+        // instead of silently refusing every takeover — the failure we just
+        // spent this change removing.
+        let naive =
+            chrono::NaiveDateTime::parse_from_str("Fri Jul 10 17:05:10 2026", LSTART_FMT).unwrap();
+        let as_local = chrono::TimeZone::from_local_datetime(&chrono::Local, &naive)
+            .earliest()
+            .unwrap()
+            .timestamp();
+        assert!(recorded_start_matches("Fri Jul 10 17:05:10 2026", as_local));
+    }
+
+    #[test]
+    fn the_pid_reuse_guard_still_bites() {
+        let recorded = "Mon Jul 27 21:24:44 2026";
+        let actual = utc(recorded);
+        // a second either way is rounding; a minute is a different process
+        assert!(recorded_start_matches(recorded, actual + 1));
+        assert!(recorded_start_matches(recorded, actual - 1));
+        assert!(!recorded_start_matches(recorded, actual + 60));
+        assert!(!recorded_start_matches(recorded, actual - 60));
+        // ...and the classic case: same pid, recycled hours later
+        assert!(!recorded_start_matches(recorded, actual + 3 * 3600));
+    }
+
+    #[test]
+    fn an_unreadable_recorded_start_does_not_refuse_everything() {
+        // A format we can't parse tells us nothing, so it must behave like the
+        // older CLIs that wrote no procStart at all: fall back to the
+        // is-it-claude test rather than making every takeover impossible.
+        assert!(recorded_start_matches("whenever o'clock", 1_785_187_484));
+        assert!(recorded_start_matches("", 1_785_187_484));
+        // single-digit days are space-padded by strftime %e — still parseable
+        assert!(recorded_start_matches("Tue Jul  7 09:05:01 2026", utc("Tue Jul  7 09:05:01 2026")));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn process_start_epoch_agrees_with_ps_for_our_own_process() {
+        // Ground truth both ways: the syscall's epoch must describe the same
+        // instant ps(1) prints in local time for this very process.
+        let me = std::process::id();
+        let ours = process_start_epoch(me).expect("our own start time");
+        let via_ps = start_epoch_via_ps(me).expect("ps knows it too");
+        assert!((ours - via_ps).abs() <= 1, "syscall {ours} vs ps {via_ps}");
+
+        let now = chrono::Utc::now().timestamp();
+        assert!(ours <= now && ours > now - 86_400, "a plausible start time: {ours}");
+        assert_eq!(process_start_epoch(999_999), None, "a pid that cannot exist");
     }
 
     #[cfg(target_os = "macos")]
