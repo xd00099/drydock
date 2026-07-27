@@ -35,7 +35,7 @@ It never wraps the `claude` binary and — save an explicit right-click *Delete 
 - **Split screen** — drag a tab onto the stage (or right-click a chip) to split it VS Code-style; panes wear their session's color, focus follows the pane (⌘⌥arrows), ⇧⌘⏎ zooms one to full stage.
 - **Working folders** — drag sessions into folders that cut across projects ("Launch prep", "Research"), rename any session to whatever you call it in your head, and star the ones that matter — all stored in Drydock's index, never in `~/.claude`.
 - **Semantic colors** — each session's accent color comes from an embedding of what it's *about*, so related work wears related colors across the sidebar, tabs, and split panes.
-- **Readable transcripts** — open any session as a rendered document (markdown, collapsible tool calls and thinking, subagent transcripts), flip between a live terminal and its transcript with ⌘⇧T, find in-session with ⌘F, export to markdown.
+- **Readable transcripts** — open any session as a rendered document (markdown, collapsible tool calls and thinking, subagent transcripts), flip between a live terminal and its transcript with ⌘⇧T, search the whole conversation with ⌘F, export to markdown. Claude tabs run its own fullscreen TUI, which keeps no scrollback of its own — so the transcript, not the terminal, is where you scroll back and search.
 - **Artifacts** — sessions launched from Drydock can render HTML, SVG, or Markdown into a side panel via a built-in loopback MCP server. Previews are saved per session into a local gallery.
 - **Interactive review** — annotate a rendered artifact by clicking the element you mean (⌘I), send the notes back, and Claude applies them and re-renders. Plans get reviewed by pointing, not by describing.
 - **Keyboard-first, your keys** — a new-session-in-any-folder dialog (⌘N, creates missing folders), panel and tab chords, and a Settings page (⌘,) where every binding is rebindable. Seven themes — Dark, Light, Dracula, Nord, One Dark, Solarized Dark/Light — or follow the system.
@@ -137,7 +137,7 @@ The bundle lands in `target/release/bundle/macos/Drydock.app`. For development, 
 | ⌘K | Search all sessions |
 | ⌘0 | Go Home |
 | ⌘N | New claude session in any folder (created if missing) |
-| ⌘F | Find within the active session |
+| ⌘F | Find — the whole conversation in a transcript, the visible screen in a claude tab, full scrollback in a shell |
 | ⌘⇧T | Toggle terminal ⇄ read-only transcript |
 | ⌘T | New shell tab (inherits the active tab's directory) |
 | ⌘W | Close the active tab (asks first if the session is live) |
@@ -165,7 +165,7 @@ Drydock calls your own `claude` binary, so it inherits whatever backend you've c
 ```
 
 - `card_model` — model used for briefing cards (default `sonnet`; set to `null` to use your CLI's default, e.g. on Bedrock/LiteLLM where the alias may not resolve).
-- `claude_env` — environment variables injected into every process Drydock spawns. Handy when your endpoint is configured only in `~/.zshrc`, which non-interactive shells don't source.
+- `claude_env` — environment variables injected into every process Drydock spawns. Handy when your endpoint is configured only in `~/.zshrc`, which non-interactive shells don't source. It's also the way to trade Claude's fullscreen TUI for the classic inline renderer, if you'd rather have real terminal scrollback in a claude tab: `"CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"`.
 - `artifacts_enabled` — inject the artifact-preview MCP server into sessions Drydock launches (default `true`).
 - `mcp_disabled` — your MCP servers to hide from Drydock-launched sessions; also toggleable per server in the Project tab.
 - `editor_cmd` — CLI used by "open in editor" in the files-changed list (e.g. `code`; default: the system opener).

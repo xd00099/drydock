@@ -54,14 +54,23 @@ impl PtyManager {
         // xterm.js renders 24-bit color; advertise it so Claude (and other TUIs)
         // emit truecolor instead of quantizing to the 256-color palette.
         cmd.env("COLORTERM", "truecolor");
-        // Claude Code's fullscreen renderer draws in the ALTERNATE screen, where
-        // the conversation never reaches the terminal's scrollback — ⌘F, wheel
-        // scrolling, and selection can't span the session (xterm.js discards
-        // lines that scroll off the alt screen). Force the classic inline
-        // renderer instead: output flows into normal scrollback like any CLI,
-        // and search/scroll behave like iTerm. Overridable via the settings
-        // claude_env (extra_env below is applied after, and last write wins).
-        cmd.env("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN", "1");
+        // Claude Code's own fullscreen TUI is left ON — we deliberately do NOT
+        // set CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN, so a session looks exactly
+        // like it does in iTerm or Terminal, which is the point: one renderer to
+        // learn, and Claude's own layout gets the whole pane.
+        //
+        // The cost, so nobody rediscovers it as a bug: the fullscreen renderer
+        // draws in the ALTERNATE screen, which has no scrollback, so the
+        // conversation never enters xterm's buffer. Inside a claude pane ⌘F,
+        // wheel scrolling and selection therefore reach only what is currently
+        // on screen. Reading back a session is the transcript's job (⌘⇧T) —
+        // it renders from the jsonl, so it always has the whole conversation and
+        // its ⌘F searches all of it. Shell tabs are unaffected: they never enter
+        // the alt screen and keep the full 10k-line scrollback.
+        //
+        // To go back to the classic inline renderer, set
+        // CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 in the settings `claude_env`
+        // (extra_env below is applied after this, and last write wins).
         for (k, v) in self.extra_env.iter() {
             cmd.env(k, v);
         }
@@ -254,8 +263,10 @@ mod tests {
     }
 
     #[test]
-    fn alt_screen_disable_is_default_but_user_env_overrides() {
-        // default: every PTY gets the classic-renderer var...
+    fn fullscreen_tui_is_the_default_but_user_env_can_opt_out() {
+        // Claude's fullscreen TUI is its own default, so the correct thing for
+        // Drydock to do is stay out of the way: the var must be UNSET, not "0"
+        // (an explicit "0" would silently outrank a future claude default).
         let run = |mgr: PtyManager, id: u32| {
             let (out_tx, out_rx) = mpsc::channel::<Vec<u8>>();
             let (exit_tx, exit_rx) = mpsc::channel::<Option<u32>>();
@@ -275,10 +286,17 @@ mod tests {
             while let Ok(chunk) = out_rx.try_recv() { all.extend(chunk); }
             String::from_utf8_lossy(&all).into_owned()
         };
-        assert!(run(PtyManager::default(), 20).contains('1'));
-        // ...and a same-named key in the settings claude_env wins over it
-        let custom = PtyManager::with_env(vec![("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN".into(), "0".into())]);
-        assert!(run(custom, 21).contains('0'));
+        // Compared against what this process already has, not against "":
+        // CommandBuilder inherits the environment, so hard-coding the empty
+        // string would make this test pass or fail on the shell it was run
+        // from rather than on the code. Equal to the inherited value == we
+        // injected nothing.
+        let inherited = std::env::var("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN").unwrap_or_default();
+        assert_eq!(run(PtyManager::default(), 20), inherited, "Drydock must not set the var itself");
+        // ...and the settings claude_env is still the way back to the classic
+        // inline renderer for anyone who wants terminal scrollback instead.
+        let custom = PtyManager::with_env(vec![("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN".into(), "1".into())]);
+        assert_eq!(run(custom, 21), "1");
     }
 
     #[test]
