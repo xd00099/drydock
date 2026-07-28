@@ -4,6 +4,57 @@ Each tagged release's `## vX.Y.Z` section becomes the GitHub release body and
 the in-app updater's release notes (extracted by `scripts/release-notes.py` in
 CI — a tag without its section fails the release).
 
+## v0.5.0 — 2026-07-27
+
+### Claude tabs run Claude's own fullscreen interface
+
+- Drydock used to force the classic inline renderer. It doesn't anymore, so a
+  session in a Drydock tab looks exactly like it does in iTerm or Terminal.
+- The fullscreen renderer keeps no scrollback of its own, so inside a claude
+  tab ⌘F and the scroll wheel reach only what's on screen. **The transcript
+  (⌘⇧T) is where you scroll back and search** — it renders from the session
+  file, so it always holds the whole conversation. Shell tabs are unchanged and
+  keep their full history.
+- Prefer the old behavior? Set `"CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"` in
+  the settings `claude_env`.
+
+### "Take over here" works again
+
+- It was refused for **every** session: Claude records a session's start time in
+  UTC, Drydock read the system's in local time, and the two were compared as
+  text — so on any machine not set to UTC the answer was always "session is not
+  running anymore" for a session that was plainly running. The comparison is now
+  between instants, not strings.
+- This was worse than a dead button. Because the process was never located,
+  confirming a takeover resumed the session in Drydock *without* stopping the
+  other Claude, leaving two processes writing one transcript.
+
+### Much lighter when idle
+
+- **~1.9 GB less memory.** The embedding model's scratch memory is grow-only, so
+  the largest batch Drydock ever ran became its floor for the life of the
+  process. Batches are now bounded by both size and content length. Existing
+  embeddings are untouched — nothing is re-indexed.
+- **A quarter of a million fewer processes a day.** Checking whether a session
+  was still alive launched a `ps` command per session every two seconds. It's a
+  single system call now.
+- **A far cheaper idle loop.** "Is anything left to index?" used to scan the
+  whole index every three seconds to answer "no". It now reads a maintained
+  queue — milliseconds to microseconds — and backs off when there's nothing to
+  do.
+- A pane waiting on your input pulses on the GPU instead of repainting its
+  frame up to 120 times a second, and both attention pulses respect the system
+  Reduce Motion setting.
+
+### Rendered artifacts can't phone home
+
+- An HTML artifact could load images from any address, which was enough to send
+  what it renders back out even though network requests were already blocked.
+  Images and media are now restricted to content already inside the page.
+- Scripts and fonts still come from the same fixed list of CDNs, and that
+  remaining exposure — plus WebRTC, which no content policy can restrict — is
+  now documented rather than glossed over.
+
 ## v0.4.0 — 2026-07-15
 
 ### Five new themes
