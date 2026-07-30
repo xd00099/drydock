@@ -7,7 +7,23 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { PaneSearch } from './types'
 import { getSearchDecorations, getXtermTheme, THEME_EVENT } from './theme'
+import { wheelRows } from './wheel'
 import '@xterm/xterm/css/xterm.css'
+
+/** xterm's internal mouse encoder — see the wheel handler for why we reach for it. */
+type CoreMouseService = {
+  triggerMouseEvent(e: {
+    col: number; row: number; x: number; y: number
+    button: number; action: number
+    ctrl: boolean; alt: boolean; shift: boolean
+  }): boolean
+}
+
+/** 1-based cell index for a pixel offset along one axis of the grid. */
+function cellIndex(offset: number, size: number, cells: number): number {
+  if (!(size > 0)) return 1
+  return Math.max(1, Math.min(cells, Math.floor((offset / size) * cells) + 1))
+}
 
 type Props = {
   id: number
@@ -236,25 +252,68 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
       resultsRef.current = { index: e.resultIndex, count: e.resultCount }
     })
     term.open(host)
-    // Physical mouse wheels feel awful in the alt buffer (Claude Code's TUI):
-    // there's no scrollback there, so xterm converts wheel to arrow keys at
-    // amount = deltaY / cell-height — one WKWebView mouse notch (~120px) becomes
-    // 5-25 up/down keys and the conversation leaps. Touchpads are fine (small
-    // pixel deltas). For big pixel deltas in the alt buffer, send a gentle 1-3
-    // arrows per notch instead. Everything else falls through to xterm: normal
-    // buffer (real scrollback), touchpads, and TUIs that track the mouse
-    // themselves (vim mouse=a, htop — they want real SGR wheel reports).
+    // Scrolling the ALTERNATE screen (Claude Code's fullscreen TUI). There is no
+    // scrollback there, so a wheel gesture is input for the program, and xterm's
+    // own handling of that is too coarse in BOTH of the shapes we meet:
+    //
+    // - Program IS tracking the mouse (claude sets DECSET 1000 + SGR 1006, as do
+    //   vim mouse=a and htop): xterm sends exactly ONE wheel report per wheel
+    //   event, no matter how far the gesture asked to travel. A WKWebView notch
+    //   is ~120px ≈ 7 rows, so seven rows of intent arrive as one "scroll a
+    //   step" — the reason a fullscreen session scrolled so slowly. Send one
+    //   report per row instead, which is what a terminal is supposed to do.
+    // - Program is NOT tracking the mouse: xterm converts wheel to arrow keys at
+    //   deltaY / cell-height, so one notch becomes 5-25 keys and the view leaps.
+    //   Keep that path deliberately gentle (≤3).
+    //
+    // Shift/ctrl gestures and non-pixel deltas fall through untouched — those are
+    // horizontal-scroll and zoom conventions, not ours to reinterpret.
+    let wheelCarry = 0
     term.attachCustomWheelEventHandler((ev) => {
       if (
         term.buffer.active.type !== 'alternate' ||
-        term.modes.mouseTrackingMode !== 'none' ||
         ev.deltaMode !== WheelEvent.DOM_DELTA_PIXEL ||
-        Math.abs(ev.deltaY) < 40
+        ev.deltaY === 0 ||
+        ev.shiftKey ||
+        ev.ctrlKey
       ) return true
+      // Measured live, not read from xterm: its cached row height comes from
+      // (device cell height ÷ dpr) and is stale for a frame after the window
+      // moves to a display with a different scale factor — which is exactly
+      // when scrolling felt worst.
+      const cellHeight = host.clientHeight / term.rows
+      const { rows, carry } = wheelRows(ev.deltaY, cellHeight, wheelCarry)
+      wheelCarry = carry
       ev.preventDefault()
-      const seq = '\x1b' + (term.modes.applicationCursorKeysMode ? 'O' : '[') + (ev.deltaY < 0 ? 'A' : 'B')
-      const n = Math.max(1, Math.min(3, Math.round(Math.abs(ev.deltaY) / 40)))
-      term.input(seq.repeat(n), true)
+      if (rows === 0) return false // sub-row gesture: banked in the carry
+      const n = Math.abs(rows)
+      const down = rows > 0
+
+      if (term.modes.mouseTrackingMode !== 'none') {
+        // Encoding (legacy vs SGR) depends on modes the public API doesn't
+        // expose, so let xterm's own mouse service encode each report.
+        // Internal, hence two escape hatches: an xterm that renamed it hands the
+        // event back to xterm, and a service that DECLINES every report (mouse
+        // reporting flagged on but not actually active) falls through to the
+        // arrow-key path below. Either way the scroll is never swallowed.
+        const mouse = (term as unknown as { _core?: { coreMouseService?: CoreMouseService } })._core?.coreMouseService
+        if (typeof mouse?.triggerMouseEvent !== 'function') return true
+        const box = host.getBoundingClientRect()
+        const col = cellIndex(ev.clientX - box.left, box.width, term.cols)
+        const row = cellIndex(ev.clientY - box.top, box.height, term.rows)
+        let sent = 0
+        for (let i = 0; i < n; i++) {
+          if (mouse.triggerMouseEvent({
+            col, row, x: col, y: row,
+            button: 4, // WHEEL
+            action: down ? 1 : 0, // DOWN / UP
+            ctrl: false, alt: ev.altKey, shift: false,
+          })) sent++
+        }
+        if (sent > 0) return false
+      }
+      const seq = '\x1b' + (term.modes.applicationCursorKeysMode ? 'O' : '[') + (down ? 'B' : 'A')
+      term.input(seq.repeat(Math.min(n, 3)), true)
       return false
     })
     // Self-healing scroll: xterm 5.x's viewport can desync from the buffer —
@@ -281,14 +340,38 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
     // and "can't reach the bottom." WebGL paints each frame on the GPU (fast +
     // crisp). Fall back to the DOM renderer if WebGL is unavailable or its
     // context is lost (e.g. many live terminals exceed the browser's GL contexts).
+    let webgl: WebglAddon | undefined
     try {
-      const webgl = new WebglAddon()
-      webgl.onContextLoss(() => webgl.dispose()) // dispose → xterm reverts to DOM
+      webgl = new WebglAddon()
+      webgl.onContextLoss(() => webgl?.dispose()) // dispose → xterm reverts to DOM
       term.loadAddon(webgl)
     } catch {
       /* no GPU / WebGL blocked — DOM renderer stays; still fully functional */
     }
     fit.fit()
+
+    // Dragging the window to a display with a different scale factor changes
+    // devicePixelRatio WITHOUT changing this element's CSS size, so the
+    // ResizeObserver below never fires. Left alone, the canvas keeps rasterizing
+    // at the old scale — soft text, and more compositing work per frame on the
+    // larger screen — and the glyph atlas keeps cached bitmaps at the wrong size.
+    // Re-fit, rebuild the atlas, repaint. The media query has to be re-armed
+    // each time because it is pinned to whatever the ratio is right now.
+    let dprQuery: MediaQueryList | null = null
+    const onDprChange = () => {
+      if (host.offsetWidth === 0) return // hidden tab; the visible-again effect refits
+      fit.fit()
+      webgl?.clearTextureAtlas()
+      term.refresh(0, term.rows - 1)
+      if (readyRef.current) invoke('pty_resize', { id, cols: term.cols, rows: term.rows })
+      armDpr()
+    }
+    const armDpr = () => {
+      dprQuery?.removeEventListener('change', onDprChange)
+      dprQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`)
+      dprQuery.addEventListener('change', onDprChange)
+    }
+    armDpr()
     termRef.current = term
     fitRef.current = fit
     searchRef.current = search
@@ -335,6 +418,7 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
     return () => {
       disposed = true
       window.removeEventListener(THEME_EVENT, onTheme)
+      dprQuery?.removeEventListener('change', onDprChange)
       ro.disconnect()
       viewport?.removeEventListener('scroll', healScroll)
       dataSub.dispose()
