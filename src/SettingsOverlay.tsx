@@ -26,6 +26,10 @@ const S = {
   rowText: { flex: 1 } as React.CSSProperties,
   rowLabel: { color: 'var(--dd-text)', fontSize: 13, marginBottom: 3 } as React.CSSProperties,
   rowDesc: { color: 'var(--dd-dim)', fontSize: 11, lineHeight: 1.5 } as React.CSSProperties,
+  themeGroup: {
+    color: 'var(--dd-text3)', fontSize: 10, letterSpacing: 0.8, textTransform: 'uppercase',
+    padding: '14px 0 6px',
+  } as React.CSSProperties,
   stub: { color: 'var(--dd-dim)', fontSize: 12, padding: '30px 0', textAlign: 'center' as const },
   shortcutRow: { display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0', borderBottom: '1px solid var(--dd-border-faint)' } as React.CSSProperties,
   catHead: { color: 'var(--dd-dim)', fontSize: 10, textTransform: 'uppercase' as const, letterSpacing: 0.5, padding: '14px 0 4px' },
@@ -225,18 +229,25 @@ function AppearancePanel() {
           <span style={{ width: 16, height: 3, borderRadius: 2, background: '#2d3949' }} />
         </span>
       </button>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-        {THEMES.map((t) => {
-          const on = theme === t.id
-          return (
-            <button key={t.id} onClick={() => setTheme(t.id)} style={card(on)}>
-              <span style={radio(on)} />
-              {text(t.label, t.desc)}
-              <Swatch p={t.preview} />
-            </button>
-          )
-        })}
-      </div>
+      {/* Split by dark/light. Flat, this grid is long enough that you scan the
+          whole thing to find the light themes. */}
+      {([true, false] as const).map((dark) => (
+        <div key={String(dark)}>
+          <div style={S.themeGroup}>{dark ? 'Dark' : 'Light'}</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            {THEMES.filter((t) => t.dark === dark).map((t) => {
+              const on = theme === t.id
+              return (
+                <button key={t.id} onClick={() => setTheme(t.id)} style={card(on)}>
+                  <span style={radio(on)} />
+                  {text(t.label, t.desc)}
+                  <Swatch p={t.preview} />
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      ))}
     </div>
   )
 }

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { FolderView, SessionView } from './types'
-import { clampPanelWidth, clip, loadNum, relAge, sessionAutoLabel, sessionColor, sessionLabel, shortPath, uuidv4 } from './types'
+import { ageTone, clampPanelWidth, clip, loadNum, projectColor, relAge, sessionAutoLabel, sessionLabel, shortPath, uuidv4 } from './types'
 import ResizeHandle from './ResizeHandle'
 import LiveIndicator from './LiveIndicator'
 import VersionFooter from './VersionFooter'
@@ -65,6 +65,36 @@ function groupSessions(sessions: SessionView[], hiddenSet: Set<string>, showHidd
   return groups
 }
 
+// Sessions that want something from the user float to the top, in exactly one
+// place each — the placement rule becomes needs-you > active > Starred > folder
+// > project. `needs` is the section that earns its position: a blocked session
+// is the only thing in the list you cannot make progress without. `active` is
+// busy + just-finished, the transient set that is worth a glance now and
+// worthless in five minutes. Everything else keeps its usual home.
+export function triage(visible: SessionView[]): { needs: SessionView[]; active: SessionView[]; rest: SessionView[] } {
+  const needs: SessionView[] = []
+  const active: SessionView[] = []
+  const rest: SessionView[] = []
+  for (const s of visible) {
+    if (s.live_status === 'needs_input') needs.push(s)
+    else if (s.live_status === 'busy' || s.live_status === 'done') active.push(s)
+    else rest.push(s)
+  }
+  needs.sort(byRecency)
+  active.sort(byRecency)
+  return { needs, active, rest }
+}
+
+/** A project group shows its five most recent sessions and puts the tail behind
+ *  a disclosure: past about five, a list stops being something you scan and
+ *  becomes something you search (⌘K already does that better than scrolling
+ *  ever will). A group of exactly six stays whole — hiding one row behind a
+ *  control that costs a row is worse than showing it. */
+export function capGroup<T>(list: T[], expanded: boolean, cap = 5): { shown: T[]; hidden: number } {
+  if (expanded || list.length <= cap + 1) return { shown: list, hidden: 0 }
+  return { shown: list.slice(0, cap), hidden: list.length - cap }
+}
+
 const S = {
   // userSelect none: a pointer drag across rows must never smear a text
   // selection (nothing in the sidebar is copy-worthy prose anyway)
@@ -92,9 +122,19 @@ const menuHover = {
   onMouseLeave: (e: React.MouseEvent<HTMLButtonElement>) => { e.currentTarget.style.background = 'none' },
 }
 
-// The strongest live status across a (collapsed) group's sessions.
+// The strongest live status across a (collapsed) group's sessions. Ordered by
+// how much it wants the user, not by how active it is: 'done' outranks 'busy'
+// because a finished turn is something to go look at and a running one isn't.
+// (A session is never both — 'done' only ever replaces 'idle'.)
+//
+// Since triage lifts every needs_input/busy/done session into its own section
+// at the top, groups now only ever contain idle and ended sessions, so in
+// practice this returns 'idle' or null. The first three arms are kept because
+// the function should stay total: it answers "what is the strongest status in
+// this list", and it is the caller's business which lists it gets asked about.
 function groupStatus(list: SessionView[]): SessionView['live_status'] | null {
   if (list.some((s) => s.live_status === 'needs_input')) return 'needs_input'
+  if (list.some((s) => s.live_status === 'done')) return 'done'
   if (list.some((s) => s.live_status === 'busy')) return 'busy'
   if (list.some((s) => s.live_status === 'idle')) return 'idle'
   return null
@@ -134,6 +174,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
   const sidebarChord = useChord('sidebar.toggle')
   const homeChord = useChord('home.show')
   const transcriptChord = useChord('transcript.toggle')
+  const searchChord = useChord('palette.toggle')
   // clamp on load AND on window resize: a width persisted on a big monitor must
   // not overflow a smaller window later
   const [width, setWidth] = useState(() => clampPanelWidth(loadNum('dd.sidebarWidth', 300)))
@@ -145,6 +186,10 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
     return () => window.removeEventListener('resize', reclamp)
   }, [])
   const [closed, setClosed] = useState<Set<string>>(() => loadSet('dd.closedGroups'))
+  // project groups the user opened past the five-row cap (separate key from
+  // dd.closedGroups: "expanded" and "collapsed" are independent states — a
+  // group can be collapsed while still remembering it was expanded)
+  const [expanded, setExpanded] = useState<Set<string>>(() => loadSet('dd.expandedGroups'))
   const [showHidden, setShowHidden] = useState(false)
   const [menu, setMenu] = useState<{ x: number; y: number; s: SessionView; view: 'main' | 'folders' } | null>(null)
   const [folderMenu, setFolderMenu] = useState<{ x: number; y: number; f: FolderView; index: number } | null>(null)
@@ -238,6 +283,14 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
       const next = new Set(prev)
       if (next.has(path)) next.delete(path); else next.add(path)
       localStorage.setItem('dd.closedGroups', JSON.stringify([...next]))
+      return next
+    })
+
+  const toggleExpanded = (path: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(path)) next.delete(path); else next.add(path)
+      localStorage.setItem('dd.expandedGroups', JSON.stringify([...next]))
       return next
     })
 
@@ -342,27 +395,29 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
 
   const hiddenSet = new Set(hidden)
   const folderIds = new Set(folders.map((f) => f.id))
-  const starred = sessions
-    .filter((s) => s.starred && isVisible(s, hiddenSet, showHidden))
-    .sort(byRecency)
+  // Triage runs FIRST, so everything downstream sees only the sessions that
+  // aren't already accounted for at the top. That keeps the invariant the
+  // placement rule has always had: a visible session appears in exactly once.
+  const { needs, active, rest } = triage(sessions.filter((s) => isVisible(s, hiddenSet, showHidden)))
+  const starred = rest.filter((s) => s.starred).sort(byRecency)
   // Folder members. Starred wins placement (same rule as project groups —
   // membership is kept invisibly and the session returns here on unstar).
   const filed = new Map<string, SessionView[]>()
-  for (const s of sessions) {
+  for (const s of rest) {
     if (!s.folder_id || !folderIds.has(s.folder_id) || s.starred) continue
-    if (!isVisible(s, hiddenSet, showHidden)) continue
     const list = filed.get(s.folder_id) ?? []
     list.push(s)
     filed.set(s.folder_id, list)
   }
   filed.forEach((list) => list.sort(byRecency))
-  const groups = groupSessions(sessions, hiddenSet, showHidden, folderIds)
+  const groups = groupSessions(rest, hiddenSet, showHidden, folderIds)
 
   // One session row, shared by Starred, folders and project groups.
   const sessionRow = (s: SessionView, showProject: boolean) => {
     const isHidden = hiddenSet.has(s.session_id)
     const isActive = s.session_id === activeSessionId // session shown in the active tab
     const isDragging = drag?.kind === 'session' && drag.sid === s.session_id
+    const wants = s.live_status === 'needs_input' || s.live_status === 'busy' || s.live_status === 'done'
     const sub = showProject ? shortPath(s.project_path) : s.latest_recap
     const inFolder = s.folder_id && folderIds.has(s.folder_id) ? folders.find((f) => f.id === s.folder_id)?.name : null
     // Renaming: swap the row for the inline editor (a div, not the row button
@@ -371,7 +426,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
       return (
         <div
           key={s.session_id}
-          style={{ ...S.row, display: 'flex', alignItems: 'center', gap: 4, cursor: 'default', borderLeftColor: sessionColor(s.session_id, 1, s.hue), background: sessionColor(s.session_id, 0.1, s.hue) }}
+          style={{ ...S.row, display: 'flex', alignItems: 'center', gap: 4, cursor: 'default', borderLeftColor: projectColor(s.project_path), background: 'var(--dd-row)' }}
         >
           <LiveIndicator status={s.live_status} />
           {nameEditor('Session name — empty clears')}
@@ -388,7 +443,13 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
       <button
         key={s.session_id}
         className={`dd-sessrow${flashSid === s.session_id ? ' dd-landed' : ''}`}
-        style={{ ...S.row, opacity: isDragging ? 0.4 : isHidden ? 0.45 : 1, borderLeftColor: sessionColor(s.session_id, 1, s.hue), background: sessionColor(s.session_id, isActive ? 0.3 : 0.1, s.hue) }}
+        // No per-row tint. The old 10%-alpha wash was ~100x the stripe's area
+        // carrying a difference of CIEDE2000 2.60 between adjacent rows — below
+        // the 2.3 just-noticeable difference for 7 of 15 neighbouring pairs, so
+        // it cost the whole background of the list and told you nothing. The
+        // selected row gets a neutral fill instead, which is a distinction you
+        // can actually see.
+        style={{ ...S.row, opacity: isDragging ? 0.4 : isHidden ? 0.45 : 1, borderLeftColor: projectColor(s.project_path), background: isActive ? 'var(--dd-row)' : 'transparent' }}
         onClick={dragSafe(() => onResume(s))}
         onPointerDown={(e) => beginPress(e, { kind: 'session', sid: s.session_id, label: sessionLabel(s), fromFolder: s.folder_id })}
         onContextMenu={(e) => { e.preventDefault(); if (dragRef.current) return; setMenu({ x: e.clientX, y: e.clientY, s, view: 'main' }) }}
@@ -396,7 +457,10 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
           <LiveIndicator status={s.live_status} />
-          <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--dd-text)' }}>
+          {/* age dims a row, but state overrules age: a session blocked on you
+              reads at full strength even if it has been waiting a month — the
+              reason it is on screen has nothing to do with when it last ran */}
+          <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: wants ? 'var(--dd-text)' : ageTone(s.last_message_at) }}>
             {sessionLabel(s)}
           </span>
           {/* hover-only: read without resuming (a plain click SPAWNS claude for
@@ -556,6 +620,28 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
         <button style={{ ...S.btn, fontSize: 15 }} title={`Collapse sidebar (${sidebarChord})`} onClick={() => onSetCollapsed(true)}>«</button>
       </div>
 
+      {/* Triage. Both sections only exist while they have something in them —
+          empty chrome at the top of the list would cost exactly what the cap
+          below is trying to buy back. */}
+      {needs.length > 0 && (
+        <div>
+          <div style={{ ...S.head, color: 'var(--dd-warn)' }} title="Blocked on you — a permission prompt or a question">
+            <span style={{ flex: 1, letterSpacing: 0.3 }}>NEEDS YOU</span>
+            <span style={{ color: 'var(--dd-warn)' }}>{needs.length}</span>
+          </div>
+          {needs.map((s) => sessionRow(s, true))}
+        </div>
+      )}
+      {active.length > 0 && (
+        <div>
+          <div style={S.head} title="Running now, or finished since you last looked">
+            <span style={{ flex: 1 }}>Active</span>
+            <span style={{ color: 'var(--dd-dim)' }}>{active.length}</span>
+          </div>
+          {active.map((s) => sessionRow(s, true))}
+        </div>
+      )}
+
       {starred.length > 0 && (
         <div>
           <div style={S.head}>
@@ -605,6 +691,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
 
       {groups.map((g) => {
         const isClosed = closed.has(g.path)
+        const { shown, hidden: tail } = capGroup(g.sessions, expanded.has(g.path))
         return (
           <div key={g.path}>
             <div style={S.head} title={g.path}>
@@ -615,13 +702,25 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
                 style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'pointer' }}
                 onClick={() => toggleGroup(g.path)}
               >
+                {/* the group's own color, so a row's stripe resolves to a header
+                    two rows up rather than to a claim about its contents */}
+                <span style={{ display: 'inline-block', width: 7, height: 7, borderRadius: 2, marginRight: 6, background: projectColor(g.path), verticalAlign: 'baseline' }} />
                 {shortPath(g.path)}
               </span>
               <span style={{ color: 'var(--dd-dim)' }}>{g.sessions.length}</span>
               {isClosed && <LiveIndicator status={groupStatus(g.sessions)} />}
               <button style={S.btn} title="New claude session here" onClick={() => onNewSession(g.path)}>＋</button>
             </div>
-            {!isClosed && g.sessions.map((s) => sessionRow(s, false))}
+            {!isClosed && shown.map((s) => sessionRow(s, false))}
+            {!isClosed && (tail > 0 || expanded.has(g.path)) && (
+              <button
+                style={{ ...S.btn, display: 'block', width: '100%', textAlign: 'left', padding: '2px 10px 5px 26px', color: 'var(--dd-dim2)' }}
+                title={tail > 0 ? `Show all ${g.sessions.length} — or ${searchChord} to search every session` : 'Back to the five most recent'}
+                onClick={() => toggleExpanded(g.path)}
+              >
+                {tail > 0 ? `▸ ${tail} older` : '▾ show fewer'}
+              </button>
+            )}
           </div>
         )
       })}

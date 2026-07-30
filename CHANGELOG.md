@@ -4,6 +4,59 @@ Each tagged release's `## vX.Y.Z` section becomes the GitHub release body and
 the in-app updater's release notes (extracted by `scripts/release-notes.py` in
 CI — a tag without its section fails the release).
 
+## v0.6.0 — 2026-07-30
+
+### Notifications tell you what actually happened
+
+- **A session you walked away from no longer claims it needs you.** Claude Code
+  sends at least a dozen different meanings through a single notification event,
+  and Drydock treated every one of them as "waiting for your input" — including
+  the one that fires *because you stopped typing*. An idle session never emits a
+  stop event, so nothing could ever clear it: every session you left alone
+  accumulated a permanent amber dot and a permanent +1 on the dock badge.
+  Drydock now reads the notification's type and sorts it into one of four
+  outcomes, three of which stay quiet.
+- **"Finished" and "needs an answer" are different things now.** A turn that
+  ends gets a green check and a silent notification; only a real question gets
+  amber, a pulse and a sound. The check clears as soon as you look at that pane
+  with the window focused, so switching away and coming back no longer re-pings
+  you about something you already read.
+- **A turn killed by a rate limit says so.** Drydock now registers for the
+  stop-failure event it used to ignore, so a turn that dies on a rate limit or
+  an API error tells you the reason instead of quietly going green.
+- The dock badge counts questions only. A finished turn is news, not a request.
+
+### The sidebar reads as a list again
+
+Every row used to carry a 3px stripe *and* a 10%-alpha background wash, coloured
+by what the session was about. Measured against a real index, that colour was a
+coin flip: two rows wearing the same colour were the same kind of work about half
+the time, and two sessions that genuinely were the same kind of work looked alike
+29% of the time — while the wash covered 53% of the sidebar and, between
+neighbouring rows, differed by less than the eye can resolve.
+
+- **The row wash is gone.** The selected row gets a plain fill instead, which is
+  a distinction you can actually see. Colour on screen is down 86%.
+- **The stripe now says which project a session belongs to,** in one of six
+  low-chroma colours matched by a chip on the group header — a claim you can
+  check against the label two rows up, rather than one about the session's
+  contents that you can't check at all.
+- **"Needs you" and "idle" are different shapes,** not one dot in two colours.
+  Idle is a hollow ring; a blocked session is a solid disc with a bang in it.
+  The distinction survives colourblindness now; it didn't before.
+- **A NEEDS YOU block appears at the top** when something is genuinely blocked,
+  with running and just-finished sessions beneath it. Neither section exists
+  when it has nothing in it.
+- **Project groups show five sessions and an "N older" toggle,** and rows fade
+  as they age. Past about five, a list stops being something you scan — ⌘K was
+  always going to beat scrolling for the rest.
+
+### Twelve more themes
+
+Gruvbox, Tokyo Night, Catppuccin, Rosé Pine, Kanagawa, Vesper and One Light,
+with light counterparts where they have them — 19 in all, now split into Dark
+and Light groups under Settings → Appearance.
+
 ## v0.5.1 — 2026-07-29
 
 ### Scrolling a fullscreen session feels right

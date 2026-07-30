@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { SessionView, UsageOverview } from './types'
-import { fmtTokens, sessionColor, sessionLabel } from './types'
+import { fmtTokens, projectColor, sessionLabel } from './types'
 import RecapDigest from './RecapDigest'
 import { useChord } from './keymap'
 
@@ -127,7 +127,7 @@ export default function HomeView({ sessions, sessionsReady, onFocusSession }: Pr
                     title={`${t.label}\n${t.project}\n${fmtTokens(t.output_tokens)} out · ${fmtTokens(t.total_tokens)} total (cache reads excluded)`}
                     style={{ display: 'flex', alignItems: 'baseline', gap: 8, width: '100%', background: 'none', border: 'none', padding: '2px 0', cursor: s ? 'pointer' : 'default', textAlign: 'left', fontSize: 11.5, color: 'var(--dd-text1)', opacity: s ? 1 : 0.5 }}
                   >
-                    <span style={{ flex: 'none', width: 7, height: 7, borderRadius: '50%', alignSelf: 'center', background: sessionColor(t.session_id, 1, s?.hue ?? null) }} />
+                    <span style={{ flex: 'none', width: 7, height: 7, borderRadius: '50%', alignSelf: 'center', background: projectColor(s?.project_path ?? t.project) }} />
                     <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.label}</span>
                     <span style={{ flex: 'none', fontFamily: 'Menlo, monospace', fontSize: 10.5, color: 'var(--dd-ok-bright)' }}>{fmtTokens(t.output_tokens)}</span>
                   </button>

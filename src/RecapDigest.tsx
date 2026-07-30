@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { RecapEntry, SessionView } from './types'
-import { baseName, sessionColor } from './types'
+import { baseName, projectColor } from './types'
 import LiveIndicator from './LiveIndicator'
 
 // The Home "what happened" work log: each visible session's distilled recap,
@@ -141,7 +141,7 @@ export default function RecapDigest({ sessions, sessionsReady, onFocusSession }:
                   title={hasTimeline ? (open ? 'Collapse milestones' : 'Show milestones') : undefined}
                   style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: hasTimeline ? 'pointer' : 'default' }}
                 >
-                  <span style={{ flex: 'none', width: 7, height: 7, borderRadius: '50%', background: sessionColor(r.session_id, 1, s?.hue ?? null) }} />
+                  <span style={{ flex: 'none', width: 7, height: 7, borderRadius: '50%', background: projectColor(s?.project_path ?? r.project_path) }} />
                   {s && s.live_status !== 'ended' && (
                     <span style={{ flex: 'none', display: 'flex' }}>
                       <LiveIndicator status={s.live_status} />

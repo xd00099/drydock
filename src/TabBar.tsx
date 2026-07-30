@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { SessionView, Tab } from './types'
-import { baseName, clip, sessionColor, sessionLabel } from './types'
+import { baseName, clip, projectColor, sessionLabel } from './types'
 import { useChord } from './keymap'
 
 type Props = {
@@ -74,7 +74,7 @@ export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs,
     return pos === ordered.length ? '9' : null
   }
 
-  const chip = (t: Tab, label: string, accent?: string, tip?: string, attention?: boolean, hue?: number | null) => {
+  const chip = (t: Tab, label: string, accent?: string, tip?: string, attention?: boolean, proj?: string | null) => {
     const staged = stagedIds.includes(t.id)
     const num = chipNum(t.id)
     return (
@@ -89,15 +89,18 @@ export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs,
         title={tip}
         style={{
           ...S.chip,
-          // tint the chip in its session's color (like the sidebar rows): a faint
-          // wash when inactive, stronger when active; the solid strip stays at left
+          // tint the chip in its PROJECT's color: a faint wash when inactive,
+          // stronger when active; the solid strip stays at left. Kept here even
+          // though the sidebar rows dropped their wash — a handful of chips is
+          // not a list you scan, so the heterogeneity that made the wash costly
+          // there doesn't arise.
           background: t.sessionId
-            ? sessionColor(t.sessionId, t.id === activeId ? 0.3 : staged ? 0.18 : 0.1, hue)
+            ? projectColor(proj, t.id === activeId ? 0.3 : staged ? 0.18 : 0.1)
             : t.id === activeId ? 'var(--dd-border)' : staged ? 'var(--dd-surface2)' : 'transparent',
           borderLeftColor: accent ?? 'transparent',
           // "on stage" underline: a split can show several tabs at once — every
           // visible one wears the mark; the focused one also gets the strong wash
-          borderBottomColor: staged ? (t.sessionId ? sessionColor(t.sessionId, 1, hue) : 'var(--dd-accent-muted)') : 'transparent',
+          borderBottomColor: staged ? (t.sessionId ? projectColor(proj) : 'var(--dd-accent-muted)') : 'transparent',
           color: t.exited ? 'var(--dd-dim)' : 'var(--dd-text1)',
           opacity: t.id === draggedId ? 0.4 : 1,
         }}
@@ -149,7 +152,7 @@ export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs,
               const s = t.sessionId ? sessions.find((x) => x.session_id === t.sessionId) : undefined
               const label = s ? sessionLabel(s) : t.title
               const tip = t.kind === 'transcript' ? `${label} — read-only transcript` : label
-              return { t, el: chip(t, label, t.sessionId ? sessionColor(t.sessionId, 1, s?.hue) : undefined, tip, s?.live_status === 'needs_input', s?.hue) }
+              return { t, el: chip(t, label, t.sessionId ? projectColor(s?.project_path) : undefined, tip, s?.live_status === 'needs_input', s?.project_path) }
             }),
             false
           )}

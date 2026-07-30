@@ -23,15 +23,23 @@ export type SessionView = {
   last_message_at: number | null
   starred: boolean
   hidden: boolean
-  live_status: 'busy' | 'idle' | 'needs_input' | 'ended'
+  // 'needs_input' = stopped waiting on an answer from you; 'done' = the turn
+  // finished and you haven't looked yet (only ever replaces 'idle')
+  live_status: 'busy' | 'idle' | 'needs_input' | 'done' | 'ended'
   // what the session asked for while waiting (hook message); only set when
   // live_status === 'needs_input'
   attention: string | null
   // the user sidebar folder this session is filed in (move semantics: at most
   // one); null = unfiled, shown in its auto project group
   folder_id: string | null
-  // semantic hue in degrees — sessions about similar things wear similar
-  // colors; null until embeddings exist (sessionColor falls back to the hash)
+  // Semantic hue in degrees from the session's mean embedding (backend: hues.rs).
+  // NO LONGER DRIVES ANY COLOR. Measured against the real index, two sessions
+  // wearing the same hue were the same kind of work only ~50% of the time, and
+  // two sessions that genuinely were the same kind of work looked alike 29% of
+  // the time — a coin flip occupying half the sidebar's pixels. The underlying
+  // signal is real (d' = 1.84); it just belongs somewhere the user asks for it
+  // and can check the answer (search ranking, "find similar"), not in an
+  // ambient tint. Kept on the wire as the substrate for that.
   hue: number | null
 }
 
@@ -290,21 +298,43 @@ export function baseName(p: string): string {
   return parts.length ? parts[parts.length - 1] : p
 }
 
-/** Per-session accent color. Prefer the SEMANTIC hue when given (backend:
- *  sessions about similar things wear similar colors); otherwise a stable
- *  FNV-1a hash of the id, so the same session reads as the same color in the
- *  sidebar and its tab either way. Pass an `alpha` below 1 for a translucent
- *  tint (e.g. a row background). */
-export function sessionColor(sessionId: string, alpha = 1, hue?: number | null): string {
-  let h = hue ?? null
-  if (h == null) {
-    let x = 0x811c9dc5
-    for (let i = 0; i < sessionId.length; i++) {
-      x ^= sessionId.charCodeAt(i)
-      x = Math.imul(x, 0x01000193)
-    }
-    h = (x >>> 0) % 360
+/** Six anchors, low chroma. Six because that is what a 3px stripe can actually
+ *  carry: at 30% saturation the minimum CIEDE2000 between six evenly-spaced
+ *  hues is 15.8, comfortably resolvable, while eight collapses to 8.6 — below
+ *  the point where you could name two of them apart. Low chroma because the
+ *  loud end of the range is spoken for by state (amber = waiting on you), and
+ *  a signal only pops out when nothing else in view is shouting. */
+const PROJECT_HUES = [15, 75, 135, 195, 255, 315]
+
+/** Per-PROJECT accent color, keyed by path so it is stable for the life of the
+ *  project and identical in the sidebar, the tab chip and the pane border.
+ *
+ *  Keyed to the project rather than the session because the sidebar is already
+ *  grouped by project: the color then reinforces a grouping you can verify
+ *  against the header two rows up, instead of asserting a topic similarity that
+ *  held about half the time. Two projects can land on the same anchor once you
+ *  have more than six; that is harmless, because a project's rows always sit
+ *  directly under their own labelled header.
+ *
+ *  Pass `alpha` below 1 for a translucent tint. */
+export function projectColor(projectPath: string | null | undefined, alpha = 1): string {
+  if (!projectPath) return alpha >= 1 ? 'var(--dd-accent-muted)' : 'transparent'
+  let x = 0x811c9dc5
+  for (let i = 0; i < projectPath.length; i++) {
+    x ^= projectPath.charCodeAt(i)
+    x = Math.imul(x, 0x01000193)
   }
-  const deg = Math.round(h)
-  return alpha >= 1 ? `hsl(${deg}, 60%, 62%)` : `hsla(${deg}, 60%, 62%, ${alpha})`
+  const h = PROJECT_HUES[(x >>> 0) % PROJECT_HUES.length]
+  return alpha >= 1 ? `hsl(${h}, 30%, 52%)` : `hsla(${h}, 30%, 52%, ${alpha})`
+}
+
+/** Age → text lightness, three steps. Lightness is an ORDERED channel and age
+ *  is an ORDERED variable, so the two match: today reads at full strength, this
+ *  week one step down, older two. Nothing is hidden — the list just stops
+ *  competing with itself for attention as it gets stale. */
+export function ageTone(lastMessageAt: number | null, now = Date.now()): string {
+  const age = now - (lastMessageAt ?? 0)
+  if (age < 86_400_000) return 'var(--dd-text)'
+  if (age < 7 * 86_400_000) return 'var(--dd-text1)'
+  return 'var(--dd-text2)'
 }

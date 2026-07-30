@@ -17,7 +17,7 @@ import { serializeChord, effectiveKeymap, loadOverrides, KEYMAP_EVENT } from './
 import type { ActionId } from './keymap'
 import { getSetting } from './settings'
 import type { Artifact, ArtifactKind, PaneSearch, RestoreTab, ReviewPrompt, ReviewState, SessionView, Tab, TakeoverInfo } from './types'
-import { EMPTY_REVIEW, baseName, clip, sessionColor, sessionLabel, uuidv4 } from './types'
+import { EMPTY_REVIEW, baseName, clip, projectColor, sessionLabel, uuidv4 } from './types'
 import {
   GUTTER, canSplit, clampRatio, closeStaged, dropOnStage, focusNeighbor, hitTest,
   layoutRects, pruneStage, setRatio, showTab, stagedIds,
@@ -547,7 +547,34 @@ export default function App() {
       for (const i of hit) delete n[i]
       return n
     })
+    // Same idea for the backend's "finished, unseen" markers — but only while
+    // the window is actually focused. Staged panes in a background window have
+    // not been seen by anyone, and the focus listener below picks them up when
+    // the user comes back.
+    if (document.hasFocus()) invoke('attention_seen', { ptyIds: ids }).catch(() => {})
   }, [stagedKey])
+
+  // Coming back to Drydock is when work that finished while you were away gets
+  // seen. Without this the check would sit on a pane you're staring at until
+  // you typed in it — the same "nothing clears it" trap that made the amber dot
+  // meaningless before.
+  useEffect(() => {
+    let cancelled = false
+    let un: UnlistenFn | null = null
+    const sweep = () => {
+      const ids = visibleRef.current
+      if (ids.length) invoke('attention_seen', { ptyIds: ids }).catch(() => {})
+    }
+    const w = getCurrentWindow()
+    // onFocusChanged only fires on a CHANGE, so ask once: if the window is
+    // already focused at mount (a relaunch with restored tabs), no event is
+    // coming and the staged-panes effect may have run before the webview took
+    // DOM focus, leaving document.hasFocus() false and the marker stuck.
+    w.isFocused().then((f) => { if (!cancelled && f) sweep() }).catch(() => {})
+    w.onFocusChanged(({ payload: focused }) => { if (focused) sweep() })
+      .then((u) => { if (cancelled) u(); else un = u })
+    return () => { cancelled = true; un?.() }
+  }, [])
 
   // Focus history: lets "Split right" on the FOCUSED tab's own chip pick a
   // partner (the tab you were just looking at) — a pane can't split with its
@@ -945,10 +972,15 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [findOpen, findQuery, activeId])
 
-  // A session hit a permission prompt / went idle waiting (needs_input), or
-  // finished its turn (done). Turn it into an OS notification unless the user
-  // is already looking at that very tab (needs_input) / at Drydock (done) —
-  // the sidebar/tab amber dots and dock badge come via index-updated instead.
+  // A session is blocked on an answer ('needs_input'), finished its turn
+  // ('done'), or has something to announce that isn't about its own state
+  // ('info' — a background agent finished, or the agent pushed a notification).
+  // Turn it into an OS notification unless the user is already looking at that
+  // very tab (needs_input/done) or at Drydock (info). Idle sessions produce
+  // NOTHING here: attention::classify drops those before they are emitted, which
+  // is what stopped every walked-away-from session from claiming to need you.
+  // The visual side — amber dot, check glyph, dock badge — arrives separately
+  // via index-updated.
   useEffect(() => {
     let cancelled = false
     let un: UnlistenFn | null = null
@@ -956,15 +988,32 @@ export default function App() {
       const p = e.payload
       const s = sessionsRef.current.find((x) => x.session_id === p.session_id)
       const label = clip(s ? sessionLabel(s) : 'Claude session', 60)
+      if (p.state === 'done' && document.hasFocus() && visibleRef.current.includes(p.pty_id)) {
+        // Watched it finish: retire the marker now rather than leaving a check
+        // on the pane the user is looking at. Runs regardless of the notify
+        // setting — this is state, not a notification.
+        invoke('attention_seen', { ptyIds: [p.pty_id] }).catch(() => {})
+        return
+      }
       if (getSetting('notifyEnabled', '1') === '0') return // Settings → General toggle
       if (p.state === 'needs_input') {
         // staged, not just active: any pane the user can SEE (split screen)
         if (document.hasFocus() && visibleRef.current.includes(p.pty_id)) return
-        // sound only here: an audible ping always means "blocked on you"
+        // Sound only here. That claim is only true because attention::classify
+        // filters the Notification hook: an idle nag and a completion both
+        // arrive on the same event and neither is worth a noise.
         invoke('notify_user', { title: label, body: p.message || 'Claude needs your input', sound: true }).catch(() => {})
       } else if (p.state === 'done') {
         if (document.hasFocus()) return
-        invoke('notify_user', { title: label, body: 'Finished — ready for you', sound: false }).catch(() => {})
+        // A StopFailure names why it died; a clean Stop carries nothing. Saying
+        // "finished" for a turn killed by a rate limit is the lie this avoids.
+        const body = p.message ? `Stopped — ${clip(p.message, 80)}` : 'Finished — ready for you'
+        invoke('notify_user', { title: label, body, sound: false }).catch(() => {})
+      } else if (p.state === 'info' && p.message) {
+        // Not about this session's own state (so nothing was stored for it) —
+        // announce it and leave the session's indicator alone.
+        if (document.hasFocus()) return
+        invoke('notify_user', { title: label, body: clip(p.message, 90), sound: false }).catch(() => {})
       }
     }).then((u) => { if (cancelled) u(); else un = u })
     return () => { cancelled = true; un?.() }
@@ -1260,11 +1309,11 @@ export default function App() {
                           attn
                             ? 'transparent'
                             : t.sessionId
-                              ? sessionColor(t.sessionId, t.id === activeId ? 1 : 0.45, sess?.hue)
+                              ? projectColor(sess?.project_path, t.id === activeId ? 1 : 0.45)
                               : t.id === activeId ? 'var(--dd-accent-border)' : 'var(--dd-hover)'
                         }`,
                         background: t.sessionId
-                          ? sessionColor(t.sessionId, t.id === activeId ? 0.12 : 0.06, sess?.hue)
+                          ? projectColor(sess?.project_path, t.id === activeId ? 0.12 : 0.06)
                           : 'var(--dd-bg1)',
                       }
                     : { position: 'absolute', inset: 8, display: shown ? 'block' : 'none' }
@@ -1392,7 +1441,7 @@ export default function App() {
             initialUnread={(unread[activeTab.id] ?? 0) > 0}
             artifacts={artifactsByTab[activeTab.id] ?? EMPTY_ARTIFACTS}
             review={activeTab.kind === 'pty' && !activeTab.exited ? reviewByTab[activeTab.id] ?? EMPTY_REVIEW : null}
-            reviewAccent={activeTab.sessionId ? sessionColor(activeTab.sessionId, 1, s?.hue) : 'var(--dd-warn-bright)'}
+            reviewAccent={activeTab.sessionId ? projectColor(s?.project_path) : 'var(--dd-warn-bright)'}
             onReviewQueue={(p) => reviewQueue(activeTab.id, p)}
             onReviewDiscard={(i) => reviewDiscard(activeTab.id, i)}
             onReviewSend={(m, end) => reviewSend(activeTab.id, m, end)}

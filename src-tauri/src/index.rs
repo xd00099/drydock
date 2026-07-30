@@ -24,8 +24,9 @@ pub struct SessionView {
     pub last_message_at: Option<i64>,
     pub starred: bool,
     pub hidden: bool,
-    /// busy | idle | needs_input | ended (needs_input joined from the
-    /// attention state over the radar's busy/idle).
+    /// busy | idle | needs_input | done | ended. `needs_input` (blocked on an
+    /// answer) and `done` (turn finished, not looked at yet) are joined from the
+    /// attention state over the radar's busy/idle; `done` only replaces idle.
     pub live_status: String,
     /// What the session asked for while waiting ("Claude needs your
     /// permission to use Bash"); only set with live_status == needs_input.
@@ -358,8 +359,18 @@ pub fn sessions_snapshot(
             SessionView {
                 name: names.get(&r.session_id).cloned(),
                 summary: summaries.get(&r.session_id).cloned(),
-                live_status: if attn.is_some() { "needs_input".to_string() } else { r.live_status },
-                attention: attn.map(|w| w.message.clone()),
+                live_status: match attn.map(|w| w.kind) {
+                    Some(crate::attention::Attn::Blocked) => "needs_input".to_string(),
+                    // "Finished, unseen" only overrides idle. A session that has
+                    // already begun its next turn is busy, and that is the more
+                    // useful truth than the fact that the previous turn ended.
+                    Some(crate::attention::Attn::Done) if r.live_status == "idle" => "done".to_string(),
+                    _ => r.live_status,
+                },
+                // Only a blocked session has something it is asking you for.
+                attention: attn
+                    .filter(|w| w.kind == crate::attention::Attn::Blocked)
+                    .map(|w| w.message.clone()),
                 folder_id: filed.get(&r.session_id).cloned(),
                 hue: hues.get(&r.session_id).copied(),
                 session_id: r.session_id,
