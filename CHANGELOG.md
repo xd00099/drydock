@@ -4,6 +4,28 @@ Each tagged release's `## vX.Y.Z` section becomes the GitHub release body and
 the in-app updater's release notes (extracted by `scripts/release-notes.py` in
 CI — a tag without its section fails the release).
 
+## v0.5.1 — 2026-07-29
+
+### Scrolling a fullscreen session feels right
+
+- **The wheel moves as far as you asked it to.** A claude session tracks the
+  mouse, and in that mode the terminal was handing the program a single "scroll
+  one step" per wheel notch no matter how far the notch reached — about a
+  seventh of it. Every row of the gesture is delivered now, with small trackpad
+  movements accumulating instead of being dropped.
+- **Moving the window to a second display no longer leaves the terminal
+  half-rendered.** A display with a different scale factor changes the pixel
+  ratio without changing the window's layout, which nothing was watching for, so
+  the terminal kept drawing at the old screen's scale — softer text, more work
+  per frame, and scroll distances computed against the wrong row height. It now
+  re-measures and repaints when the ratio changes.
+- Note on the scrollbar: a fullscreen session doesn't have one, in Drydock or in
+  any other terminal, because the conversation isn't in the terminal's
+  scrollback — Claude is drawing the whole screen itself. Use the transcript
+  (⌘⇧T) to scroll and search a session, or set
+  `"CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"` in the settings `claude_env` to
+  go back to the inline renderer, which has real scrollback.
+
 ## v0.5.0 — 2026-07-27
 
 ### Claude tabs run Claude's own fullscreen interface
