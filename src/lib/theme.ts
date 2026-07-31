@@ -5,7 +5,7 @@
 import { getSetting, SETTINGS_EVENT } from '@/lib/settings'
 
 export type ThemeId =
-  | 'dark' | 'light'
+  | 'dark' | 'light' | 'classic-dark'
   | 'dracula' | 'nord' | 'one-dark' | 'solarized-dark' | 'solarized-light'
   | 'gruvbox' | 'tokyo-night' | 'catppuccin' | 'rose-pine' | 'vesper' | 'kanagawa'
   | 'gruvbox-light' | 'tokyo-day' | 'catppuccin-latte' | 'rose-pine-dawn' | 'one-light' | 'kanagawa-lotus'
@@ -29,6 +29,8 @@ export const THEMES: {
     preview: { bg: '#10141a', text: '#c8cdd5', dots: ['#7fb0ff', '#7ec8a0', '#cf6b6b'] } },
   { id: 'light', label: 'Light', desc: 'Bright chrome, dark text.', dark: false,
     preview: { bg: '#ffffff', text: '#2d3949', dots: ['#2f6bd8', '#1f8a5a', '#c23f3f'] } },
+  { id: 'classic-dark', label: 'Classic Dark', desc: 'Neutral graphite greys, never black.', dark: true,
+    preview: { bg: '#1f1f1f', text: '#cccccc', dots: ['#4daafc', '#73c991', '#f14c4c'] } },
   { id: 'dracula', label: 'Dracula', desc: 'Purple neon on charcoal.', dark: true,
     preview: { bg: '#282a36', text: '#f8f8f2', dots: ['#bd93f9', '#50fa7b', '#ff5555'] } },
   { id: 'nord', label: 'Nord', desc: 'Arctic blues, muted aurora.', dark: true,
@@ -123,6 +125,17 @@ export const XTERM: Record<ThemeId, XtermPalette> = {
     blue: '#2456b8', magenta: '#8a4bbf', cyan: '#177a6c', white: '#8391a2',
     brightBlack: '#4c5a6c', brightRed: '#c23f3f', brightGreen: '#22996a', brightYellow: '#a8820a',
     brightBlue: '#2f6bd8', brightMagenta: '#a86ad0', brightCyan: '#1d9484', brightWhite: '#0d1420',
+  },
+  // Dark Modern's own editor background/foreground plus VS Code's built-in dark
+  // ANSI set (dark_modern.json doesn't override terminal.ansi*), so a shell here
+  // matches the same shell in Cursor's integrated terminal.
+  'classic-dark': {
+    background: '#1f1f1f', foreground: '#cccccc', cursor: '#aeafad', cursorAccent: '#1f1f1f',
+    selectionBackground: '#264f78', selectionInactiveBackground: '#3a3d41',
+    black: '#000000', red: '#cd3131', green: '#0dbc79', yellow: '#e5e510',
+    blue: '#2472c8', magenta: '#bc3fbc', cyan: '#11a8cd', white: '#e5e5e5',
+    brightBlack: '#666666', brightRed: '#f14c4c', brightGreen: '#23d18b', brightYellow: '#f5f543',
+    brightBlue: '#3b8eea', brightMagenta: '#d670d6', brightCyan: '#29b8db', brightWhite: '#e5e5e5',
   },
   dracula: {
     background: '#282a36', foreground: '#f8f8f2', cursor: '#f8f8f2', cursorAccent: '#282a36',
@@ -272,6 +285,8 @@ export function getXtermTheme() {
 const SEARCH: Record<ThemeId, { match: string; active: string }> = {
   dark: { match: '#3a4656', active: '#e8c35a' },
   light: { match: '#c8d4e4', active: '#e6c74f' },
+  // editor.findMatchBackground from dark_modern.json; match = its inactive-selection grey
+  'classic-dark': { match: '#3a3d41', active: '#9e6a03' },
   dracula: { match: '#44475a', active: '#f1fa8c' },
   nord: { match: '#434c5e', active: '#ebcb8b' },
   'one-dark': { match: '#3e4451', active: '#e5c07b' },

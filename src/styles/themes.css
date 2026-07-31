@@ -115,6 +115,63 @@ html[data-theme='light'] {
   --dd-ink: #17130a;
 }
 
+/* Classic Dark — VS Code / Cursor's "Dark Modern", the graphite dark that is
+   grey rather than black. Values are lifted from Cursor's own bundled
+   extensions/theme-defaults/themes/dark_modern.json (resolved through its
+   dark_plus -> dark_vs include chain), not eyeballed: editor #1f1f1f, chrome
+   #181818, inputs #313131, borders #2b2b2b/#313131/#454545, text #cccccc,
+   accent #0078d4. Deliberately NEUTRAL — an earlier pass gave these surfaces a
+   blue cast and read as too dark beside the real thing. Nothing reaches pure
+   black; the darkest surface here is #181818. ANSI below is VS Code's built-in
+   dark terminal palette, which dark_modern.json does not override. */
+html[data-theme='classic-dark'] {
+  color-scheme: dark;
+  --dd-bg0: #181818;
+  --dd-bg1: #1f1f1f;
+  --dd-surface: #1f1f1f;
+  --dd-surface2: #222222;
+  --dd-btn: #313131;
+  --dd-row: #2a2a2a;
+  --dd-well: #181818;
+  --dd-hover: #2a2d2e;
+  --dd-border: #2b2b2b;
+  --dd-border2: #313131;
+  --dd-border3: #454545;
+  --dd-border-faint: #202020;
+  --dd-text: #e4e4e4;
+  --dd-text1: #cccccc;
+  --dd-text2: #9d9d9d;
+  --dd-text3: #868686;
+  --dd-dim: #6e7681;
+  --dd-dim2: #5a5a5a;
+  --dd-accent: #4daafc;
+  --dd-accent-strong: #0078d4;
+  --dd-accent-text: #6cb6ff;
+  --dd-accent-muted: #4a7fb0;
+  --dd-accent-border: #2f5f8a;
+  --dd-accent-bg: #04395e;
+  --dd-ok: #73c991;
+  --dd-ok-bright: #89d99f;
+  --dd-ok-bg: #1f3d29;
+  --dd-warn: #cca700;
+  --dd-warn-bright: #e2bb2e;
+  --dd-warn-muted: #b09a54;
+  --dd-warn-border: #5a4a1e;
+  --dd-warn-bg: #332d18;
+  --dd-err: #f14c4c;
+  --dd-err-bright: #f85149;
+  --dd-err-text: #f5d0d0;
+  --dd-err-border: #5e3434;
+  --dd-err-bg: #352626;
+  --dd-err-bg-strong: #4f2c2c;
+  --dd-teal: #4ec9b0;
+  --dd-purple: #c586c0;
+  --dd-white: #ffffff;
+  --dd-btn-danger: #8b2f2f;
+  --dd-btn-primary: #0078d4;
+  --dd-ink: #17130a;
+}
+
 /* Named themes — canonical palettes from their iTerm2/VS Code ports, mapped
    onto the same semantic tokens. Every block must define the full :root token
    set (theme.test.ts enforces this); theme.ts carries each theme's xterm
