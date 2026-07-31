@@ -9,6 +9,11 @@
     "noEmit": true,
     "skipLibCheck": true,
     "isolatedModules": true,
+    /* Dead imports and unused locals are how a refactor rots: splitting a file
+       leaves its old imports behind and nothing complains. `npm run build` runs
+       tsc, so these are enforced before anything ships. */
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "baseUrl": ".",
     "paths": { "@/*": ["src/*"] }
   },

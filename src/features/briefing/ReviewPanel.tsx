@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { clip, type ReviewPrompt, type ReviewState } from '@/lib/types'
+import { clip, type ReviewState } from '@/lib/types'
 import { S } from './styles'
 
 export function ReviewPanel({

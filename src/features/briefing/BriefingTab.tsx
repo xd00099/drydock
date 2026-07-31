@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { fmtTokens, relAge, type CardView, type FileTouch, type SessionUsage, type TasksView, type TimelineItem } from '@/lib/types'
 import { Button, Chip } from '@/components/ui'

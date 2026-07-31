@@ -7,7 +7,7 @@ import { IconButton } from '@/components/ui'
 import LiveIndicator from '@/features/session/LiveIndicator'
 import VersionFooter from '@/features/session/VersionFooter'
 import { useChord } from '@/lib/keymap'
-import { STARRED_KEY, byRecency, capGroup, folderKey, groupSessions, isVisible, loadSet, triage, type Group } from './grouping'
+import { STARRED_KEY, byRecency, capGroup, folderKey, groupSessions, isVisible, loadSet, triage } from './grouping'
 
 type Props = {
   onHome: () => void // show the Home view (recap log + usage) in the center
