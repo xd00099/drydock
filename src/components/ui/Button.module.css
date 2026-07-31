@@ -1,0 +1,76 @@
+/* Borderless soft-pill button. Replaces the bordered grey rectangle that read
+   as classic desktop chrome: separation comes from a tint fill, and press is
+   confirmed by a scale nudge rather than a border flip. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--dd-gap-2);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 1;
+  white-space: nowrap;
+  padding: 7px 14px;
+  border: 0;
+  border-radius: var(--dd-r-pill);
+  background: var(--dd-tint);
+  color: var(--dd-text);
+  cursor: pointer;
+  transition:
+    background var(--dd-t) var(--dd-ease),
+    color var(--dd-t) var(--dd-ease),
+    transform var(--dd-t-fast) var(--dd-ease),
+    box-shadow var(--dd-t) var(--dd-ease);
+}
+.btn:hover:not(:disabled) {
+  background: var(--dd-tint-hover);
+}
+.btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+.btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--dd-accent-border);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* Quiet variant: no resting fill, for toolbar-adjacent actions. */
+.ghost {
+  background: transparent;
+  color: var(--dd-text2);
+}
+.ghost:hover:not(:disabled) {
+  background: var(--dd-tint);
+  color: var(--dd-text);
+}
+
+/* Filled variants keep white text — their tokens stay saturated in both
+   schemes (see the --dd-btn-* note in themes.css). */
+.primary {
+  background: var(--dd-btn-primary);
+  color: var(--dd-white);
+  box-shadow: var(--dd-shadow-1);
+}
+.primary:hover:not(:disabled) {
+  background: var(--dd-accent-strong);
+}
+.danger {
+  background: var(--dd-btn-danger);
+  color: var(--dd-white);
+  box-shadow: var(--dd-shadow-1);
+}
+.danger:hover:not(:disabled) {
+  background: var(--dd-err);
+}
+
+.sm {
+  font-size: 11px;
+  padding: 5px 11px;
+}
+.block {
+  width: 100%;
+  justify-content: center;
+}

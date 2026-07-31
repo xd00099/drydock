@@ -1,0 +1,53 @@
+/* Square-ish glyph affordance: panel collapse chevrons, +, gear, star.
+   Previously these were bare <span onClick> with no hit area and no hover
+   feedback, which is a large part of why the chrome felt inert. */
+.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--dd-r-sm);
+  background: transparent;
+  color: var(--dd-text2);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background var(--dd-t) var(--dd-ease),
+    color var(--dd-t) var(--dd-ease),
+    transform var(--dd-t-fast) var(--dd-ease);
+}
+.icon:hover:not(:disabled) {
+  background: var(--dd-tint);
+  color: var(--dd-text);
+}
+.icon:active:not(:disabled) {
+  transform: scale(0.92);
+}
+.icon:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--dd-accent-border);
+}
+.icon:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.on {
+  background: var(--dd-tint-active);
+  color: var(--dd-text);
+}
+.sm {
+  width: 18px;
+  height: 18px;
+  font-size: 10.5px;
+}
+.lg {
+  width: 26px;
+  height: 26px;
+  font-size: 14px;
+}

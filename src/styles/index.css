@@ -1,0 +1,18 @@
+/* Style entry point. Import order is the cascade contract:
+ *
+ *   themes      — semantic COLOR tokens; :root (dark) + one block per theme
+ *   foundation  — theme-invariant shape/motion tokens + scheme-aware elevation
+ *   base        — the document shell (html/body/#root) and terminal inset
+ *   utilities   — namespaced cross-feature helpers (.md, animations, hovers)
+ *
+ * Component styles are NOT here: each lives in a *.module.css beside its
+ * component, so a scoped class replaces the inline style it grew out of.
+ *
+ * Everything stays in linked stylesheets — never an inline <style> tag. Tauri
+ * nonces inline <style>, and a nonce in style-src voids 'unsafe-inline', which
+ * would break the inline styles React still emits and xterm's injected CSS.
+ */
+@import './themes.css';
+@import './foundation.css';
+@import './base.css';
+@import './utilities.css';

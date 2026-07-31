@@ -1,0 +1,8 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Drydock Dev",
+  "identifier": "com.drydock.dev",
+  "app": {
+    "windows": [{ "title": "Drydock Dev" }]
+  }
+}
