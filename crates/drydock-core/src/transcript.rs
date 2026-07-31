@@ -359,14 +359,101 @@ pub fn files_touched(path: &Path) -> std::io::Result<Vec<FileTouch>> {
 
 /// `include_sidechain: true` counts a SUBAGENT transcript's edits — used to
 /// aggregate a session's full footprint across its agent sidecar files.
+///
+/// One-shot convenience over `TouchScan` — hold a `TouchScan` instead when the
+/// same file will be asked again, so growth costs only the appended bytes.
 pub fn files_touched_with(path: &Path, include_sidechain: bool) -> std::io::Result<Vec<FileTouch>> {
-    let text = std::fs::read_to_string(path)?;
-    let mut pending: Vec<PendingTouch> = Vec::new();
-    let mut by_id: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for line in text.lines() {
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
-        if !include_sidechain && v.get("isSidechain").and_then(Value::as_bool).unwrap_or(false) {
-            continue; // a subagent's edits belong to its own transcript
+    let mut scan = TouchScan::new(include_sidechain);
+    scan.advance(path)?;
+    Ok(scan.touches())
+}
+
+/// Bytes of consumed text remembered for rewrite detection: if the bytes just
+/// before the scan offset change, the file was rewritten under us (a resumed
+/// session restored from backup, a manual edit), not appended to.
+const TOUCH_TAIL_LEN: usize = 64;
+
+/// Resumable "files changed" scan. The transcript of a busy session grows by a
+/// few KB per turn but can be tens of MB long; re-reading the whole file to
+/// answer a panel refresh was the single largest allocation source in the app.
+/// A `TouchScan` carries the byte offset, the last consumed bytes (rewrite
+/// detection), and the open tool_use pairing state across calls, so each
+/// refresh costs only what was appended — including a tool_result that lands
+/// in a later append than its tool_use.
+pub struct TouchScan {
+    include_sidechain: bool,
+    /// Bytes consumed so far — always at a line boundary.
+    offset: u64,
+    /// The last (≤ TOUCH_TAIL_LEN) consumed bytes ending at `offset`.
+    tail: Vec<u8>,
+    /// Every file-touching call since the last MANUAL compact, in order.
+    pending: Vec<PendingTouch>,
+    /// tool_use id → index into `pending`, for pairing results to calls.
+    by_id: std::collections::HashMap<String, usize>,
+}
+
+impl TouchScan {
+    pub fn new(include_sidechain: bool) -> Self {
+        TouchScan {
+            include_sidechain,
+            offset: 0,
+            tail: Vec::new(),
+            pending: Vec::new(),
+            by_id: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Consume everything appended since the last call (complete lines only; a
+    /// partial trailing line waits for the next call). If the file shrank or
+    /// the bytes before the old offset changed, the file was rewritten — the
+    /// scan restarts from zero. Returns whether that reset happened.
+    pub fn advance(&mut self, path: &Path) -> std::io::Result<bool> {
+        let mut f = std::fs::File::open(path)?;
+        let size = f.metadata()?.len();
+        let mut reset = size < self.offset;
+        if !reset && !self.tail.is_empty() {
+            let from = self.offset - self.tail.len() as u64;
+            f.seek(SeekFrom::Start(from))?;
+            let mut probe = vec![0u8; self.tail.len()];
+            std::io::Read::read_exact(&mut f, &mut probe)?;
+            reset = probe != self.tail;
+        }
+        if reset {
+            self.offset = 0;
+            self.tail.clear();
+            self.pending.clear();
+            self.by_id.clear();
+        }
+        f.seek(SeekFrom::Start(self.offset))?;
+        let mut buf = Vec::new();
+        f.read_to_end(&mut buf)?;
+        let consumed = buf.iter().rposition(|&b| b == b'\n').map(|p| p + 1).unwrap_or(0);
+        for line in buf[..consumed].split(|&b| b == b'\n') {
+            if line.is_empty() {
+                continue;
+            }
+            // per-line utf8: the offset sits at a line boundary, so a chunk
+            // can never split a codepoint of a line it keeps
+            if let Ok(line) = std::str::from_utf8(line) {
+                self.consume_line(line);
+            }
+        }
+        self.offset += consumed as u64;
+        if consumed >= TOUCH_TAIL_LEN {
+            self.tail = buf[consumed - TOUCH_TAIL_LEN..consumed].to_vec();
+        } else {
+            self.tail.extend_from_slice(&buf[..consumed]);
+            if self.tail.len() > TOUCH_TAIL_LEN {
+                self.tail.drain(..self.tail.len() - TOUCH_TAIL_LEN);
+            }
+        }
+        Ok(reset)
+    }
+
+    fn consume_line(&mut self, line: &str) {
+        let Ok(v) = serde_json::from_str::<Value>(line) else { return };
+        if !self.include_sidechain && v.get("isSidechain").and_then(Value::as_bool).unwrap_or(false) {
+            return; // a subagent's edits belong to its own transcript
         }
         let kind = v.get("type").and_then(Value::as_str).unwrap_or("");
         // A MANUAL /compact starts a fresh chapter: "Files changed" shows what
@@ -375,12 +462,12 @@ pub fn files_touched_with(path: &Path, include_sidechain: bool) -> std::io::Resu
         if kind == "system" && v.get("subtype").and_then(Value::as_str) == Some("compact_boundary") {
             let auto = v.pointer("/compactMetadata/trigger").and_then(Value::as_str) == Some("auto");
             if !auto {
-                pending.clear();
-                by_id.clear();
+                self.pending.clear();
+                self.by_id.clear();
             }
-            continue;
+            return;
         }
-        let Some(blocks) = v.get("message").and_then(|m| m.get("content")).and_then(Value::as_array) else { continue };
+        let Some(blocks) = v.get("message").and_then(|m| m.get("content")).and_then(Value::as_array) else { return };
         match kind {
             "assistant" => {
                 for b in blocks {
@@ -399,9 +486,9 @@ pub fn files_touched_with(path: &Path, include_sidechain: bool) -> std::io::Resu
                         continue;
                     }
                     if let Some(id) = b.get("id").and_then(Value::as_str) {
-                        by_id.insert(id.to_string(), pending.len());
+                        self.by_id.insert(id.to_string(), self.pending.len());
                     }
-                    pending.push(PendingTouch {
+                    self.pending.push(PendingTouch {
                         path: file.to_string(),
                         is_write: name == "Write",
                         ts: ts_ms(&v),
@@ -423,10 +510,10 @@ pub fn files_touched_with(path: &Path, include_sidechain: bool) -> std::io::Resu
                     .collect();
                 let tur = (results.len() == 1).then(|| v.get("toolUseResult")).flatten();
                 for b in results {
-                    let Some(i) = b.get("tool_use_id").and_then(Value::as_str).and_then(|id| by_id.get(id)) else {
+                    let Some(i) = b.get("tool_use_id").and_then(Value::as_str).and_then(|id| self.by_id.get(id)) else {
                         continue;
                     };
-                    let call = &mut pending[*i];
+                    let call = &mut self.pending[*i];
                     if b.get("is_error").and_then(Value::as_bool).unwrap_or(false) {
                         call.voided = true;
                         continue;
@@ -444,31 +531,36 @@ pub fn files_touched_with(path: &Path, include_sidechain: bool) -> std::io::Resu
             _ => {}
         }
     }
-    let mut order: Vec<String> = Vec::new();
-    let mut agg: std::collections::HashMap<String, FileTouch> = std::collections::HashMap::new();
-    for call in pending {
-        if call.voided {
-            continue;
+
+    /// Aggregate the calls consumed so far, first-touched order. Cheap relative
+    /// to a parse — it walks the pending list, not the file.
+    pub fn touches(&self) -> Vec<FileTouch> {
+        let mut order: Vec<String> = Vec::new();
+        let mut agg: std::collections::HashMap<String, FileTouch> = std::collections::HashMap::new();
+        for call in &self.pending {
+            if call.voided {
+                continue;
+            }
+            let t = agg.entry(call.path.clone()).or_insert_with(|| {
+                order.push(call.path.clone());
+                FileTouch { path: call.path.clone(), edits: 0, writes: 0, adds: 0, dels: 0, created: false, last_ts: None }
+            });
+            if call.is_write {
+                t.writes += 1;
+            } else {
+                t.edits += 1;
+            }
+            let (adds, dels) = call.stats.unwrap_or(call.fallback);
+            t.adds += adds;
+            t.dels += dels;
+            t.created |= call.created;
+            t.last_ts = match (t.last_ts, call.ts) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (a, b) => a.or(b),
+            };
         }
-        let t = agg.entry(call.path.clone()).or_insert_with(|| {
-            order.push(call.path.clone());
-            FileTouch { path: call.path.clone(), edits: 0, writes: 0, adds: 0, dels: 0, created: false, last_ts: None }
-        });
-        if call.is_write {
-            t.writes += 1;
-        } else {
-            t.edits += 1;
-        }
-        let (adds, dels) = call.stats.unwrap_or(call.fallback);
-        t.adds += adds;
-        t.dels += dels;
-        t.created |= call.created;
-        t.last_ts = match (t.last_ts, call.ts) {
-            (Some(a), Some(b)) => Some(a.max(b)),
-            (a, b) => a.or(b),
-        };
+        order.into_iter().filter_map(|p| agg.remove(&p)).collect()
     }
-    Ok(order.into_iter().filter_map(|p| agg.remove(&p)).collect())
 }
 
 #[cfg(test)]
@@ -778,5 +870,133 @@ mod tests {
         let cmd = format!("echo {}", "y".repeat(5000));
         let sum = summarize_input("Bash", Some(&json!({ "command": cmd })));
         assert!(sum.chars().count() <= INPUT_SUMMARY_CHARS + 1);
+    }
+
+    /// A transcript that exercises every branch of the touch scan: paired
+    /// edits with structured diffs, a Write that creates, an errored call, a
+    /// result that names a DIFFERENT file (distrusted), a sidechain record,
+    /// both compaction kinds, and a result landing far from its call.
+    fn touch_workout() -> String {
+        let edit = |id: &str, file: &str| {
+            format!(
+                r#"{{"type":"assistant","timestamp":"2026-07-01T00:00:01.000Z","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"{id}","name":"Edit","input":{{"file_path":"{file}","old_string":"a\nb","new_string":"c"}}}}]}}}}"#
+            )
+        };
+        let write = |id: &str, file: &str| {
+            format!(
+                r#"{{"type":"assistant","timestamp":"2026-07-01T00:00:02.000Z","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"{id}","name":"Write","input":{{"file_path":"{file}","content":"x\ny\nz"}}}}]}}}}"#
+            )
+        };
+        let ok = |id: &str| {
+            format!(r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"{id}","content":"ok"}}]}}}}"#)
+        };
+        let ok_diff = |id: &str, file: &str, adds: usize| {
+            let lines: Vec<String> = (0..adds).map(|i| format!("\"+l{i}\"")).collect();
+            format!(
+                r#"{{"type":"user","toolUseResult":{{"filePath":"{file}","structuredPatch":[{{"lines":[{}]}}]}},"message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"{id}","content":"ok"}}]}}}}"#,
+                lines.join(",")
+            )
+        };
+        let created = |id: &str, file: &str| {
+            format!(
+                r#"{{"type":"user","toolUseResult":{{"type":"create","filePath":"{file}"}},"message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"{id}","content":"ok"}}]}}}}"#
+            )
+        };
+        let err = |id: &str| {
+            format!(r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"{id}","is_error":true,"content":"denied"}}]}}}}"#)
+        };
+        let side = r#"{"type":"assistant","isSidechain":true,"message":{"role":"assistant","content":[{"type":"tool_use","id":"s1","name":"Edit","input":{"file_path":"/p/agent-only.rs","old_string":"a","new_string":"b"}}]}}"#;
+        let noise = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"thinking about 漢字 and multi-byte text…"}]}}"#;
+        let compact = |trigger: &str| {
+            format!(r#"{{"type":"system","subtype":"compact_boundary","compactMetadata":{{"trigger":"{trigger}"}}}}"#)
+        };
+        [
+            edit("e1", "/p/pre-compact.rs"),
+            ok("e1"),
+            compact("manual"), // erases e1
+            edit("e2", "/p/alpha.rs"),
+            noise.to_string(), // result for e2 arrives several records later
+            side.to_string(),
+            ok_diff("e2", "/p/alpha.rs", 3),
+            write("w1", "/p/beta.rs"),
+            created("w1", "/p/beta.rs"),
+            edit("e3", "/p/gamma.rs"),
+            err("e3"), // voided
+            compact("auto"), // does NOT erase
+            edit("e4", "/p/alpha.rs"),
+            ok_diff("e4", "/p/other-file.rs", 9), // mismatched filePath: distrusted
+        ]
+        .join("\n")
+            + "\n"
+    }
+
+    #[test]
+    fn incremental_scan_matches_the_full_parse_at_every_split_point() {
+        let dir = tempfile::tempdir().unwrap();
+        let full_path = dir.path().join("full.jsonl");
+        let body = touch_workout();
+        std::fs::write(&full_path, &body).unwrap();
+        let full = files_touched_with(&full_path, false).unwrap();
+        assert!(full.iter().any(|t| t.path == "/p/alpha.rs"), "fixture sanity");
+
+        let bytes = body.as_bytes();
+        let grow_path = dir.path().join("grow.jsonl");
+        // every split point, including mid-line and mid-multibyte-codepoint
+        for cut in 0..=bytes.len() {
+            std::fs::write(&grow_path, &bytes[..cut]).unwrap();
+            let mut scan = TouchScan::new(false);
+            scan.advance(&grow_path).unwrap();
+            std::fs::write(&grow_path, bytes).unwrap();
+            let reset = scan.advance(&grow_path).unwrap();
+            assert!(!reset, "an append is not a rewrite (cut at {cut})");
+            assert_eq!(scan.touches(), full, "scan split at byte {cut} diverged");
+        }
+    }
+
+    #[test]
+    fn a_rewritten_file_resets_the_scan_even_when_it_grew() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("t.jsonl");
+        std::fs::write(&p, touch_workout()).unwrap();
+        let mut scan = TouchScan::new(false);
+        scan.advance(&p).unwrap();
+        assert!(!scan.touches().is_empty());
+
+        // replace with a LONGER file of different content: the size check
+        // alone would miss this; the tail fingerprint must catch it
+        let other = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"n1","name":"Write","input":{"file_path":"/p/new-world.rs","content":"hi"}}]}}"#;
+        let replacement = format!("{}\n", [other; 40].join("\n"));
+        assert!(replacement.len() > touch_workout().len(), "test premise: it grew");
+        std::fs::write(&p, &replacement).unwrap();
+        let reset = scan.advance(&p).unwrap();
+        assert!(reset, "changed bytes under the offset must reset");
+        assert_eq!(scan.touches(), files_touched(&p).unwrap());
+
+        // and a truncation resets too
+        std::fs::write(&p, touch_workout()).unwrap();
+        assert!(scan.advance(&p).unwrap());
+        assert_eq!(scan.touches(), files_touched(&p).unwrap());
+    }
+
+    #[test]
+    fn a_partial_trailing_line_waits_for_its_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("t.jsonl");
+        // one visible record beyond the workout, delivered in two halves
+        let late = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"l1","name":"Write","input":{"file_path":"/p/late.rs","content":"hello"}}]}}"#;
+        let body = touch_workout();
+        std::fs::write(&p, format!("{body}{}", &late[..late.len() / 2])).unwrap();
+
+        let mut scan = TouchScan::new(false);
+        scan.advance(&p).unwrap();
+        assert!(
+            !scan.touches().iter().any(|t| t.path == "/p/late.rs"),
+            "half a line must not be parsed"
+        );
+        // completing the line must be consumed by the NEXT advance, not lost
+        std::fs::write(&p, format!("{body}{late}\n")).unwrap();
+        assert!(!scan.advance(&p).unwrap(), "completing a partial line is an append");
+        assert_eq!(scan.touches(), files_touched(&p).unwrap());
+        assert!(scan.touches().iter().any(|t| t.path == "/p/late.rs"), "the deferred line landed");
     }
 }

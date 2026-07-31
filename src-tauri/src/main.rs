@@ -541,8 +541,9 @@ fn main() {
             {
                 let db = data.join("drydock.db");
                 let cache = data.join("models");
-                let emit = app.handle().clone();
-                std::thread::spawn(move || embedder::imp::run(db, cache, emit));
+                // scheduled: catch-up drain now, then twice a day; the model
+                // (and its half-GB ONNX arena) exists only while a run is live
+                std::thread::spawn(move || embedder::imp::run(db, cache));
             }
             {
                 let db = data.join("drydock.db");

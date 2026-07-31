@@ -305,61 +305,38 @@ fn merge_touches(mut base: Vec<transcript::FileTouch>, extra: Vec<transcript::Fi
 #[tauri::command(async)]
 pub fn session_files(db: State<'_, AppDb>, session_id: String) -> Result<Vec<FileTouchView>, String> {
     let path = transcript_file(&db, &session_id)?;
-    // The session's OWN transcript, behind the same (size,mtime) fingerprint the
-    // agent files below already use. `index-updated` is global — it fires when
-    // ANY session's file moves — so the panel is usually asked to re-read a
-    // transcript that hasn't changed since last tick. Parsing it costs a full
-    // read_to_string plus a serde_json::Value per line, which on a long session
-    // is tens of megabytes of allocation for a byte-identical answer.
-    static OWN_TOUCHES: std::sync::Mutex<Option<std::collections::HashMap<String, (String, Vec<transcript::FileTouch>)>>> =
+    // The session's OWN transcript, scanned INCREMENTALLY. `index-updated` is
+    // global — it fires when ANY session's file moves — and the panel refreshes
+    // on it up to ~1/s, so this used to re-read the whole file (tens of MB on a
+    // long session) for a usually byte-identical answer. A TouchScan makes the
+    // unchanged case a 64-byte probe and the growing case cost only the
+    // appended lines.
+    static OWN_SCANS: std::sync::Mutex<Option<std::collections::HashMap<String, transcript::TouchScan>>> =
         std::sync::Mutex::new(None);
-    let own_fp = std::fs::metadata(&path)
-        .map(|m| {
-            let mtime = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
-            format!("{}|{:?}", m.len(), mtime.map(|d| d.as_nanos()))
-        })
-        .unwrap_or_default();
     let mut touches = {
-        let mut cache = OWN_TOUCHES.lock().unwrap();
+        let mut cache = OWN_SCANS.lock().unwrap();
         let map = cache.get_or_insert_with(Default::default);
-        match map.get(&session_id) {
-            // an empty fingerprint means the stat failed — never trust that as a hit
-            Some((fp, cached)) if *fp == own_fp && !own_fp.is_empty() => cached.clone(),
-            _ => {
-                let fresh = transcript::files_touched(&path).map_err(|e| e.to_string())?;
-                map.insert(session_id.clone(), (own_fp, fresh.clone()));
-                fresh
-            }
-        }
+        let scan = map.entry(session_id.clone()).or_insert_with(|| transcript::TouchScan::new(false));
+        scan.advance(&path).map_err(|e| e.to_string())?;
+        scan.touches()
     };
-    // A session's footprint includes what its SUBAGENTS edited. This runs on
-    // every index tick while the panel is open, so the merged agent touches
-    // are cached per session behind a (path,size,mtime) fingerprint — agent
-    // files are append-only, any change re-parses the lot.
-    static AGENT_TOUCHES: std::sync::Mutex<Option<std::collections::HashMap<String, (String, Vec<transcript::FileTouch>)>>> =
+    // A session's footprint includes what its SUBAGENTS edited: same treatment,
+    // one incremental scan per agent file, so one agent growing no longer
+    // re-parses every sibling.
+    static AGENT_SCANS: std::sync::Mutex<Option<std::collections::HashMap<std::path::PathBuf, transcript::TouchScan>>> =
         std::sync::Mutex::new(None);
-    let agents = drydock_core::scanner::scan_session_agents(&crate::index::claude_dir(), &session_id);
-    let fingerprint = agents
-        .iter()
-        .map(|a| format!("{}|{}|{}", a.path.display(), a.size, a.mtime))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let agents = drydock_core::scanner::collect_agents_in(&agent_dirs_cached(&session_id), &session_id);
     let agent_touches = {
-        let mut cache = AGENT_TOUCHES.lock().unwrap();
+        let mut cache = AGENT_SCANS.lock().unwrap();
         let map = cache.get_or_insert_with(Default::default);
-        match map.get(&session_id) {
-            Some((fp, cached)) if *fp == fingerprint => cached.clone(),
-            _ => {
-                let mut merged: Vec<transcript::FileTouch> = Vec::new();
-                for af in &agents {
-                    if let Ok(extra) = transcript::files_touched_with(&af.path, true) {
-                        merged = merge_touches(merged, extra);
-                    }
-                }
-                map.insert(session_id.clone(), (fingerprint, merged.clone()));
-                merged
+        let mut merged: Vec<transcript::FileTouch> = Vec::new();
+        for af in &agents {
+            let scan = map.entry(af.path.clone()).or_insert_with(|| transcript::TouchScan::new(true));
+            if scan.advance(&af.path).is_ok() {
+                merged = merge_touches(merged, scan.touches());
             }
         }
+        merged
     };
     touches = merge_touches(touches, agent_touches);
     let (session_root, alt_roots) = {
@@ -383,6 +360,31 @@ pub fn session_files(db: State<'_, AppDb>, session_id: String) -> Result<Vec<Fil
     Ok(resolve_touches(touches, &session_root, &alt_roots))
 }
 
+/// Where this session's subagent sidecar dirs are, remembered briefly.
+/// Discovery walks EVERY project dir (a session's sidecars can be spread
+/// across several — the dir is chosen by the session's cwd at spawn time), and
+/// the Briefing panel asks ~1/s while open. The dir SET only changes when a
+/// session's first agent in a new project dir appears, so it tolerates a short
+/// lag; per-file stats stay fresh on every call, which is what keeps a growing
+/// agent file visible immediately.
+const AGENT_DIRS_TTL: std::time::Duration = std::time::Duration::from_secs(15);
+
+fn agent_dirs_cached(session_id: &str) -> Vec<std::path::PathBuf> {
+    static DIRS: std::sync::Mutex<
+        Option<std::collections::HashMap<String, (std::time::Instant, Vec<std::path::PathBuf>)>>,
+    > = std::sync::Mutex::new(None);
+    let mut cache = DIRS.lock().unwrap();
+    let map = cache.get_or_insert_with(Default::default);
+    if let Some((at, dirs)) = map.get(session_id) {
+        if at.elapsed() < AGENT_DIRS_TTL {
+            return dirs.clone();
+        }
+    }
+    let dirs = drydock_core::scanner::agent_dirs(&crate::index::claude_dir(), session_id);
+    map.insert(session_id.to_string(), (std::time::Instant::now(), dirs.clone()));
+    dirs
+}
+
 /// One subagent conversation attached to a session, for the transcript view's
 /// agents strip. `agent_type`/`description` come from the sidecar meta.json
 /// when present (older files carry only some fields).
@@ -397,7 +399,7 @@ pub struct AgentView {
 /// async: walks project dirs + reads meta files.
 #[tauri::command(async)]
 pub fn session_agents(session_id: String) -> Vec<AgentView> {
-    drydock_core::scanner::scan_session_agents(&crate::index::claude_dir(), &session_id)
+    drydock_core::scanner::collect_agents_in(&agent_dirs_cached(&session_id), &session_id)
         .into_iter()
         .map(|af| {
             let meta_path = af.path.with_file_name(format!("agent-{}.meta.json", af.agent_id));
@@ -419,7 +421,7 @@ pub fn session_agents(session_id: String) -> Vec<AgentView> {
 /// agent_id is only ever MATCHED against found files, never used as a path.
 #[tauri::command(async)]
 pub fn agent_transcript(session_id: String, agent_id: String, from_offset: u64) -> Result<Page, String> {
-    let af = drydock_core::scanner::scan_session_agents(&crate::index::claude_dir(), &session_id)
+    let af = drydock_core::scanner::collect_agents_in(&agent_dirs_cached(&session_id), &session_id)
         .into_iter()
         .find(|a| a.agent_id == agent_id)
         .ok_or("no such agent transcript for this session")?;

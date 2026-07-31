@@ -1,12 +1,18 @@
-//! Background embedding: keep every chunk's vector current for semantic
-//! search, with as little memory and as few wakeups as possible.
+//! Background embedding on a SCHEDULE: load the model, drain the queue, drop
+//! the model, sleep half a day. Between runs semantic queries return nothing
+//! and search serves keyword ranking — a deliberate trade.
 //!
 //! Two properties of the ONNX runtime shape this file. Its arena allocator is
 //! grow-only -- the largest `embed()` call a process ever makes becomes that
-//! process's memory floor until it exits -- and attention scratch grows as
-//! `batch x heads x tokens^2 x 4B`. Batches of 32 full-length chunks reserved
-//! ~1.9GB that was never handed back, so a batch is now capped by BOTH item
-//! count and character count (see `pace`).
+//! process's memory floor FOR AS LONG AS THE SESSION LIVES -- and attention
+//! scratch grows as `batch x heads x tokens^2 x 4B`. Batches of 32 full-length
+//! chunks reserved ~1.9GB; capping batches (see `pace`) brought the arena to
+//! ~512MB, but a resident model still made that half-gigabyte the app's
+//! permanent floor. Dropping the model between runs releases the arena AND the
+//! ~110MB of weights; a machine under memory pressure gets all of it back for
+//! the ~23.9 hours a day the queue is empty anyway. New chunks are
+//! keyword-searchable the moment they are written, so the schedule only delays
+//! the newest turns joining the SEMANTIC index, never their findability.
 //!
 //! Deliberately NOT done: truncating chunk text before embedding. e5 already
 //! truncates at 512 tokens, which ~2,000 characters barely reaches, so a
@@ -18,14 +24,36 @@
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
-/// 0 = unavailable, 1 = indexing, 2 = ready (model loaded, all chunks embedded)
+/// 0 = unavailable (model init failed), 1 = indexing (a drain run is live),
+/// 2 = ready (model loaded, queue empty — brief, mid-run), 3 = parked (vectors
+/// stored, model unloaded until the next scheduled run; queries fall back to
+/// keyword ranking).
 pub static SEMANTIC_STATE: AtomicU8 = AtomicU8::new(0);
 
 pub fn semantic_status() -> &'static str {
     match SEMANTIC_STATE.load(Ordering::Relaxed) {
+        3 => "parked",
         2 => "ready",
         1 => "indexing",
         _ => "unavailable",
+    }
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::*;
+
+    /// The search palette switches on these strings; "parked" is what the
+    /// scheduled lifecycle reports between runs, and anything the frontend
+    /// doesn't recognize renders as plain keyword search — which is exactly
+    /// what parked means, so even an older frontend stays honest.
+    #[test]
+    fn every_state_has_a_name_and_parked_is_distinct() {
+        for (v, s) in [(0u8, "unavailable"), (1, "indexing"), (2, "ready"), (3, "parked")] {
+            SEMANTIC_STATE.store(v, Ordering::Relaxed);
+            assert_eq!(semantic_status(), s);
+        }
+        SEMANTIC_STATE.store(0, Ordering::Relaxed);
     }
 }
 
@@ -74,7 +102,10 @@ pub mod pace {
         /// At least one embedding was STORED -- the only outcome that earns
         /// another immediate iteration.
         Progress,
-        /// Nothing pending: the steady state, ~all of the time.
+        /// Nothing pending. Under the scheduled lifecycle the drain RETURNS
+        /// here instead of idling, so this arm's backoff only matters to the
+        /// tests that pin it -- kept because Pacer is a pure schedule and
+        /// "what does idling cost" should stay provable.
         Drained,
         /// Rows were pending and none of them landed (model error, failed
         /// write, poison row). Must never be retried at full speed.
@@ -224,100 +255,140 @@ pub mod imp {
     use super::SEMANTIC_STATE;
     use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
     use drydock_core::store::Store;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::Ordering;
-    use std::sync::OnceLock;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    // OnceLock, not Mutex: embed() takes &self, so queries never wait on the
-    // background batch loop (which used to hold a lock for seconds per batch).
-    static MODEL: OnceLock<TextEmbedding> = OnceLock::new();
+    /// The model, present only while a drain run is live. An `Arc` inside a
+    /// Mutex rather than the model itself: `embed_query` clones the Arc out and
+    /// releases the lock BEFORE embedding, so a search never waits on the batch
+    /// loop and the batch loop never waits on a search. When the run ends the
+    /// slot goes back to None and the last Arc drop releases the ONNX session —
+    /// its grow-only arena and the ~110MB of weights with it.
+    static MODEL: Mutex<Option<Arc<TextEmbedding>>> = Mutex::new(None);
 
     // Bump this string whenever the embedding recipe changes (model, prefix,
     // pooling) to force a one-time re-embed of every chunk on next launch.
     const EMBEDDING_VERSION: &str = "e5-small-passage-v1";
 
-    /// Wait before taking a fresh connection after one stops answering.
+    /// Wait between attempts to open the store (the watcher's initial sync can
+    /// hold the lock for a moment at startup).
     const REOPEN_DELAY: Duration = Duration::from_secs(5);
     /// Consecutive failed queue reads before the connection is written off.
-    /// Reopening is how the old per-tick `Store::open` shrugged off a locked or
-    /// replaced DB; with one long-lived connection we have to ask for it.
     const DB_ERROR_LIMIT: u32 = 5;
-    /// How often the queue is re-derived from the anti-join it materializes.
-    const RECONCILE_EVERY: Duration = Duration::from_secs(1800);
+    /// Store-open attempts per run before giving up until the next run.
+    const OPEN_ATTEMPTS: u32 = 6;
+    /// Time between drain runs: twice a day. Chunks written in between stay
+    /// keyword-searchable immediately; they join the semantic index at the
+    /// next run. Restarting the app also runs a catch-up drain.
+    const RUN_EVERY: Duration = Duration::from_secs(12 * 60 * 60);
 
-    /// Background loop: load the model once (downloads ~110MB on first run),
-    /// then drain unembedded chunks forever at low priority. Once drained, it
-    /// also refreshes the semantic session hues (see `hues`) and pokes the UI.
-    pub fn run(db_path: PathBuf, cache_dir: PathBuf, emit: tauri::AppHandle) {
+    /// Scheduled embedding: a catch-up run at launch, then one run every
+    /// `RUN_EVERY`. All the memory lives inside `run_once`.
+    pub fn run(db_path: PathBuf, cache_dir: PathBuf) {
+        let mut migrated = false;
+        loop {
+            run_once(&db_path, &cache_dir, &mut migrated);
+            std::thread::sleep(RUN_EVERY);
+        }
+    }
+
+    fn open_store(db_path: &Path) -> Option<Store> {
+        for attempt in 0..OPEN_ATTEMPTS {
+            match Store::open(db_path) {
+                Ok(s) => return Some(s),
+                Err(e) if attempt + 1 == OPEN_ATTEMPTS => {
+                    eprintln!("embedder: store unavailable, skipping this run: {e:#}");
+                }
+                Err(_) => std::thread::sleep(REOPEN_DELAY),
+            }
+        }
+        None
+    }
+
+    /// One drain run: reconcile the queue, and only if there is actual work,
+    /// load the model, drain to empty, and unload it again. A day where
+    /// nothing changed never pays the model load at all.
+    fn run_once(db_path: &Path, cache_dir: &Path, migrated: &mut bool) {
+        let Some(mut store) = open_store(db_path) else { return };
+        // One-time re-embed on a recipe change: older embeddings lack the e5
+        // `passage:` prefix and so sit in a different space than `query:`-
+        // prefixed searches. Dropping every vector re-queues them all.
+        if !*migrated {
+            if store.meta_get("embedding_version").ok().flatten().as_deref() != Some(EMBEDDING_VERSION) {
+                if let Ok(n) = store.clear_embeddings() {
+                    if n > 0 {
+                        eprintln!("re-embedding {n} chunks with the e5 passage: prefix");
+                    }
+                }
+                let _ = store.meta_set("embedding_version", EMBEDDING_VERSION);
+            }
+            *migrated = true;
+        }
+        // `embed_queue` is a materialized view of the "no vector yet" anti-join,
+        // kept current by DB triggers. Re-deriving it at the start of each run
+        // is what makes trusting it safe -- including across a DB shared with
+        // an older build (see Store::reconcile_embed_queue).
+        let _ = store.reconcile_embed_queue();
+        if store.embed_queue_is_empty().unwrap_or(false) {
+            let _ = crate::hues::refresh(&store);
+            SEMANTIC_STATE.store(3, Ordering::Relaxed);
+            return;
+        }
+
         let model = match TextEmbedding::try_new(
-            InitOptions::new(EmbeddingModel::MultilingualE5Small).with_cache_dir(cache_dir),
+            InitOptions::new(EmbeddingModel::MultilingualE5Small).with_cache_dir(cache_dir.to_path_buf()),
         ) {
-            Ok(m) => m,
+            Ok(m) => Arc::new(m),
             Err(e) => {
-                eprintln!("semantic search disabled (model init failed): {e:#}");
+                eprintln!("semantic search disabled this run (model init failed): {e:#}");
                 SEMANTIC_STATE.store(0, Ordering::Relaxed);
                 return;
             }
         };
-        let _ = MODEL.set(model);
-        let Some(model) = MODEL.get() else { return };
+        // publish for queries: semantic search works while the run is live
+        *MODEL.lock().unwrap() = Some(model.clone());
         SEMANTIC_STATE.store(1, Ordering::Relaxed);
 
-        let mut migrated = false;
         loop {
-            let Ok(mut store) = Store::open(&db_path) else {
-                std::thread::sleep(REOPEN_DELAY);
-                continue;
-            };
-            // One-time re-embed, on the first store we can actually open (the
-            // watcher's initial sync may hold the lock for a moment at startup):
-            // older embeddings lack the e5 `passage:` prefix and so sit in a
-            // different space than `query:`-prefixed searches. On a recipe
-            // version change, drop every vector so the loop re-embeds them all.
-            if !migrated {
-                if store.meta_get("embedding_version").ok().flatten().as_deref() != Some(EMBEDDING_VERSION) {
-                    if let Ok(n) = store.clear_embeddings() {
-                        if n > 0 {
-                            eprintln!("re-embedding {n} chunks with the e5 passage: prefix");
-                        }
-                    }
-                    let _ = store.meta_set("embedding_version", EMBEDDING_VERSION);
-                }
-                migrated = true;
+            match drain(&mut store, &model) {
+                DrainEnd::Empty => break,
+                // Reopening is how the old per-tick Store::open shrugged off a
+                // locked or replaced DB; with a long-lived connection we ask.
+                DrainEnd::ConnBroken => match open_store(db_path) {
+                    Some(s) => store = s,
+                    None => break,
+                },
             }
-            // The connection is now long-lived -- reopening it 28,800 times a
-            // day re-ran 16 CREATE ... IF NOT EXISTS statements for nothing --
-            // so `drain` hands it back when it stops answering and we take a
-            // fresh one here.
-            drain(&mut store, model, &emit);
-            std::thread::sleep(REOPEN_DELAY);
         }
+        // Session hues are maintained even though nothing renders them today:
+        // they are the stored substrate for on-demand "find similar" features.
+        // No UI event — since the sidebar stopped wearing topic colors there
+        // is nothing on screen for this to refresh.
+        let _ = crate::hues::refresh(&store);
+
+        *MODEL.lock().unwrap() = None;
+        drop(model); // the last Arc frees the session, its arena, the weights
+        SEMANTIC_STATE.store(3, Ordering::Relaxed);
     }
 
-    /// Keep the queue empty on one connection. Returns only when that
-    /// connection has failed `DB_ERROR_LIMIT` reads in a row.
-    fn drain(store: &mut Store, model: &TextEmbedding, emit: &tauri::AppHandle) {
-        use tauri::Emitter;
+    enum DrainEnd {
+        /// Nothing workable left in the queue (drained, or the remainder is
+        /// parked past MAX_EMBED_ATTEMPTS until the next run's reconcile).
+        Empty,
+        /// The store connection stopped answering; caller reopens.
+        ConnBroken,
+    }
+
+    /// Drain the queue on one connection.
+    fn drain(store: &mut Store, model: &TextEmbedding) -> DrainEnd {
         let mut pacer = Pacer::default();
-        // hue maintenance is due at startup (catch up on earlier runs) and
-        // after any embedding work; stale-ness can't change otherwise
-        let mut recolor_due = true;
         let mut db_errors = 0u32;
         // Set after a multi-row batch fails in the model, so the next pass
         // isolates the offending chunk (see the `narrow` use below).
         let mut narrow = false;
-        // `embed_queue` is a materialized view of the "no vector yet" anti-join,
-        // kept current by DB triggers. Re-deriving it on connect and on a slow
-        // timer is what makes trusting it safe -- including across a DB shared
-        // with an older build (see Store::reconcile_embed_queue).
-        let mut reconciled_at = std::time::Instant::now();
-        let _ = store.reconcile_embed_queue();
         loop {
-            if reconciled_at.elapsed() >= RECONCILE_EVERY {
-                reconciled_at = std::time::Instant::now();
-                let _ = store.reconcile_embed_queue();
-            }
             let pending = match store.pending_embeddings(MAX_BATCH as i64, MAX_EMBED_ATTEMPTS) {
                 Ok(rows) => {
                     db_errors = 0;
@@ -327,39 +398,21 @@ pub mod imp {
                     db_errors += 1;
                     eprintln!("embed queue read failed ({db_errors}): {e:#}");
                     if db_errors >= DB_ERROR_LIMIT {
-                        return; // run() reopens
+                        return DrainEnd::ConnBroken;
                     }
                     std::thread::sleep(pacer.next_delay(Step::Stalled));
                     continue;
                 }
             };
-            let step = if pending.is_empty() {
-                // Rows parked past MAX_EMBED_ATTEMPTS are filtered OUT of
-                // `pending`, so an empty page is not the same as an embedded
-                // corpus. Report "ready" only when the queue itself is empty --
-                // otherwise the search palette drops its "semantic index
-                // catching up -- keyword results" hint while recall really is
-                // still incomplete, which is a lie the user cannot see through.
-                let all_done = store.embed_queue_is_empty().unwrap_or(false);
-                SEMANTIC_STATE.store(if all_done { 2 } else { 1 }, Ordering::Relaxed);
-                if recolor_due {
-                    recolor_due = false;
-                    if crate::hues::refresh(store) > 0 {
-                        let _ = emit.emit("index-updated", ()); // recolor the sidebar/tabs now
-                    }
-                }
-                Step::Drained
-            } else {
-                SEMANTIC_STATE.store(1, Ordering::Relaxed);
-                // After a whole-batch model failure, retry one row at a time so
-                // the blame lands on the chunk that actually caused it instead
-                // of on the healthy rows that happened to share its batch.
-                let n = if narrow { 1 } else { batch_len(&pending) };
-                let step = embed_batch(store, model, &pending[..n]);
-                narrow = step == Step::Stalled && n > 1;
-                recolor_due |= step == Step::Progress;
-                step
-            };
+            if pending.is_empty() {
+                return DrainEnd::Empty;
+            }
+            // After a whole-batch model failure, retry one row at a time so
+            // the blame lands on the chunk that actually caused it instead
+            // of on the healthy rows that happened to share its batch.
+            let n = if narrow { 1 } else { batch_len(&pending) };
+            let step = embed_batch(store, model, &pending[..n]);
+            narrow = step == Step::Stalled && n > 1;
             let delay = pacer.next_delay(step);
             if !delay.is_zero() {
                 std::thread::sleep(delay);
@@ -417,8 +470,12 @@ pub mod imp {
     /// Embed a search query. e5 models pair a `query:` prefix on searches with
     /// a `passage:` prefix on documents; fastembed adds neither, so we prepend
     /// it here (and `passage:` in the background loop).
+    ///
+    /// None whenever the model is parked (most of the time, by design): the
+    /// caller serves keyword ranking instead. The Arc is cloned out and the
+    /// lock released before embedding — see `MODEL`.
     pub fn embed_query(q: &str) -> Option<Vec<f32>> {
-        let model = MODEL.get()?;
+        let model = MODEL.lock().unwrap().clone()?;
         model
             .embed(vec![format!("query: {q}")], None)
             .ok()?
@@ -430,7 +487,7 @@ pub mod imp {
 #[cfg(not(feature = "semantic"))]
 pub mod imp {
     use std::path::PathBuf;
-    pub fn run(_db: PathBuf, _cache: PathBuf, _emit: tauri::AppHandle) {}
+    pub fn run(_db: PathBuf, _cache: PathBuf) {}
     pub fn embed_query(_q: &str) -> Option<Vec<f32>> {
         None
     }

@@ -76,14 +76,35 @@ fn dedup_agents(mut agents: Vec<AgentFile>) -> Vec<AgentFile> {
     agents
 }
 
-/// ONE session's subagent transcripts, wherever its sidecar dirs landed.
-pub fn scan_session_agents(claude_dir: &Path, session_id: &str) -> Vec<AgentFile> {
+/// Where ONE session's subagent sidecar dirs live. Split from the collection
+/// so a caller that asks repeatedly (the Briefing panel, ~1/s while open) can
+/// cache the DISCOVERY — a walk across every project dir — while still taking
+/// fresh per-file stats each time, which is what keeps a growing agent file
+/// visible immediately.
+pub fn agent_dirs(claude_dir: &Path, session_id: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let Ok(project_dirs) = std::fs::read_dir(claude_dir.join("projects")) else { return out };
     for proj in project_dirs.flatten() {
-        collect_agents(&proj.path().join(session_id).join("subagents"), session_id, 5, &mut out);
+        let dir = proj.path().join(session_id).join("subagents");
+        if dir.is_dir() {
+            out.push(dir);
+        }
+    }
+    out
+}
+
+/// Collect (fresh stats) and dedup the agent files under known sidecar dirs.
+pub fn collect_agents_in(dirs: &[PathBuf], session_id: &str) -> Vec<AgentFile> {
+    let mut out = Vec::new();
+    for dir in dirs {
+        collect_agents(dir, session_id, 5, &mut out);
     }
     dedup_agents(out)
+}
+
+/// ONE session's subagent transcripts, wherever its sidecar dirs landed.
+pub fn scan_session_agents(claude_dir: &Path, session_id: &str) -> Vec<AgentFile> {
+    collect_agents_in(&agent_dirs(claude_dir, session_id), session_id)
 }
 
 /// Every subagent transcript under every project dir's session sidecars.

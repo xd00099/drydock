@@ -36,7 +36,7 @@ pub struct SearchResult {
 #[derive(serde::Serialize)]
 pub struct SearchResponse {
     pub results: Vec<SearchResult>,
-    pub semantic: String, // "ready" | "indexing" | "unavailable"
+    pub semantic: String, // "ready" | "indexing" | "parked" (model unloaded between scheduled runs — keyword ranking) | "unavailable"
 }
 
 fn session_passes(s: &SessionView, p: &ParsedQuery) -> bool {

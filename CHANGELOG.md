@@ -4,6 +4,35 @@ Each tagged release's `## vX.Y.Z` section becomes the GitHub release body and
 the in-app updater's release notes (extracted by `scripts/release-notes.py` in
 CI — a tag without its section fails the release).
 
+## v0.6.2 — 2026-07-30
+
+### Half a gigabyte back
+
+- **The semantic-search model now runs on a schedule instead of living in
+  memory.** The ONNX runtime's allocator never shrinks: the largest batch it
+  ever serves becomes the app's memory floor until quit — measured at 512 MB,
+  the single biggest allocation in the process. The embedder now wakes at
+  launch and then twice a day, indexes whatever is new, and unloads the model
+  completely; the arena and the 110 MB of weights go back to the OS. On a day
+  where nothing changed, the model never loads at all.
+- **What that trades:** between runs, search is keyword ranking — the palette
+  says so — and new sessions join the *semantic* index at the next run rather
+  than within seconds. Everything is keyword-searchable the moment it is
+  written, exactly as before.
+
+### "Files changed" stops re-reading the world
+
+- The Briefing panel's file list used to re-parse the session's entire
+  transcript on refresh — tens of megabytes on a long session, up to once a
+  second while it worked. The scan is now incremental: it remembers where it
+  stopped, detects rewrites, and pays only for the lines appended since. An
+  unchanged transcript costs a 64-byte probe.
+- Subagent transcripts get the same treatment individually, so one agent
+  finishing no longer re-parses every sibling. Finding those files (a walk
+  across every project dir) is also cached briefly.
+- Session topic hues are still maintained for future use, but no longer poke
+  the UI after embedding work — nothing on screen renders them anymore.
+
 ## v0.6.1 — 2026-07-30
 
 ### The app no longer freezes under load
