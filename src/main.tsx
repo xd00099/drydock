@@ -1,8 +1,8 @@
 import ReactDOM from 'react-dom/client'
-import App from './App'
-import ErrorBoundary from './ErrorBoundary'
-import { initTheme } from './theme'
-import './index.css'
+import App from '@/app/App'
+import ErrorBoundary from '@/app/ErrorBoundary'
+import { initTheme } from '@/lib/theme'
+import '@/styles/index.css'
 
 // Theme attribute must be set before the first paint — a light-theme user
 // must not flash dark chrome on launch.

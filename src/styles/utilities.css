@@ -1,0 +1,95 @@
+/* Namespaced helpers shared across features: markdown rendering, attention
+   animations, and hover-reveal affordances. No component owns these. */
+
+/* Markdown rendering for assistant turns in the transcript view. Namespaced
+   under .md so nothing leaks into the (inline-styled) rest of the UI. */
+.md { line-height: 1.5; overflow-wrap: break-word; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p, .md ul, .md ol, .md pre, .md blockquote, .md table { margin: 6px 0; }
+.md h1, .md h2, .md h3, .md h4 { margin: 10px 0 4px; line-height: 1.25; color: var(--dd-text); }
+.md h1 { font-size: 15px; }
+.md h2 { font-size: 14px; }
+.md h3, .md h4 { font-size: 13px; }
+.md a { color: var(--dd-accent); }
+.md code { font-family: Menlo, Monaco, monospace; font-size: 11px; background: var(--dd-row); border-radius: 3px; padding: 1px 4px; }
+.md pre { background: var(--dd-bg0); border: 1px solid var(--dd-border); border-radius: 6px; padding: 8px 10px; overflow-x: auto; }
+.md pre code { background: none; padding: 0; }
+.md ul, .md ol { padding-left: 20px; }
+.md blockquote { margin-left: 0; padding-left: 10px; border-left: 3px solid var(--dd-border2); color: var(--dd-text2); }
+.md table { border-collapse: collapse; }
+.md td, .md th { border: 1px solid var(--dd-border2); padding: 3px 8px; }
+.md hr { border: none; border-top: 1px solid var(--dd-border); }
+.md img { max-width: 100%; }
+
+/* Attention pulse: the "needs your input" dot in the sidebar/tabs. opacity is a
+   compositor property, so the GPU replays this fade without repainting the dot.
+   It does still wake the compositor at display rate (120Hz on ProMotion) for as
+   long as the session waits — if that idle cost ever outweighs the alert, give
+   it a bounded run count (`1.2s ease-in-out 25` = 30s) and the motion stops
+   while the dot stays steady amber, since there is no fill-mode to strand it. */
+@keyframes dd-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.dd-attn { animation: dd-pulse 1.2s ease-in-out infinite; }
+
+/* "Files changed" rows: quiet until hovered; the Finder-reveal button only
+   materializes on hover so the diffstat column stays clean. */
+.dd-filerow:hover { background: var(--dd-btn); }
+.dd-filerow .dd-reveal { visibility: hidden; }
+.dd-filerow:hover .dd-reveal { visibility: visible; }
+
+/* A just-filed session row flashes once where it landed (the animation
+   momentarily overrides the row's inline background, then hands it back —
+   which for an unselected row is transparent, and for the selected one is
+   --dd-row). */
+@keyframes dd-land {
+  0% { background: rgba(79, 127, 217, 0.4); }
+  100% { background: transparent; }
+}
+.dd-landed { animation: dd-land 0.7s ease-out; }
+
+/* Session rows: the read-transcript shortcut only materializes on hover,
+   keeping rows quiet (same pattern as the file rows' Finder button). */
+.dd-sessrow .dd-rowbtn { visibility: hidden; }
+.dd-sessrow:hover .dd-rowbtn { visibility: visible; }
+.dd-rowbtn:hover { color: var(--dd-accent-text) !important; }
+
+/* Split screen: an unfocused pane whose session is blocked on you wears a
+   pulsing amber frame (the split-mode sibling of the sidebar/tab dd-attn dot).
+   The ring is its OWN element laid over the pane's rect — not the pane's
+   border, not a ::before inside it — for two reasons. A pane sets
+   overflow:hidden, and overflow clips descendants to the PADDING box, so
+   nothing drawn inside a pane can ever paint on its 2px border ring. And out
+   here, with no clipping ancestor, the fade is a plain opacity animation the
+   GPU replays by itself; the border-color pulse this replaces was a PAINT
+   property, repainting the whole frame on the CPU every frame for as long as
+   the session waited. App.tsx makes the lit pane's own border transparent and
+   hands this ring the same rect, so the amber lands on exactly the pixels the
+   border used to own — solid at the peak, 0.3 over the pane's background at
+   the trough, which is what the old keyframes produced. The amber comes from
+   the theme token instead of a baked-in rgba, so light themes stop pulsing in
+   the dark theme's amber. */
+.dd-attnring {
+  box-sizing: border-box;
+  border: 2px solid var(--dd-warn);
+  border-radius: 4px;
+  pointer-events: none;
+  animation: dd-ringpulse 1.2s ease-in-out infinite;
+}
+@keyframes dd-ringpulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* Reduced motion is also a power setting. Both attention animations resolve to
+   their lit state, so "waiting on you" still reads as amber — it just stops
+   moving. (.dd-landed stays: a one-shot 0.7s flash isn't ambient motion, it's
+   the answer to "where did that row just go?", and it ends on its own.) */
+@media (prefers-reduced-motion: reduce) {
+  .dd-attn, .dd-attnring { animation: none; }
+}
+
+/* Pane divider: invisible until hovered so the gutter stays quiet. */
+.dd-divider:hover { background: rgba(127, 176, 255, 0.22); }

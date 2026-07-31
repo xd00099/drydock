@@ -1,0 +1,89 @@
+/* Theme-INVARIANT design tokens: radius, elevation, motion, rhythm.
+ *
+ * Deliberately NOT in themes.css. That file's contract (enforced by
+ * theme.test.ts) is that every html[data-theme] block redefines the full
+ * :root token set — correct for colors, pointless churn for a radius scale
+ * that never varies by palette. Keeping the two layers apart means adding a
+ * shape/motion token costs one line here instead of nineteen there.
+ *
+ * The one exception is elevation: a shadow that reads on near-black chrome is
+ * invisible on paper, so the umbra/tint values flip per color-scheme at the
+ * bottom of this file — still one place, not nineteen.
+ */
+:root {
+  /* ---- radius scale ----
+     The old UI only had 3/4/6px, which is what made it read as classic
+     desktop chrome. Cards and popovers now sit at lg/xl; controls at md. */
+  --dd-r-xs: 4px;
+  --dd-r-sm: 6px;
+  --dd-r-md: 8px;
+  --dd-r-lg: 10px;
+  --dd-r-xl: 13px;
+  --dd-r-pill: 999px;
+
+  /* ---- motion ----
+     There were zero transitions before this. --dd-t is the default for any
+     hover/selection state change; anything slower feels sluggish in a tool
+     you drive by keyboard. */
+  --dd-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --dd-t-fast: 100ms;
+  --dd-t: 140ms;
+  --dd-t-slow: 220ms;
+
+  /* ---- rhythm ----
+     A 4px-based scale so padding stops being ad-hoc per component. */
+  --dd-gap-1: 4px;
+  --dd-gap-2: 7px;
+  --dd-gap-3: 11px;
+  --dd-gap-4: 15px;
+  --dd-gap-5: 22px;
+
+  /* ---- window chrome ----
+     Height of the draggable strip that replaces the native titlebar. Traffic
+     lights are drawn by macOS at ~(14, 14); the sidebar header indents past
+     them (see the shell's --dd-lights-inset consumer). */
+  --dd-titlebar: 32px;
+  --dd-lights-inset: 78px;
+
+  /* ---- elevation + surface tints (dark default) ----
+     `hairline` replaces hard 1px borders: separation now comes from a
+     near-invisible edge plus surface tone, not a drawn rule. */
+  --dd-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.32);
+  --dd-shadow-2: 0 2px 8px rgba(0, 0, 0, 0.34);
+  --dd-shadow-3: 0 14px 36px rgba(0, 0, 0, 0.48);
+  --dd-hairline: rgba(255, 255, 255, 0.07);
+  --dd-hairline-strong: rgba(255, 255, 255, 0.12);
+  --dd-tint: rgba(255, 255, 255, 0.05);
+  --dd-tint-hover: rgba(255, 255, 255, 0.075);
+  --dd-tint-active: rgba(255, 255, 255, 0.11);
+}
+
+/* Light schemes: ink-based shadows and tints. Grouped rather than per-theme —
+   elevation depends on the scheme, not the palette. */
+html[data-theme='light'],
+html[data-theme='solarized-light'],
+html[data-theme='gruvbox-light'],
+html[data-theme='tokyo-day'],
+html[data-theme='catppuccin-latte'],
+html[data-theme='rose-pine-dawn'],
+html[data-theme='one-light'],
+html[data-theme='kanagawa-lotus'] {
+  --dd-shadow-1: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --dd-shadow-2: 0 2px 8px rgba(15, 23, 42, 0.08);
+  --dd-shadow-3: 0 14px 36px rgba(15, 23, 42, 0.16);
+  --dd-hairline: rgba(15, 23, 42, 0.07);
+  --dd-hairline-strong: rgba(15, 23, 42, 0.12);
+  --dd-tint: rgba(15, 23, 42, 0.04);
+  --dd-tint-hover: rgba(15, 23, 42, 0.06);
+  --dd-tint-active: rgba(15, 23, 42, 0.085);
+}
+
+/* Motion is a power/accessibility setting: collapse durations rather than
+   dropping the transitions, so state changes still commit instantly. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dd-t-fast: 0ms;
+    --dd-t: 0ms;
+    --dd-t-slow: 0ms;
+  }
+}

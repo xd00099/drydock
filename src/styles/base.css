@@ -1,0 +1,21 @@
+/* Document shell: the fixed viewport-filling frame and terminal inset.
+   Color comes from tokens in themes.css. */
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--dd-bg1);
+  /* the app is a fixed viewport-filling shell: any accidental overflow (e.g. a
+     panel wider than the window) must clip, not pan/rubber-band the document */
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* Breathing room inside terminals, matching the transcript's inset. FitAddon
+   subtracts computed padding when sizing cols/rows, so the PTY stays correct. */
+.xterm {
+  padding: 4px 6px;
+}
