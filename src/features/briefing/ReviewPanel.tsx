@@ -46,7 +46,7 @@ export function ReviewPanel({
           </div>
         ))}
         {review.prompts.map((p, i) => (
-          <div key={`q${i}`} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 11, lineHeight: 1.4, background: 'var(--dd-surface2)', border: `1px solid ${accent}`, borderRadius: 6, padding: '4px 6px' }}>
+          <div key={`q${i}`} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 11, lineHeight: 1.4, background: 'var(--dd-surface2)', border: `1px solid ${accent}`, borderRadius: 'var(--dd-r-md)', padding: '4px 6px' }}>
             <span style={{ flex: 1, color: 'var(--dd-text1)', overflowWrap: 'anywhere' }}>
               {p.tag !== 'message' && (
                 <span style={{ color: accent }}>{p.tag === 'text' ? `“${clip(p.text, 40)}” ` : `⟨${p.tag}⟩ `}</span>
@@ -75,14 +75,14 @@ export function ReviewPanel({
           placeholder={busy ? 'Claude is applying your feedback…' : 'Message Claude about this artifact…'}
           disabled={busy}
           rows={2}
-          style={{ flex: 1, resize: 'none', background: 'var(--dd-bg1)', color: 'var(--dd-text)', border: '1px solid var(--dd-border2)', borderRadius: 6, padding: '6px 8px', fontSize: 11, fontFamily: 'system-ui' }}
+          style={{ flex: 1, resize: 'none', background: 'var(--dd-bg1)', color: 'var(--dd-text)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', padding: '6px 8px', fontSize: 11, fontFamily: 'system-ui' }}
         />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <button
             onClick={() => send(false)}
             disabled={!canSend}
             title="Send queued annotations + message to Claude"
-            style={{ background: canSend ? accent : 'var(--dd-hover)', color: canSend ? 'var(--dd-ink)' : 'var(--dd-dim)', border: 'none', borderRadius: 6, padding: '5px 10px', fontSize: 11, fontWeight: 700, cursor: canSend ? 'pointer' : 'default', whiteSpace: 'nowrap' }}
+            style={{ background: canSend ? accent : 'var(--dd-hover)', color: canSend ? 'var(--dd-ink)' : 'var(--dd-dim)', border: 'none', borderRadius: 'var(--dd-r-md)', padding: '5px 10px', fontSize: 11, fontWeight: 700, cursor: canSend ? 'pointer' : 'default', whiteSpace: 'nowrap' }}
           >
             Send{review.prompts.length ? ` (${review.prompts.length})` : ''}
           </button>
@@ -90,7 +90,7 @@ export function ReviewPanel({
             onClick={() => send(true)}
             disabled={busy}
             title="Send everything and end the review — Claude stops polling"
-            style={{ background: 'none', color: busy ? 'var(--dd-dim2)' : 'var(--dd-text3)', border: '1px solid var(--dd-border2)', borderRadius: 6, padding: '3px 10px', fontSize: 10, cursor: busy ? 'default' : 'pointer', whiteSpace: 'nowrap' }}
+            style={{ background: 'none', color: busy ? 'var(--dd-dim2)' : 'var(--dd-text3)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', padding: '3px 10px', fontSize: 10, cursor: busy ? 'default' : 'pointer', whiteSpace: 'nowrap' }}
           >
             Send & end
           </button>

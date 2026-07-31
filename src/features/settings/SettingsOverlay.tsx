@@ -17,7 +17,7 @@ const S = {
   wrap: { position: 'fixed', inset: 0, zIndex: 85, background: 'var(--dd-bg0)', display: 'flex', flexDirection: 'column', transform: 'translateZ(0)', outline: 'none', fontFamily: 'system-ui' } as React.CSSProperties,
   head: { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid var(--dd-hairline)' } as React.CSSProperties,
   title: { flex: 1, color: 'var(--dd-text)', fontWeight: 600, fontSize: 13 } as React.CSSProperties,
-  close: { background: 'none', border: '1px solid var(--dd-border2)', borderRadius: 4, cursor: 'pointer', color: 'var(--dd-text2)', fontSize: 12, lineHeight: 1, padding: '2px 6px' } as React.CSSProperties,
+  close: { background: 'none', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-sm)', cursor: 'pointer', color: 'var(--dd-text2)', fontSize: 12, lineHeight: 1, padding: '2px 6px' } as React.CSSProperties,
   body: { flex: 1, minHeight: 0, display: 'flex' } as React.CSSProperties,
   rail: { width: 160, borderRight: '1px solid var(--dd-hairline)', padding: '10px 0', display: 'flex', flexDirection: 'column', gap: 2, flexShrink: 0 } as React.CSSProperties,
   railBtn: (on: boolean) => ({ textAlign: 'left', background: on ? 'var(--dd-btn)' : 'none', border: 'none', borderLeft: on ? '2px solid var(--dd-accent-text)' : '2px solid transparent', color: on ? 'var(--dd-text)' : 'var(--dd-text3)', fontSize: 12, padding: '7px 14px', cursor: 'pointer' }) as React.CSSProperties,
@@ -64,7 +64,7 @@ function GeneralPanel() {
           <div style={S.rowDesc}>Where bare names in the “New claude session” dialog ({newChord}) land: “newthing” becomes {parent.replace(/\/+$/, '')}/newthing.</div>
         </div>
         <input value={parent} onChange={(e) => setParent(e.target.value)} spellCheck={false}
-          style={{ background: 'var(--dd-btn)', border: '1px solid var(--dd-border2)', borderRadius: 5, color: 'var(--dd-text)', fontSize: 12, fontFamily: 'ui-monospace, monospace', padding: '4px 8px', width: 200 }} />
+          style={{ background: 'var(--dd-btn)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', color: 'var(--dd-text)', fontSize: 12, fontFamily: 'ui-monospace, monospace', padding: '4px 8px', width: 200 }} />
       </div>
       <div style={S.row}>
         <div style={S.rowText}>
@@ -155,7 +155,7 @@ function ShortcutsPanel() {
                 )}
                 <button
                   onClick={() => { setRecording(rec ? null : a.id); setSteal(null); setNotice(null) }}
-                  style={{ minWidth: 84, textAlign: 'center', background: rec ? 'var(--dd-accent-bg)' : 'var(--dd-btn)', border: '1px solid ' + (rec ? 'var(--dd-accent-border)' : 'var(--dd-border2)'), borderRadius: 5, color: rec ? 'var(--dd-accent-text)' : chord ? 'var(--dd-text1)' : 'var(--dd-dim)', fontSize: 11, padding: '3px 8px', cursor: 'pointer', fontFamily: 'system-ui' }}>
+                  style={{ minWidth: 84, textAlign: 'center', background: rec ? 'var(--dd-accent-bg)' : 'var(--dd-btn)', border: '1px solid ' + (rec ? 'var(--dd-accent-border)' : 'var(--dd-border2)'), borderRadius: 'var(--dd-r-md)', color: rec ? 'var(--dd-accent-text)' : chord ? 'var(--dd-text1)' : 'var(--dd-dim)', fontSize: 11, padding: '3px 8px', cursor: 'pointer', fontFamily: 'system-ui' }}>
                   {rec ? 'press keys…' : chord ? displayChord(chord) : 'unbound'}
                 </button>
               </div>
@@ -165,7 +165,7 @@ function ShortcutsPanel() {
       ))}
       <div style={S.shortcutRow}>
         <span style={{ flex: 1, color: 'var(--dd-text1)', fontSize: 12 }}>Switch to tab 1–9</span>
-        <span title="Fixed — not rebindable" style={{ minWidth: 84, textAlign: 'center', color: 'var(--dd-dim)', fontSize: 11, border: '1px solid var(--dd-hairline)', borderRadius: 5, padding: '3px 8px' }}>⌘1–9 🔒</span>
+        <span title="Fixed — not rebindable" style={{ minWidth: 84, textAlign: 'center', color: 'var(--dd-dim)', fontSize: 11, border: '1px solid var(--dd-hairline)', borderRadius: 'var(--dd-r-md)', padding: '3px 8px' }}>⌘1–9 🔒</span>
       </div>
       {notice && <div style={{ color: 'var(--dd-warn-muted)', fontSize: 11, padding: '10px 0' }}>{notice}</div>}
       <button onClick={() => {
@@ -174,7 +174,7 @@ function ShortcutsPanel() {
         setRecording(null); setSteal(null); setNotice(null)
         localStorage.removeItem('dd.keymap'); window.dispatchEvent(new CustomEvent(KEYMAP_EVENT))
       }}
-        style={{ marginTop: 16, background: 'var(--dd-btn)', border: '1px solid var(--dd-border2)', borderRadius: 5, color: 'var(--dd-text2)', fontSize: 11, padding: '4px 10px', cursor: 'pointer' }}>
+        style={{ marginTop: 16, background: 'var(--dd-btn)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', color: 'var(--dd-text2)', fontSize: 11, padding: '4px 10px', cursor: 'pointer' }}>
         Restore all defaults
       </button>
     </div>
@@ -186,7 +186,7 @@ function ShortcutsPanel() {
 // theme. The System card's swatch is a dark/light split.
 function Swatch({ p }: { p: { bg: string; text: string; dots: [string, string, string] } }) {
   return (
-    <span style={{ display: 'flex', alignItems: 'center', gap: 4, background: p.bg, border: '1px solid var(--dd-border2)', borderRadius: 5, padding: '5px 7px', flexShrink: 0 }}>
+    <span style={{ display: 'flex', alignItems: 'center', gap: 4, background: p.bg, border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', padding: '5px 7px', flexShrink: 0 }}>
       <span style={{ width: 16, height: 3, borderRadius: 2, background: p.text }} />
       {p.dots.map((c, i) => (
         <span key={i} style={{ width: 6, height: 6, borderRadius: '50%', background: c }} />
@@ -224,7 +224,7 @@ function AppearancePanel() {
       <button onClick={() => setTheme('system')} style={{ ...card(sysOn), marginBottom: 8 }}>
         <span style={radio(sysOn)} />
         {text('System', 'Follow the macOS appearance (Dark / Light).')}
-        <span style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'linear-gradient(90deg, #10141a 50%, #ffffff 50%)', border: '1px solid var(--dd-border2)', borderRadius: 5, padding: '5px 7px', flexShrink: 0 }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'linear-gradient(90deg, #10141a 50%, #ffffff 50%)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', padding: '5px 7px', flexShrink: 0 }}>
           <span style={{ width: 16, height: 3, borderRadius: 2, background: '#c8cdd5' }} />
           <span style={{ width: 16, height: 3, borderRadius: 2, background: '#2d3949' }} />
         </span>

@@ -61,7 +61,7 @@ export default function HomeView({ sessions, sessionsReady, onFocusSession }: Pr
               key={s.session_id}
               onClick={() => onFocusSession(s.session_id)}
               title={s.attention ?? 'waiting for your input'}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(232,163,61,.07)', border: '1px solid var(--dd-warn-bg)', borderLeft: '3px solid var(--dd-warn)', borderRadius: 6, padding: '6px 12px', cursor: 'pointer', textAlign: 'left', color: 'var(--dd-text1)', fontSize: 12, maxWidth: 320 }}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(232,163,61,.07)', border: '1px solid var(--dd-warn-bg)', borderLeft: '3px solid var(--dd-warn)', borderRadius: 'var(--dd-r-md)', padding: '6px 12px', cursor: 'pointer', textAlign: 'left', color: 'var(--dd-text1)', fontSize: 12, maxWidth: 320 }}
             >
               <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--dd-warn)', flex: 'none' }} />
               <span style={{ minWidth: 0 }}>

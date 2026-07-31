@@ -130,7 +130,7 @@ export default function VersionFooter({ busyCount, onRestartForUpdate, onOpenSet
           </button>
           <button
             onClick={() => setPhase('idle')}
-            style={{ ...btn, background: 'none', border: '1px solid var(--dd-border2)', color: 'var(--dd-text3)', padding: '2px 6px' }}
+            style={{ ...btn, background: 'none', border: '1px solid var(--dd-hairline-strong)', color: 'var(--dd-text3)', padding: '2px 6px' }}
           >
             wait
           </button>

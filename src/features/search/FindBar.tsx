@@ -41,7 +41,7 @@ export default function FindBar({ query, onQuery, matches, focusNonce, onNext, o
     <div
       style={{
         position: 'absolute', top: 8, right: 16, zIndex: 50, display: 'flex', alignItems: 'center', gap: 4,
-        background: 'var(--dd-row)', border: '1px solid var(--dd-border2)', borderRadius: 6, padding: '4px 6px',
+        background: 'var(--dd-row)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', padding: '4px 6px',
         boxShadow: '0 6px 20px rgba(0,0,0,.4)', fontFamily: 'system-ui', fontSize: 12,
       }}
     >
@@ -51,7 +51,7 @@ export default function FindBar({ query, onQuery, matches, focusNonce, onNext, o
         onChange={(e) => onQuery(e.target.value)}
         onKeyDown={onKeyDown}
         placeholder="Find in session…"
-        style={{ width: 180, background: 'var(--dd-bg0)', border: '1px solid var(--dd-border2)', borderRadius: 4, color: 'var(--dd-text)', padding: '3px 6px', outline: 'none', fontSize: 12 }}
+        style={{ width: 180, background: 'var(--dd-bg0)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-sm)', color: 'var(--dd-text)', padding: '3px 6px', outline: 'none', fontSize: 12 }}
       />
       <span style={{ color: matches.count || !query ? 'var(--dd-text3)' : 'var(--dd-err-bright)', minWidth: 44, textAlign: 'center' }}>{label}</span>
       <button style={navBtn} title="Previous (⇧⏎ or ↑)" onClick={onPrev} disabled={dis}>↑</button>

@@ -185,7 +185,7 @@ export default function TimeMachine({ sessionId, initialPath, onClose }: Props) 
               const withBlob = f ? f.versions.filter((v) => v.backup_file) : []
               setVer(withBlob.length ? withBlob[withBlob.length - 1].version : null)
             }}
-            style={{ maxWidth: 340, background: 'var(--dd-surface2)', color: 'var(--dd-text1)', border: '1px solid var(--dd-border2)', borderRadius: 4, padding: '3px 4px', fontSize: 11 }}
+            style={{ maxWidth: 340, background: 'var(--dd-surface2)', color: 'var(--dd-text1)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-sm)', padding: '3px 4px', fontSize: 11 }}
           >
             {history.map((f) => (
               <option key={f.path} value={f.path}>
@@ -197,7 +197,7 @@ export default function TimeMachine({ sessionId, initialPath, onClose }: Props) 
         <button
           onClick={onClose}
           title="Close (Esc)"
-          style={{ background: 'none', border: '1px solid var(--dd-border2)', borderRadius: 4, cursor: 'pointer', color: 'var(--dd-text2)', fontSize: 12, lineHeight: 1, padding: '2px 6px' }}
+          style={{ background: 'none', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-sm)', cursor: 'pointer', color: 'var(--dd-text2)', fontSize: 12, lineHeight: 1, padding: '2px 6px' }}
         >
           ✕
         </button>
@@ -215,7 +215,7 @@ export default function TimeMachine({ sessionId, initialPath, onClose }: Props) 
               <button
                 key={v.version}
                 onClick={() => setVer(v.version)}
-                style={{ display: 'block', width: '100%', textAlign: 'left', background: v.version === ver ? 'var(--dd-surface2)' : 'none', border: 'none', borderLeft: `3px solid ${v.version === ver ? 'var(--dd-accent-muted)' : 'transparent'}`, borderRadius: 6, padding: '6px 8px', marginBottom: 4, cursor: 'pointer', color: 'var(--dd-text1)' }}
+                style={{ display: 'block', width: '100%', textAlign: 'left', background: v.version === ver ? 'var(--dd-surface2)' : 'none', border: 'none', borderLeft: `3px solid ${v.version === ver ? 'var(--dd-accent-muted)' : 'transparent'}`, borderRadius: 'var(--dd-r-md)', padding: '6px 8px', marginBottom: 4, cursor: 'pointer', color: 'var(--dd-text1)' }}
               >
                 <div style={{ ...mono, fontSize: 10, color: 'var(--dd-dim)' }}>
                   v{v.version}

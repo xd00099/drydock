@@ -92,7 +92,7 @@ function Toggle({ on, busy, onClick, title }: { on: boolean; busy: boolean; onCl
       onClick={onClick}
       disabled={busy}
       title={title}
-      style={{ flex: 'none', width: 26, height: 15, borderRadius: 8, border: '1px solid var(--dd-border2)', background: on ? 'var(--dd-ok-bg)' : 'var(--dd-hover)', position: 'relative', cursor: busy ? 'default' : 'pointer', padding: 0, opacity: busy ? 0.5 : 1 }}
+      style={{ flex: 'none', width: 26, height: 15, borderRadius: 8, border: '1px solid var(--dd-hairline-strong)', background: on ? 'var(--dd-ok-bg)' : 'var(--dd-hover)', position: 'relative', cursor: busy ? 'default' : 'pointer', padding: 0, opacity: busy ? 0.5 : 1 }}
     >
       <span style={{ position: 'absolute', top: 1, left: on ? 12 : 1, width: 11, height: 11, borderRadius: '50%', background: 'var(--dd-text1)', transition: 'left .12s' }} />
     </button>

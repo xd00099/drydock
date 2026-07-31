@@ -28,7 +28,7 @@ export function splitPath(resolved: string): { dir: string; partial: string } {
 
 const S = {
   scrim: { position: 'fixed', inset: 0, zIndex: 80, background: 'rgba(4,6,10,0.55)', display: 'flex', justifyContent: 'center', paddingTop: '18vh' } as React.CSSProperties,
-  box: { width: 560, maxHeight: '50vh', alignSelf: 'flex-start', background: 'var(--dd-surface)', border: '1px solid var(--dd-border2)', borderRadius: 10, boxShadow: '0 18px 50px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui' } as React.CSSProperties,
+  box: { width: 560, maxHeight: '50vh', alignSelf: 'flex-start', background: 'var(--dd-surface)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 10, boxShadow: '0 18px 50px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui' } as React.CSSProperties,
   input: { background: 'none', border: 'none', outline: 'none', color: 'var(--dd-text)', fontSize: 14, padding: '13px 14px', fontFamily: 'ui-monospace, monospace' } as React.CSSProperties,
   hint: { padding: '0 14px 9px', fontSize: 11, fontFamily: 'ui-monospace, monospace' } as React.CSSProperties,
   list: { overflowY: 'auto', borderTop: '1px solid var(--dd-hairline)', padding: '4px 0' } as React.CSSProperties,

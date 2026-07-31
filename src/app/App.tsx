@@ -1503,7 +1503,7 @@ export default function App() {
             <button
               onClick={() => setHomeOverlay(false)}
               title="Close (Esc)"
-              style={{ background: 'none', border: '1px solid var(--dd-border2)', borderRadius: 4, cursor: 'pointer', color: 'var(--dd-text2)', fontSize: 12, lineHeight: 1, padding: '2px 6px' }}
+              style={{ background: 'none', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-sm)', cursor: 'pointer', color: 'var(--dd-text2)', fontSize: 12, lineHeight: 1, padding: '2px 6px' }}
             >
               ✕
             </button>
@@ -1550,7 +1550,7 @@ export default function App() {
         <div
           style={{
             position: 'fixed', left: dragXY.x + 10, top: dragXY.y + 12, zIndex: 95, pointerEvents: 'none',
-            background: 'var(--dd-border)', border: '1px solid var(--dd-border2)', borderRadius: 5, padding: '3px 8px',
+            background: 'var(--dd-border)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', padding: '3px 8px',
             color: 'var(--dd-text1)', fontFamily: 'system-ui', fontSize: 12, whiteSpace: 'nowrap',
           }}
         >
@@ -1596,7 +1596,7 @@ export default function App() {
             onClick={enabled ? run : undefined}
             title={enabled ? undefined : tip}
             style={{
-              padding: '5px 12px', fontSize: 12, borderRadius: 4, whiteSpace: 'nowrap',
+              padding: '5px 12px', fontSize: 12, borderRadius: 'var(--dd-r-sm)', whiteSpace: 'nowrap',
               color: enabled ? 'var(--dd-text1)' : 'var(--dd-dim)', cursor: enabled ? 'pointer' : 'default',
             }}
             onPointerEnter={(e) => { if (enabled) (e.currentTarget as HTMLElement).style.background = 'var(--dd-border)' }}
@@ -1610,7 +1610,7 @@ export default function App() {
             data-chipmenu="1"
             style={{
               position: 'fixed', left: chipMenu.x, top: chipMenu.y, zIndex: 95,
-              background: 'var(--dd-surface2)', border: '1px solid var(--dd-border2)', borderRadius: 6, padding: 4,
+              background: 'var(--dd-surface2)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', padding: 4,
               fontFamily: 'system-ui', boxShadow: '0 6px 20px rgba(0,0,0,.45)',
             }}
           >

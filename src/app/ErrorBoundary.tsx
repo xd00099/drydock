@@ -25,7 +25,7 @@ export default class ErrorBoundary extends Component<Props, State> {
         <div style={{ color: 'var(--dd-err-bright)', whiteSpace: 'pre-wrap', marginBottom: 16, fontFamily: 'Menlo, monospace', fontSize: 12 }}>
           {this.state.error.message}
         </div>
-        <button onClick={() => location.reload()} style={{ background: 'var(--dd-border)', color: 'var(--dd-text)', border: '1px solid var(--dd-border2)', borderRadius: 5, padding: '6px 14px', cursor: 'pointer' }}>
+        <button onClick={() => location.reload()} style={{ background: 'var(--dd-border)', color: 'var(--dd-text)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', padding: '6px 14px', cursor: 'pointer' }}>
           Reload
         </button>
       </div>

@@ -73,11 +73,11 @@ const S = {
   } as const,
   btn: { background: 'none', border: 'none', cursor: 'pointer', color: 'var(--dd-text3)', fontSize: 12, padding: 0 } as const,
   chev: { background: 'none', border: 'none', cursor: 'pointer', color: 'var(--dd-text3)', fontSize: 10, padding: 0, width: 14 } as const,
-  menu: { position: 'fixed', background: 'var(--dd-row)', border: '1px solid var(--dd-border2)', borderRadius: 6, padding: 4, boxShadow: '0 6px 20px rgba(0,0,0,.4)', zIndex: 60, fontFamily: 'system-ui', fontSize: 12, minWidth: 180 } as const,
-  menuItem: { display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', color: 'var(--dd-text1)', padding: '6px 10px', borderRadius: 4, cursor: 'pointer', fontSize: 12 } as const,
-  nameInput: { flex: 1, minWidth: 0, background: 'var(--dd-bg1)', border: '1px solid var(--dd-accent-strong)', borderRadius: 4, color: 'var(--dd-text)', fontSize: 12, fontFamily: 'system-ui', padding: '2px 6px', outline: 'none' } as const,
+  menu: { position: 'fixed', background: 'var(--dd-row)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', padding: 4, boxShadow: '0 6px 20px rgba(0,0,0,.4)', zIndex: 60, fontFamily: 'system-ui', fontSize: 12, minWidth: 180 } as const,
+  menuItem: { display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', color: 'var(--dd-text1)', padding: '6px 10px', borderRadius: 'var(--dd-r-sm)', cursor: 'pointer', fontSize: 12 } as const,
+  nameInput: { flex: 1, minWidth: 0, background: 'var(--dd-bg1)', border: '1px solid var(--dd-accent-strong)', borderRadius: 'var(--dd-r-sm)', color: 'var(--dd-text)', fontSize: 12, fontFamily: 'system-ui', padding: '2px 6px', outline: 'none' } as const,
   confirmBox: { background: 'var(--dd-surface2)', color: 'var(--dd-text)', padding: 20, borderRadius: 8, fontFamily: 'system-ui', fontSize: 13, maxWidth: 380 } as const,
-  confirmBtn: { background: 'var(--dd-border)', color: 'var(--dd-text)', border: '1px solid var(--dd-border2)', borderRadius: 5, padding: '4px 12px', cursor: 'pointer', fontSize: 12 } as const,
+  confirmBtn: { background: 'var(--dd-border)', color: 'var(--dd-text)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', padding: '4px 12px', cursor: 'pointer', fontSize: 12 } as const,
 } as const
 
 
@@ -547,7 +547,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
           </div>
           {!isClosed && members.map((s) => sessionRow(s, true))}
           {!isClosed && members.length === 0 && (
-            <div style={{ margin: '1px 10px 6px 26px', padding: '5px 8px', border: '1px dashed var(--dd-hover)', borderRadius: 4, color: 'var(--dd-dim2)', fontSize: 11 }}>
+            <div style={{ margin: '1px 10px 6px 26px', padding: '5px 8px', border: '1px dashed var(--dd-hover)', borderRadius: 'var(--dd-r-sm)', color: 'var(--dd-dim2)', fontSize: 11 }}>
               Drop sessions here
             </div>
           )}
@@ -805,7 +805,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
                   )
                 })}
                 <button
-                  style={{ ...S.menuItem, borderTop: folders.length ? '1px solid var(--dd-border2)' : 'none', borderRadius: 0 }}
+                  style={{ ...S.menuItem, borderTop: folders.length ? '1px solid var(--dd-hairline-strong)' : 'none', borderRadius: 0 }}
                   {...menuHover}
                   onClick={() => { setDraft(''); setNaming({ kind: 'create', sid: menu.s.session_id }); setMenu(null) }}
                 >
@@ -880,7 +880,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
                 Cancel
               </button>
               <button
-                style={{ background: 'var(--dd-btn-danger)', color: 'var(--dd-white)', border: 'none', padding: '5px 12px', borderRadius: 5, cursor: 'pointer' }}
+                style={{ background: 'var(--dd-btn-danger)', color: 'var(--dd-white)', border: 'none', padding: '5px 12px', borderRadius: 'var(--dd-r-md)', cursor: 'pointer' }}
                 onClick={() => { onDelete(confirmDel.session_id); setConfirmDel(null) }}
               >
                 Delete
@@ -902,7 +902,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
                 Cancel
               </button>
               <button
-                style={{ background: 'var(--dd-btn-danger)', color: 'var(--dd-white)', border: 'none', padding: '5px 12px', borderRadius: 5, cursor: 'pointer' }}
+                style={{ background: 'var(--dd-btn-danger)', color: 'var(--dd-white)', border: 'none', padding: '5px 12px', borderRadius: 'var(--dd-r-md)', cursor: 'pointer' }}
                 onClick={() => { deleteFolder(confirmDelFolder.f); setConfirmDelFolder(null) }}
               >
                 Delete folder
@@ -915,7 +915,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
       {/* drag ghost: follows the pointer, never intercepts it */}
       {drag && (
         <div
-          style={{ position: 'fixed', left: dragXY.x + 10, top: dragXY.y + 8, zIndex: 80, pointerEvents: 'none', background: 'var(--dd-row)', border: '1px solid var(--dd-border2)', borderRadius: 5, padding: '3px 8px', fontSize: 11, fontFamily: 'system-ui', color: 'var(--dd-text1)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', boxShadow: '0 4px 14px rgba(0,0,0,.4)' }}
+          style={{ position: 'fixed', left: dragXY.x + 10, top: dragXY.y + 8, zIndex: 80, pointerEvents: 'none', background: 'var(--dd-row)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', padding: '3px 8px', fontSize: 11, fontFamily: 'system-ui', color: 'var(--dd-text1)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', boxShadow: '0 4px 14px rgba(0,0,0,.4)' }}
         >
           {drag.kind === 'session' ? drag.label : drag.name}
         </div>

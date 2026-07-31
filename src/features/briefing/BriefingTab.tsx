@@ -69,7 +69,7 @@ export function BriefingTab({ sessionId, card, starred, files, tasks, usage, pro
               defaultValue={editing}
               maxLength={60}
               placeholder="Session name — empty clears"
-              style={{ flex: 1, minWidth: 0, background: 'var(--dd-bg1)', border: '1px solid var(--dd-accent-strong)', borderRadius: 4, color: 'var(--dd-text)', fontSize: 13, fontWeight: 600, fontFamily: 'system-ui', padding: '2px 6px', outline: 'none' }}
+              style={{ flex: 1, minWidth: 0, background: 'var(--dd-bg1)', border: '1px solid var(--dd-accent-strong)', borderRadius: 'var(--dd-r-sm)', color: 'var(--dd-text)', fontSize: 13, fontWeight: 600, fontFamily: 'system-ui', padding: '2px 6px', outline: 'none' }}
               onFocus={(e) => e.currentTarget.select()}
               onKeyDown={(e) => {
                 // an Enter/Esc confirming an IME composition (pinyin) is part

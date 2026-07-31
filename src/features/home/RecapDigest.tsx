@@ -194,7 +194,7 @@ export default function RecapDigest({ sessions, sessionsReady, onFocusSession }:
             load({ ts: tail.last_message_at, sid: tail.session_id })
           }}
           disabled={busy}
-          style={{ marginTop: 10, background: 'var(--dd-btn)', border: '1px solid var(--dd-border2)', borderRadius: 5, color: 'var(--dd-text2)', fontSize: 11, padding: '3px 10px', cursor: busy ? 'default' : 'pointer' }}
+          style={{ marginTop: 10, background: 'var(--dd-btn)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', color: 'var(--dd-text2)', fontSize: 11, padding: '3px 10px', cursor: busy ? 'default' : 'pointer' }}
         >
           {busy ? 'loading…' : 'show earlier'}
         </button>

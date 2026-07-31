@@ -108,7 +108,7 @@ const chipBtn: React.CSSProperties = {
 const hBtn: React.CSSProperties = {
   background: 'var(--dd-border)',
   color: 'var(--dd-text)',
-  border: '1px solid var(--dd-border2)',
+  border: '1px solid var(--dd-hairline-strong)',
   borderRadius: 5,
   padding: '4px 12px',
   cursor: 'pointer',
@@ -354,7 +354,7 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
             </div>
           )
         return (
-          <div key={idx} style={{ margin: '12px 0', padding: '6px 10px', borderLeft: '3px solid var(--dd-accent-muted)', background: 'rgba(90,127,176,.09)', borderRadius: 4, color: 'var(--dd-accent-text)', whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>
+          <div key={idx} style={{ margin: '12px 0', padding: '6px 10px', borderLeft: '3px solid var(--dd-accent-muted)', background: 'rgba(90,127,176,.09)', borderRadius: 'var(--dd-r-sm)', color: 'var(--dd-accent-text)', whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>
             {renderText(e.text, marks)}
           </div>
         )
@@ -376,7 +376,7 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
         )
       case 'recap':
         return (
-          <div key={idx} style={{ margin: '12px 0', padding: '6px 10px', borderLeft: '3px solid var(--dd-warn-bright)', background: 'rgba(232,195,90,.07)', borderRadius: 4, color: 'var(--dd-warn-bright)', whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>
+          <div key={idx} style={{ margin: '12px 0', padding: '6px 10px', borderLeft: '3px solid var(--dd-warn-bright)', background: 'rgba(232,195,90,.07)', borderRadius: 'var(--dd-r-sm)', color: 'var(--dd-warn-bright)', whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>
             ※ {renderText(e.text, marks)}
           </div>
         )
@@ -417,7 +417,7 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
               )}
             </button>
             {open && (
-              <div style={{ margin: '2px 0 8px 16px', padding: '6px 8px', background: 'var(--dd-bg0)', border: '1px solid var(--dd-hairline)', borderRadius: 4, fontSize: 11, fontFamily: 'Menlo, monospace', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', maxHeight: 260, overflowY: 'auto' }}>
+              <div style={{ margin: '2px 0 8px 16px', padding: '6px 8px', background: 'var(--dd-bg0)', border: '1px solid var(--dd-hairline)', borderRadius: 'var(--dd-r-sm)', fontSize: 11, fontFamily: 'Menlo, monospace', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', maxHeight: 260, overflowY: 'auto' }}>
                 <div style={{ color: 'var(--dd-text2)' }}>{e.text || '(no input summary)'}</div>
                 {r.result && (
                   <div style={{ marginTop: 6, color: r.result.error ? 'var(--dd-err)' : 'var(--dd-text3)' }}>{r.result.text || '(no output)'}</div>
@@ -536,7 +536,7 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
               key={a.agent_id}
               onClick={() => setAgentOpen(a)}
               title={`${a.agent_type ?? 'agent'}${a.description ? ` — ${a.description}` : ''}\nOpen this agent's conversation`}
-              style={{ flexShrink: 0, background: 'var(--dd-btn)', border: '1px solid var(--dd-border2)', borderRadius: 10, color: 'var(--dd-text2)', padding: '1px 9px', fontSize: 11, cursor: 'pointer', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+              style={{ flexShrink: 0, background: 'var(--dd-btn)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 10, color: 'var(--dd-text2)', padding: '1px 9px', fontSize: 11, cursor: 'pointer', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
             >
               {a.agent_type ?? 'agent'}{a.description ? ` · ${clip(a.description, 24)}` : ''}
             </button>
@@ -616,7 +616,7 @@ function AgentPane({ sessionId, agent, onClose }: { sessionId: string; agent: Ag
     switch (e.kind) {
       case 'user':
         return (
-          <div key={i} style={{ margin: '10px 0', padding: '6px 10px', background: e.meta ? 'transparent' : 'var(--dd-btn)', border: '1px solid var(--dd-hairline)', borderRadius: 6, color: e.meta ? 'var(--dd-dim)' : 'var(--dd-text1)', whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>
+          <div key={i} style={{ margin: '10px 0', padding: '6px 10px', background: e.meta ? 'transparent' : 'var(--dd-btn)', border: '1px solid var(--dd-hairline)', borderRadius: 'var(--dd-r-md)', color: e.meta ? 'var(--dd-dim)' : 'var(--dd-text1)', whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>
             {e.text}
           </div>
         )

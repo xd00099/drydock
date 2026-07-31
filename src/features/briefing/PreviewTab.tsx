@@ -266,7 +266,7 @@ export function PreviewTab({
         <select
           value={current.id}
           onChange={(e) => setSelectedId(e.target.value)}
-          style={{ margin: '0 12px 8px', background: 'var(--dd-surface2)', color: 'var(--dd-text1)', border: '1px solid var(--dd-border2)', borderRadius: 4, padding: '3px 4px', fontSize: 11 }}
+          style={{ margin: '0 12px 8px', background: 'var(--dd-surface2)', color: 'var(--dd-text1)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-sm)', padding: '3px 4px', fontSize: 11 }}
         >
           {items.map((a, i) => (
             <option key={a.id} value={a.id}>{i + 1}. {a.title} ({a.kind}){a.saved?.rewound ? ' · rewound' : a.saved ? ' · saved' : ''}</option>

@@ -145,7 +145,7 @@ export function FilesChanged({ files, projectPath, sessionId, squeeze, onTimeMac
                       ? `${f.path}\n→ now at: ${f.resolved}\nClick to open in your editor (settings "editor_cmd", else the default app)`
                       : `${f.path}\nOpen in your editor (settings "editor_cmd", else the default app)`
                   return (
-                    <div key={f.path} className="dd-filerow" style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '2px 2px 2px 14px', minWidth: 0, borderRadius: 4 }}>
+                    <div key={f.path} className="dd-filerow" style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '2px 2px 2px 14px', minWidth: 0, borderRadius: 'var(--dd-r-sm)' }}>
                       <FileBadge f={f} />
                       <button
                         onClick={() => open(f, false)}
