@@ -328,27 +328,33 @@ export function projectColor(projectPath: string | null | undefined, alpha = 1):
   return alpha >= 1 ? `hsl(${h}, 30%, 52%)` : `hsla(${h}, 30%, 52%, ${alpha})`
 }
 
-/** Would quitting right now interrupt work in flight?
+/** Would killing these tabs' processes interrupt work in flight?
  *
- *  Quitting kills the PTYs Drydock owns and nothing else; a relaunch restores
- *  the tabs and resumes their sessions. So an idle session, one waiting on an
- *  answer, or one sitting on an unread green check all survive a quit intact —
- *  only a session that is BUSY (mid-turn, per Claude's own self-reported
- *  status) has anything to lose. That is the only case that earns a
- *  confirmation dialog; everything else quits silently.
+ *  The one predicate behind BOTH confirmation dialogs — quit (all tabs) and
+ *  close-tab (one tab). Killing a PTY loses nothing for an idle session, one
+ *  waiting on an answer, or one sitting on an unread green check: the session
+ *  stays resumable (quit restores its tab on relaunch; a closed tab resumes
+ *  from the sidebar). Only a session that is BUSY — mid-turn, per Claude's own
+ *  self-reported status, the same signal as the sidebar spinner — has anything
+ *  to lose, so that is the only case that earns a dialog.
  *
  *  Deliberately NOT guarded:
- *  - shell tabs: a bare prompt and a running build look identical from here,
- *    and treating every open shell as precious is what made ⌘Q nag constantly;
+ *  - transcript tabs: read-only views own no process, whatever their session
+ *    is doing (kind must be 'pty' — a busy session being READ elsewhere is not
+ *    a busy session being KILLED);
+ *  - shell tabs (no sessionId): a bare prompt and a running build look
+ *    identical from here, and treating every open shell as precious is what
+ *    made the dialogs nag constantly;
  *  - a session id the index hasn't seen yet (a tab seconds old): the radar
  *    registers it within ~2s, and the worst case is re-typing one prompt after
  *    resume — smaller than training the user to click through the dialog. */
-export function quitInterruptsWork(
-  tabs: ReadonlyArray<{ exited?: boolean; sessionId?: string | null }>,
+export function interruptsWork(
+  tabs: ReadonlyArray<{ kind?: string; exited?: boolean; sessionId?: string | null }>,
   sessions: ReadonlyArray<Pick<SessionView, 'session_id' | 'live_status'>>,
 ): boolean {
   return tabs.some(
     (t) =>
+      t.kind === 'pty' &&
       !t.exited &&
       t.sessionId != null &&
       sessions.some((s) => s.session_id === t.sessionId && s.live_status === 'busy'),

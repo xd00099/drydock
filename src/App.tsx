@@ -17,7 +17,7 @@ import { serializeChord, effectiveKeymap, loadOverrides, KEYMAP_EVENT } from './
 import type { ActionId } from './keymap'
 import { getSetting } from './settings'
 import type { Artifact, ArtifactKind, PaneSearch, RestoreTab, ReviewPrompt, ReviewState, SessionView, Tab, TakeoverInfo } from './types'
-import { EMPTY_REVIEW, baseName, clip, projectColor, quitInterruptsWork, sessionLabel, uuidv4 } from './types'
+import { EMPTY_REVIEW, baseName, clip, interruptsWork, projectColor, sessionLabel, uuidv4 } from './types'
 import {
   GUTTER, canSplit, clampRatio, closeStaged, dropOnStage, focusNeighbor, hitTest,
   layoutRects, pruneStage, setRatio, showTab, stagedIds,
@@ -415,13 +415,14 @@ export default function App() {
     })
   }
 
-  // ⌘W / chip ✕ on a live claude session asks first (setting-gated). Shells
-  // and exited/transcript tabs close immediately — nothing running to lose.
-  // Programmatic closes (resume-here replace flows, restore) stay on closeTab.
+  // ⌘W / chip ✕ asks first ONLY when this tab's session is mid-turn (and the
+  // closeGuard setting allows asking) — the same predicate as the quit guard,
+  // scoped to one tab. Idle sessions close silently: the session stays
+  // resumable from the sidebar and nothing in flight is lost. Programmatic
+  // closes (resume-here replace flows, restore) stay on closeTab.
   const requestCloseTab = (id: number) => {
     const t = tabsRef.current.find((x) => x.id === id)
-    const live = !!t && t.kind === 'pty' && !t.exited && !t.terminal
-    if (live && getSetting('closeGuard', '1') === '1') setConfirmClose(id)
+    if (t && interruptsWork([t], sessionsRef.current) && getSetting('closeGuard', '1') === '1') setConfirmClose(id)
     else closeTab(id)
   }
 
@@ -939,7 +940,7 @@ export default function App() {
     let un: (() => void) | null = null
     getCurrentWindow()
       .onCloseRequested((e) => {
-        if (quitInterruptsWork(tabsRef.current, sessionsRef.current)) {
+        if (interruptsWork(tabsRef.current, sessionsRef.current)) {
           e.preventDefault()
           setQuitGuard(true)
         }
@@ -955,7 +956,7 @@ export default function App() {
     let cancelled = false
     let un: UnlistenFn | null = null
     listen('quit-requested', () => {
-      if (quitInterruptsWork(tabsRef.current, sessionsRef.current)) setQuitGuard(true)
+      if (interruptsWork(tabsRef.current, sessionsRef.current)) setQuitGuard(true)
       else invoke('force_quit')
     }).then((u) => { if (cancelled) u(); else un = u })
     return () => { cancelled = true; un?.() }
@@ -1516,9 +1517,9 @@ export default function App() {
             tabIndex={-1}
             style={{ position: 'fixed', inset: 0, zIndex: 105, background: 'rgba(4,6,10,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', transform: 'translateZ(0)', outline: 'none' }}>
             <div style={{ background: 'var(--dd-surface)', border: '1px solid var(--dd-border2)', borderRadius: 10, padding: '18px 22px', width: 380, fontFamily: 'system-ui' }}>
-              <div style={{ color: 'var(--dd-text)', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Close live session?</div>
+              <div style={{ color: 'var(--dd-text)', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Close a session mid-turn?</div>
               <div style={{ color: 'var(--dd-text2)', fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
-                {clip(s ? sessionLabel(s) : t?.title ?? 'This session', 60)} is still running — closing the tab ends it here (resume any time from the sidebar).
+                {clip(s ? sessionLabel(s) : t?.title ?? 'This session', 60)} is working right now — closing the tab interrupts that turn. The session itself stays resumable from the sidebar.
               </div>
               <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                 <button onClick={() => setConfirmClose(null)} style={{ background: 'none', border: '1px solid var(--dd-border2)', borderRadius: 6, color: 'var(--dd-text2)', fontSize: 12, padding: '4px 12px', cursor: 'pointer' }}>Cancel (Esc)</button>
@@ -1532,9 +1533,7 @@ export default function App() {
         // Recompute at render: the guard only ever opens because SOMETHING was
         // mid-turn, but a turn can finish while the dialog sits there — the
         // count stays honest, and the fallback wording covers that race.
-        const busy = tabs.filter(
-          (t) => !t.exited && t.sessionId && sessions.find((s) => s.session_id === t.sessionId)?.live_status === 'busy',
-        ).length
+        const busy = tabs.filter((t) => interruptsWork([t], sessions)).length
         const what = busy > 1 ? `${busy} sessions are mid-turn` : busy === 1 ? 'A session is mid-turn' : 'A session was mid-turn'
         return (
         // zIndex + own compositing layer: every other overlay has a z-index, but

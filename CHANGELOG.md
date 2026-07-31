@@ -4,6 +4,20 @@ Each tagged release's `## vX.Y.Z` section becomes the GitHub release body and
 the in-app updater's release notes (extracted by `scripts/release-notes.py` in
 CI — a tag without its section fails the release).
 
+## v0.6.4 — 2026-07-30
+
+### ⌘W stops nagging too
+
+- **Closing a tab now asks for confirmation only when that session is
+  mid-turn** — the same rule ⌘Q got in v0.6.3, scoped to one tab. An idle
+  session closes silently; it stays resumable from the sidebar and nothing in
+  flight is lost. The dialog, when it does appear, says what it means:
+  closing interrupts the turn, not "ends" the session.
+- Both guards now share one predicate, and it gained a correction over
+  v0.6.3: a **read-only transcript tab** carries a session id but owns no
+  process, so having one open on a working session no longer triggers the
+  quit confirmation. Reading a busy session is not killing it.
+
 ## v0.6.3 — 2026-07-30
 
 ### ⌘Q stops nagging about idle sessions
