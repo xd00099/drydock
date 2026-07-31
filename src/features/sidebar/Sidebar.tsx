@@ -4,6 +4,9 @@ import type { FolderView, SessionView } from '@/lib/types'
 import { ageTone, clampPanelWidth, clip, loadNum, projectColor, relAge, sessionAutoLabel, sessionLabel, shortPath, uuidv4 } from '@/lib/types'
 import ResizeHandle from '@/components/ui/ResizeHandle'
 import { IconButton } from '@/components/ui'
+import { Button } from '@/components/ui'
+import Modal, { ModalActions, ModalBody, ModalTitle } from '@/app/dialogs/Modal'
+import cls from './Sidebar.module.css'
 import LiveIndicator from '@/features/session/LiveIndicator'
 import VersionFooter from '@/features/session/VersionFooter'
 import { useChord } from '@/lib/keymap'
@@ -30,62 +33,6 @@ type Props = {
   onOpenSettings: () => void // footer gear — same surface as ⌘,
 }
 
-
-const S = {
-  // userSelect none: a pointer drag across rows must never smear a text
-  // selection (nothing in the sidebar is copy-worthy prose anyway)
-  side: { width: 300, minWidth: 300, height: '100%', overflowY: 'auto', background: 'var(--dd-bg0)', color: 'var(--dd-text1)', fontFamily: 'system-ui', fontSize: 12, borderRight: '1px solid var(--dd-hairline)', userSelect: 'none', WebkitUserSelect: 'none' } as const,
-  rail: { width: 30, minWidth: 30, height: '100%', background: 'var(--dd-bg0)', borderRight: '1px solid var(--dd-hairline)', display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 8 } as const,
-  // The native titlebar is gone (tauri.conf: titleBarStyle "Overlay"), so macOS
-  // draws the traffic lights straight onto this row — hence the left inset, and
-  // the min-height that keeps the row at least as tall as the lights. The row
-  // doubles as the window's drag handle (data-tauri-drag-region on the element).
-  bar: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 2,
-    minHeight: 'var(--dd-titlebar)',
-    padding: '8px 8px 6px',
-    paddingLeft: 'var(--dd-lights-inset)',
-  } as const,
-  head: { display: 'flex', alignItems: 'center', gap: 4, padding: '6px 8px 4px', color: 'var(--dd-text3)', fontWeight: 600 } as const,
-  // Inset pill, not a full-bleed bar. The selected row used to be a square fill
-  // spanning the rail's whole width — the list-widget idiom. Keeping a 7px
-  // horizontal margin means selection reads as a rounded chip floating inside
-  // the rail. The project stripe moved from `border-left` to a box-shadow inset
-  // so it can't contribute to layout (a border would shift the text by 3px).
-  // width is calc'd because a block <button> won't fill its parent on its own,
-  // and 100% + margin would overflow.
-  row: {
-    display: 'block',
-    width: 'calc(100% - 14px)',
-    boxSizing: 'border-box',
-    margin: '1px 7px',
-    textAlign: 'left',
-    background: 'none',
-    border: 'none',
-    borderRadius: 'var(--dd-r-md)',
-    color: 'var(--dd-text1)',
-    padding: '5px 9px',
-    cursor: 'pointer',
-    fontSize: 12,
-    transition: 'background var(--dd-t) var(--dd-ease), color var(--dd-t) var(--dd-ease), opacity var(--dd-t) var(--dd-ease)',
-  } as const,
-  btn: { background: 'none', border: 'none', cursor: 'pointer', color: 'var(--dd-text3)', fontSize: 12, padding: 0 } as const,
-  chev: { background: 'none', border: 'none', cursor: 'pointer', color: 'var(--dd-text3)', fontSize: 10, padding: 0, width: 14 } as const,
-  menu: { position: 'fixed', background: 'var(--dd-row)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', padding: 4, boxShadow: '0 6px 20px rgba(0,0,0,.4)', zIndex: 60, fontFamily: 'system-ui', fontSize: 12, minWidth: 180 } as const,
-  menuItem: { display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', color: 'var(--dd-text1)', padding: '6px 10px', borderRadius: 'var(--dd-r-sm)', cursor: 'pointer', fontSize: 12 } as const,
-  nameInput: { flex: 1, minWidth: 0, background: 'var(--dd-bg1)', border: '1px solid var(--dd-accent-strong)', borderRadius: 'var(--dd-r-sm)', color: 'var(--dd-text)', fontSize: 12, fontFamily: 'system-ui', padding: '2px 6px', outline: 'none' } as const,
-  confirmBox: { background: 'var(--dd-surface2)', color: 'var(--dd-text)', padding: 20, borderRadius: 8, fontFamily: 'system-ui', fontSize: 13, maxWidth: 380 } as const,
-  confirmBtn: { background: 'var(--dd-border)', color: 'var(--dd-text)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', padding: '4px 12px', cursor: 'pointer', fontSize: 12 } as const,
-} as const
-
-
-// Hover highlight for context-menu items (inline styles can't express :hover).
-const menuHover = {
-  onMouseEnter: (e: React.MouseEvent<HTMLButtonElement>) => { e.currentTarget.style.background = 'var(--dd-border2)' },
-  onMouseLeave: (e: React.MouseEvent<HTMLButtonElement>) => { e.currentTarget.style.background = 'none' },
-}
 
 // The strongest live status across a (collapsed) group's sessions. Ordered by
 // how much it wants the user, not by how active it is: 'done' outranks 'busy'
@@ -352,8 +299,8 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
 
   if (collapsed) {
     return (
-      <div style={S.rail}>
-        <button style={{ ...S.btn, fontSize: 15 }} title={`Expand sidebar (${sidebarChord})`} onClick={() => onSetCollapsed(false)}>»</button>
+      <div className={cls.rail}>
+        <button className={cls.btn} style={{ fontSize: 15 }} title={`Expand sidebar (${sidebarChord})`} onClick={() => onSetCollapsed(false)}>»</button>
       </div>
     )
   }
@@ -391,7 +338,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
       return (
         <div
           key={s.session_id}
-          style={{ ...S.row, display: 'flex', alignItems: 'center', gap: 4, cursor: 'default', boxShadow: `inset 3px 0 0 ${projectColor(s.project_path)}`, background: 'var(--dd-tint-active)' }}
+          className={cls.row} style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'default', boxShadow: `inset 3px 0 0 ${projectColor(s.project_path)}`, background: 'var(--dd-tint-active)' }}
         >
           <LiveIndicator status={s.live_status} />
           {nameEditor('Session name — empty clears')}
@@ -407,7 +354,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
     return (
       <button
         key={s.session_id}
-        className={`dd-sessrow${flashSid === s.session_id ? ' dd-landed' : ''}`}
+        className={`${cls.row} dd-sessrow${flashSid === s.session_id ? ' dd-landed' : ''}`}
         // marks the selected row so the hover rule keeps its stronger fill
         data-active={isActive ? '1' : undefined}
         // No per-row tint. The old 10%-alpha wash was ~100x the stripe's area
@@ -416,7 +363,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
         // it cost the whole background of the list and told you nothing. The
         // selected row gets a neutral fill instead, which is a distinction you
         // can actually see.
-        style={{ ...S.row, opacity: isDragging ? 0.4 : isHidden ? 0.45 : 1, boxShadow: `inset 3px 0 0 ${projectColor(s.project_path)}`, background: isActive ? 'var(--dd-tint-active)' : 'transparent' }}
+        style={{ opacity: isDragging ? 0.4 : isHidden ? 0.45 : 1, boxShadow: `inset 3px 0 0 ${projectColor(s.project_path)}`, background: isActive ? 'var(--dd-tint-active)' : 'transparent' }}
         onClick={dragSafe(() => onResume(s))}
         onPointerDown={(e) => beginPress(e, { kind: 'session', sid: s.session_id, label: sessionLabel(s), fromFolder: s.folder_id })}
         onContextMenu={(e) => { e.preventDefault(); if (dragRef.current) return; setMenu({ x: e.clientX, y: e.clientY, s, view: 'main' }) }}
@@ -457,7 +404,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
   // Inline name editor (folder create/rename, session rename).
   const nameEditor = (placeholder = 'Folder name') => (
     <input
-      style={S.nameInput}
+      className={cls.nameInput}
       autoFocus
       value={draft}
       onChange={(e) => setDraft(e.currentTarget.value)}
@@ -519,7 +466,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
           style={targeted ? { outline: '1px solid var(--dd-accent-strong)', outlineOffset: -1, background: 'var(--dd-well)', borderRadius: 4 } : undefined}
         >
           <div
-            style={{ ...S.head, opacity: drag?.kind === 'folder' && drag.id === f.id ? 0.4 : 1 }}
+            className={cls.head} style={{ opacity: drag?.kind === 'folder' && drag.id === f.id ? 0.4 : 1 }}
             data-fhead
             title={`${f.name}\n(right-click for options · drag to reorder)`}
             onPointerDown={(e) => {
@@ -528,7 +475,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
             }}
             onContextMenu={(e) => { e.preventDefault(); if (dragRef.current) return; setFolderMenu({ x: e.clientX, y: e.clientY, f, index: i }) }}
           >
-            <button style={S.chev} title={isClosed ? 'Expand folder' : 'Collapse folder'} onClick={() => toggleGroup(key)}>
+            <button className={cls.chev} title={isClosed ? 'Expand folder' : 'Collapse folder'} onClick={() => toggleGroup(key)}>
               {isClosed ? '▸' : '▾'}
             </button>
             <FolderGlyph />
@@ -562,8 +509,8 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
   return (
     <div style={{ display: 'flex', height: '100%' }}>
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', width, minWidth: width, background: 'var(--dd-bg0)' }}>
-    <div ref={scrollerRef} style={{ ...S.side, width: '100%', minWidth: 0, height: 'auto', flex: 1, borderRight: 'none' }}>
-      <div style={S.bar} data-tauri-drag-region>
+    <div ref={scrollerRef} className={cls.side} style={{ width: '100%', minWidth: 0, height: 'auto', flex: 1, borderRight: 'none' }}>
+      <div className={cls.bar} data-tauri-drag-region>
         <span
           onClick={onHome}
           title={`Home — recap log & usage (${homeChord})`}
@@ -605,7 +552,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
           below is trying to buy back. */}
       {needs.length > 0 && (
         <div>
-          <div style={{ ...S.head, color: 'var(--dd-warn)' }} title="Blocked on you — a permission prompt or a question">
+          <div className={cls.head} style={{ color: 'var(--dd-warn)' }} title="Blocked on you — a permission prompt or a question">
             <span style={{ flex: 1, letterSpacing: 0.3 }}>NEEDS YOU</span>
             <span style={{ color: 'var(--dd-warn)' }}>{needs.length}</span>
           </div>
@@ -614,7 +561,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
       )}
       {active.length > 0 && (
         <div>
-          <div style={S.head} title="Running now, or finished since you last looked">
+          <div className={cls.head} title="Running now, or finished since you last looked">
             <span style={{ flex: 1 }}>Active</span>
             <span style={{ color: 'var(--dd-dim)' }}>{active.length}</span>
           </div>
@@ -624,8 +571,8 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
 
       {starred.length > 0 && (
         <div>
-          <div style={S.head}>
-            <button style={S.chev} title={starredClosed ? 'Expand' : 'Collapse'} onClick={() => toggleGroup(STARRED_KEY)}>
+          <div className={cls.head}>
+            <button className={cls.chev} title={starredClosed ? 'Expand' : 'Collapse'} onClick={() => toggleGroup(STARRED_KEY)}>
               {starredClosed ? '▸' : '▾'}
             </button>
             <span style={{ flex: 1, cursor: 'pointer', color: 'var(--dd-warn-bright)' }} onClick={() => toggleGroup(STARRED_KEY)}>
@@ -660,7 +607,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
             </div>
           )}
           {naming?.kind === 'create' && (
-            <div style={{ ...S.head, gap: 6 }}>
+            <div className={cls.head} style={{ gap: 6 }}>
               <FolderGlyph />
               {nameEditor()}
             </div>
@@ -674,8 +621,8 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
         const { shown, hidden: tail } = capGroup(g.sessions, expanded.has(g.path))
         return (
           <div key={g.path}>
-            <div style={S.head} title={g.path}>
-              <button style={S.chev} title={isClosed ? 'Expand project' : 'Collapse project'} onClick={() => toggleGroup(g.path)}>
+            <div className={cls.head} title={g.path}>
+              <button className={cls.chev} title={isClosed ? 'Expand project' : 'Collapse project'} onClick={() => toggleGroup(g.path)}>
                 {isClosed ? '▸' : '▾'}
               </button>
               <span
@@ -689,12 +636,12 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
               </span>
               <span style={{ color: 'var(--dd-dim)' }}>{g.sessions.length}</span>
               {isClosed && <LiveIndicator status={groupStatus(g.sessions)} />}
-              <button style={S.btn} title="New claude session here" onClick={() => onNewSession(g.path)}>＋</button>
+              <button className={cls.btn} title="New claude session here" onClick={() => onNewSession(g.path)}>＋</button>
             </div>
             {!isClosed && shown.map((s) => sessionRow(s, false))}
             {!isClosed && (tail > 0 || expanded.has(g.path)) && (
               <button
-                style={{ ...S.btn, display: 'block', width: '100%', textAlign: 'left', padding: '2px 10px 5px 26px', color: 'var(--dd-dim2)' }}
+                className={cls.btn} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '2px 10px 5px 26px', color: 'var(--dd-dim2)' }}
                 title={tail > 0 ? `Show all ${g.sessions.length} — or ${searchChord} to search every session` : 'Back to the five most recent'}
                 onClick={() => toggleExpanded(g.path)}
               >
@@ -709,7 +656,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
       )}
       {hidden.length > 0 && (
         <button
-          style={{ ...S.btn, display: 'block', width: '100%', textAlign: 'left', padding: '8px 10px', marginTop: 4, color: 'var(--dd-dim)' }}
+          className={cls.btn} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 10px', marginTop: 4, color: 'var(--dd-dim)' }}
           onClick={() => setShowHidden((v) => !v)}
         >
           {showHidden ? '▾' : '▸'} {hidden.length} hidden
@@ -720,23 +667,20 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
         <>
           <div style={{ position: 'fixed', inset: 0, zIndex: 59 }} onClick={() => setMenu(null)} onContextMenu={(e) => { e.preventDefault(); setMenu(null) }} />
           <div
-            style={{
-              ...S.menu,
-              left: Math.min(menu.x, window.innerWidth - 220),
+            className={cls.menu} style={{ left: Math.min(menu.x, window.innerWidth - 220),
               top: Math.min(menu.y, window.innerHeight - 300),
               // the folder list can outgrow the window — scroll it, never clip it
               maxHeight: Math.min(300, window.innerHeight - 40),
-              overflowY: 'auto',
-            }}
+              overflowY: 'auto' }}
           >
             {menu.view === 'main' ? (
               <>
-                <button style={S.menuItem} {...menuHover} onClick={() => { onToggleStar(menu.s); setMenu(null) }}>
+                <button className={cls.menuItem} onClick={() => { onToggleStar(menu.s); setMenu(null) }}>
                   {menu.s.starred ? 'Unstar' : 'Star'}
                 </button>
                 <button
-                  style={S.menuItem}
-                  {...menuHover}
+                  className={cls.menuItem}
+                 
                   title="Drydock-only name — the claude session itself is untouched"
                   onClick={() => { setDraft(sessionLabel(menu.s)); setNaming({ kind: 'rename-session', sid: menu.s.session_id, initial: sessionLabel(menu.s) }); setMenu(null) }}
                 >
@@ -744,50 +688,50 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
                 </button>
                 {menu.s.name && menu.s.name.trim() && (
                   <button
-                    style={S.menuItem}
-                    {...menuHover}
+                    className={cls.menuItem}
+                   
                     title="Back to the automatic title (card summary / claude's own name)"
                     onClick={() => { invoke('set_session_name', { sessionId: menu.s.session_id, name: '' }).then(onRefresh).catch(console.error); setMenu(null) }}
                   >
                     Clear name
                   </button>
                 )}
-                <button style={S.menuItem} {...menuHover} onClick={() => { onTranscript(menu.s); setMenu(null) }}>
+                <button className={cls.menuItem} onClick={() => { onTranscript(menu.s); setMenu(null) }}>
                   View transcript
                 </button>
                 {menu.s.live_status !== 'ended' && (
                   <button
-                    style={S.menuItem}
-                    {...menuHover}
+                    className={cls.menuItem}
+                   
                     title="Stop the terminal that owns this session and resume it in Drydock (asks first)"
                     onClick={() => { onTakeover(menu.s); setMenu(null) }}
                   >
                     Take over here…
                   </button>
                 )}
-                <button style={S.menuItem} {...menuHover} onClick={() => setMenu({ ...menu, view: 'folders' })}>
+                <button className={cls.menuItem} onClick={() => setMenu({ ...menu, view: 'folders' })}>
                   Move to folder&nbsp;&nbsp;▸
                 </button>
                 {menu.s.folder_id && folderIds.has(menu.s.folder_id) && (
-                  <button style={S.menuItem} {...menuHover} onClick={() => { fileSession(menu.s.session_id, null); setMenu(null) }}>
+                  <button className={cls.menuItem} onClick={() => { fileSession(menu.s.session_id, null); setMenu(null) }}>
                     Remove from folder
                   </button>
                 )}
-                <button style={S.menuItem} {...menuHover} onClick={() => { onNewSession(menu.s.project_path); setMenu(null) }}>
+                <button className={cls.menuItem} onClick={() => { onNewSession(menu.s.project_path); setMenu(null) }}>
                   New session in this project
                 </button>
                 {hiddenSet.has(menu.s.session_id) ? (
-                  <button style={S.menuItem} {...menuHover} onClick={() => { onHide(menu.s.session_id, false); setMenu(null) }}>Unhide</button>
+                  <button className={cls.menuItem} onClick={() => { onHide(menu.s.session_id, false); setMenu(null) }}>Unhide</button>
                 ) : (
-                  <button style={S.menuItem} {...menuHover} onClick={() => { onHide(menu.s.session_id, true); setMenu(null) }}>Hide from Drydock</button>
+                  <button className={cls.menuItem} onClick={() => { onHide(menu.s.session_id, true); setMenu(null) }}>Hide from Drydock</button>
                 )}
-                <button style={{ ...S.menuItem, color: 'var(--dd-err-bright)' }} {...menuHover} onClick={() => { setConfirmDel(menu.s); setMenu(null) }}>
+                <button className={cls.menuItem} style={{ color: 'var(--dd-err-bright)' }} onClick={() => { setConfirmDel(menu.s); setMenu(null) }}>
                   Delete permanently…
                 </button>
               </>
             ) : (
               <>
-                <button style={{ ...S.menuItem, color: 'var(--dd-text3)' }} {...menuHover} onClick={() => setMenu({ ...menu, view: 'main' })}>
+                <button className={cls.menuItem} style={{ color: 'var(--dd-text3)' }} onClick={() => setMenu({ ...menu, view: 'main' })}>
                   ‹ Back
                 </button>
                 {folders.map((f) => {
@@ -795,8 +739,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
                   return (
                     <button
                       key={f.id}
-                      style={{ ...S.menuItem, color: current ? 'var(--dd-dim)' : 'var(--dd-text1)', cursor: current ? 'default' : 'pointer' }}
-                      {...(current ? {} : menuHover)}
+                      className={cls.menuItem} style={{ color: current ? 'var(--dd-dim)' : 'var(--dd-text1)', cursor: current ? 'default' : 'pointer' }}
                       disabled={current}
                       onClick={() => { fileSession(menu.s.session_id, f.id); setMenu(null) }}
                     >
@@ -805,8 +748,8 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
                   )
                 })}
                 <button
-                  style={{ ...S.menuItem, borderTop: folders.length ? '1px solid var(--dd-hairline-strong)' : 'none', borderRadius: 0 }}
-                  {...menuHover}
+                  className={cls.menuItem} style={{ borderTop: folders.length ? '1px solid var(--dd-hairline-strong)' : 'none', borderRadius: 0 }}
+                 
                   onClick={() => { setDraft(''); setNaming({ kind: 'create', sid: menu.s.session_id }); setMenu(null) }}
                 >
                   New folder…
@@ -820,13 +763,13 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
       {folderMenu && (
         <>
           <div style={{ position: 'fixed', inset: 0, zIndex: 59 }} onClick={() => setFolderMenu(null)} onContextMenu={(e) => { e.preventDefault(); setFolderMenu(null) }} />
-          <div style={{ ...S.menu, left: Math.min(folderMenu.x, window.innerWidth - 200), top: Math.min(folderMenu.y, window.innerHeight - 170) }}>
-            <button style={S.menuItem} {...menuHover} onClick={() => { setDraft(folderMenu.f.name); setNaming({ kind: 'rename', id: folderMenu.f.id }); setFolderMenu(null) }}>
+          <div className={cls.menu} style={{ left: Math.min(folderMenu.x, window.innerWidth - 200), top: Math.min(folderMenu.y, window.innerHeight - 170) }}>
+            <button className={cls.menuItem} onClick={() => { setDraft(folderMenu.f.name); setNaming({ kind: 'rename', id: folderMenu.f.id }); setFolderMenu(null) }}>
               Rename
             </button>
             <button
-              style={{ ...S.menuItem, opacity: folderMenu.index === 0 ? 0.4 : 1 }}
-              {...menuHover}
+              className={cls.menuItem} style={{ opacity: folderMenu.index === 0 ? 0.4 : 1 }}
+             
               disabled={folderMenu.index === 0}
               onClick={() => {
                 const ids = folders.map((f) => f.id)
@@ -838,8 +781,8 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
               Move up
             </button>
             <button
-              style={{ ...S.menuItem, opacity: folderMenu.index === folders.length - 1 ? 0.4 : 1 }}
-              {...menuHover}
+              className={cls.menuItem} style={{ opacity: folderMenu.index === folders.length - 1 ? 0.4 : 1 }}
+             
               disabled={folderMenu.index === folders.length - 1}
               onClick={() => {
                 const ids = folders.map((f) => f.id)
@@ -851,8 +794,8 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
               Move down
             </button>
             <button
-              style={{ ...S.menuItem, color: 'var(--dd-err-bright)' }}
-              {...menuHover}
+              className={cls.menuItem} style={{ color: 'var(--dd-err-bright)' }}
+             
               onClick={() => {
                 // full membership count (incl. starred/hidden members the band
                 // isn't currently showing) — deleting unfiles all of them
@@ -869,47 +812,29 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
       )}
 
       {confirmDel && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 70 }}>
-          <div style={S.confirmBox}>
-            <div style={{ fontWeight: 600, marginBottom: 8 }}>Delete permanently?</div>
-            <div style={{ color: 'var(--dd-text2)', marginBottom: 14, lineHeight: 1.45 }}>
-              “{clip(sessionLabel(confirmDel), 48)}” — this deletes the transcript from <code>~/.claude</code>. It will no longer be resumable in Claude Code, and this can’t be undone.
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-              <button style={S.confirmBtn} onClick={() => setConfirmDel(null)}>
-                Cancel
-              </button>
-              <button
-                style={{ background: 'var(--dd-btn-danger)', color: 'var(--dd-white)', border: 'none', padding: '5px 12px', borderRadius: 'var(--dd-r-md)', cursor: 'pointer' }}
-                onClick={() => { onDelete(confirmDel.session_id); setConfirmDel(null) }}
-              >
-                Delete
-              </button>
-            </div>
-          </div>
-        </div>
+        <Modal z={70} width={380}>
+          <ModalTitle>Delete permanently?</ModalTitle>
+          <ModalBody>
+            “{clip(sessionLabel(confirmDel), 48)}” — this deletes the transcript from <code>~/.claude</code>. It will no longer be resumable in Claude Code, and this can’t be undone.
+          </ModalBody>
+          <ModalActions>
+            <Button variant="ghost" onClick={() => setConfirmDel(null)}>Cancel</Button>
+            <Button variant="danger" onClick={() => { onDelete(confirmDel.session_id); setConfirmDel(null) }}>Delete</Button>
+          </ModalActions>
+        </Modal>
       )}
 
       {confirmDelFolder && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 70 }}>
-          <div style={S.confirmBox}>
-            <div style={{ fontWeight: 600, marginBottom: 8 }}>Delete folder “{clip(confirmDelFolder.f.name, 32)}”?</div>
-            <div style={{ color: 'var(--dd-text2)', marginBottom: 14, lineHeight: 1.45 }}>
-              Its {confirmDelFolder.count} session{confirmDelFolder.count === 1 ? '' : 's'} return to their project groups. No sessions are deleted.
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-              <button style={S.confirmBtn} onClick={() => setConfirmDelFolder(null)}>
-                Cancel
-              </button>
-              <button
-                style={{ background: 'var(--dd-btn-danger)', color: 'var(--dd-white)', border: 'none', padding: '5px 12px', borderRadius: 'var(--dd-r-md)', cursor: 'pointer' }}
-                onClick={() => { deleteFolder(confirmDelFolder.f); setConfirmDelFolder(null) }}
-              >
-                Delete folder
-              </button>
-            </div>
-          </div>
-        </div>
+        <Modal z={70} width={380}>
+          <ModalTitle>Delete folder “{clip(confirmDelFolder.f.name, 32)}”?</ModalTitle>
+          <ModalBody>
+            Its {confirmDelFolder.count} session{confirmDelFolder.count === 1 ? '' : 's'} return to their project groups. No sessions are deleted.
+          </ModalBody>
+          <ModalActions>
+            <Button variant="ghost" onClick={() => setConfirmDelFolder(null)}>Cancel</Button>
+            <Button variant="danger" onClick={() => { deleteFolder(confirmDelFolder.f); setConfirmDelFolder(null) }}>Delete folder</Button>
+          </ModalActions>
+        </Modal>
       )}
 
       {/* drag ghost: follows the pointer, never intercepts it */}

@@ -1,0 +1,146 @@
+/* Sidebar chrome. This replaces the component's `S` style-object, and with it
+   the `menuHover` onMouseEnter/onMouseLeave pair that existed purely because an
+   inline style cannot express :hover — that is now two CSS lines. */
+
+/* userSelect none: a pointer drag across rows must never smear a text selection
+   (nothing in the sidebar is copy-worthy prose anyway). */
+.side {
+  width: 300px;
+  min-width: 300px;
+  height: 100%;
+  overflow-y: auto;
+  background: var(--dd-bg0);
+  color: var(--dd-text1);
+  font-family: system-ui;
+  font-size: 12px;
+  border-right: 1px solid var(--dd-hairline);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Collapsed state: a 30px strip with just the expand affordance. */
+.rail {
+  width: 30px;
+  min-width: 30px;
+  height: 100%;
+  background: var(--dd-bg0);
+  border-right: 1px solid var(--dd-hairline);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 8px;
+}
+
+/* The native titlebar is gone (tauri.conf: titleBarStyle "Overlay"), so macOS
+   draws the traffic lights straight onto this row — hence the left inset, and
+   the min-height keeping the row at least as tall as the lights. The row also
+   carries data-tauri-drag-region, so it is what moves the window. */
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: var(--dd-titlebar);
+  padding: 8px 8px 6px;
+  padding-left: var(--dd-lights-inset);
+}
+
+/* Section header: "STARRED", a folder name, a project path. */
+.head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px 4px;
+  color: var(--dd-text3);
+  font-weight: 600;
+}
+
+/* Inset pill, not a full-bleed bar. The selected row used to be a square fill
+   spanning the rail's whole width — the list-widget idiom. A 7px horizontal
+   margin makes selection read as a rounded chip floating inside the rail. The
+   project stripe is a box-shadow inset rather than a border-left so it cannot
+   contribute to layout (a border would shift the label by 3px). width is
+   calc'd because a block <button> won't fill its parent on its own, and
+   100% + margin would overflow. */
+.row {
+  display: block;
+  width: calc(100% - 14px);
+  box-sizing: border-box;
+  margin: 1px 7px;
+  padding: 5px 9px;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: var(--dd-r-md);
+  color: var(--dd-text1);
+  cursor: pointer;
+  font-size: 12px;
+  transition:
+    background var(--dd-t) var(--dd-ease),
+    color var(--dd-t) var(--dd-ease),
+    opacity var(--dd-t) var(--dd-ease);
+}
+
+/* Bare glyph affordance (＋, chevrons, the collapse «). */
+.btn {
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: var(--dd-text3);
+  font-size: 12px;
+  transition: color var(--dd-t) var(--dd-ease);
+}
+.btn:hover {
+  color: var(--dd-text);
+}
+
+.chev {
+  composes: btn;
+  width: 14px;
+  font-size: 10px;
+}
+
+/* Context menu: a floating surface, so it earns real elevation. */
+.menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 180px;
+  padding: 5px;
+  background: var(--dd-surface);
+  border: 1px solid var(--dd-hairline-strong);
+  border-radius: var(--dd-r-lg);
+  box-shadow: var(--dd-shadow-3);
+  font-family: system-ui;
+  font-size: 12px;
+}
+
+.menuItem {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: var(--dd-r-sm);
+  color: var(--dd-text1);
+  cursor: pointer;
+  font-size: 12px;
+  transition: background var(--dd-t) var(--dd-ease);
+}
+/* The whole reason this file exists — no JS hover handlers. */
+.menuItem:hover:not(:disabled) {
+  background: var(--dd-tint-hover);
+}
+
+.nameInput {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 7px;
+  background: var(--dd-bg1);
+  border: 1px solid var(--dd-accent-strong);
+  border-radius: var(--dd-r-sm);
+  color: var(--dd-text);
+  font-size: 12px;
+  font-family: system-ui;
+  outline: none;
+}
