@@ -36,6 +36,12 @@ type Props = {
   panelJump: { tab: RightTab; n: number }
 }
 
+// Floor on how often an open panel re-reads the session from disk. Chosen
+// against the watcher's 400ms debounce: slow enough that a busy session can't
+// pin a core re-parsing its transcript, fast enough that the panel still tracks
+// a turn as it happens.
+const REFRESH_MS = 1200
+
 const TABS: { id: RightTab; label: string }[] = [
   { id: 'briefing', label: 'Briefing' },
   { id: 'project', label: 'Project' }, // skills + MCP, merged: project/environment scope
@@ -1381,14 +1387,37 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
     invoke<TasksView>('session_tasks', { sessionId }).then(setTasks).catch(() => setTasks(null))
     invoke<SessionUsage>('session_usage', { sessionId }).then(setUsage).catch(() => setUsage(null))
   }, [sessionId])
+  // `index-updated` fires on a 400ms watcher debounce, so a session that is
+  // actively working ticks it up to ~2.5x/second — and every tick costs four
+  // commands, two of which read the session's entire transcript off disk. On a
+  // long session that file is tens of megabytes, which is enough to saturate a
+  // core and thrash the allocator. Two guards:
+  //   - a COLLAPSED panel is a 30px rail with nothing on it, so it subscribes to
+  //     nothing at all and refreshes once when you open it;
+  //   - an open panel coalesces bursts: the first tick lands immediately, then
+  //     at most one refresh per REFRESH_MS.
+  const throttle = useRef<{ last: number; timer: number | undefined }>({ last: 0, timer: undefined })
   useEffect(() => {
-    refresh()
+    if (collapsed) return
+    const t = throttle.current
+    const run = () => { t.last = Date.now(); refresh() }
+    const onTick = () => {
+      if (t.timer !== undefined) return // one already queued; it will pick this up
+      const wait = REFRESH_MS - (Date.now() - t.last)
+      if (wait <= 0) return run()
+      t.timer = window.setTimeout(() => { t.timer = undefined; run() }, wait)
+    }
+    run()
     let cancelled = false
     let un: UnlistenFn | null = null
     // if cleanup beat the listen() promise, unlisten immediately instead of leaking
-    listen('index-updated', refresh).then((u) => { if (cancelled) u(); else un = u })
-    return () => { cancelled = true; un?.() }
-  }, [refresh])
+    listen('index-updated', onTick).then((u) => { if (cancelled) u(); else un = u })
+    return () => {
+      cancelled = true
+      un?.()
+      if (t.timer !== undefined) { clearTimeout(t.timer); t.timer = undefined }
+    }
+  }, [refresh, collapsed])
 
   // When a NEW artifact arrives for this tab, surface it: jump to the Preview
   // sub-tab, open the panel if collapsed, and give it room (~1/3 of the window,

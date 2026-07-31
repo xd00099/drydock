@@ -152,6 +152,25 @@ pub struct Waiting {
     pub kind: Attn,
 }
 
+/// What a state mutation actually invalidated. The distinction is a performance
+/// contract, not bookkeeping: `blocked_changed` gates the expensive fan-out
+/// (`sync_ui` rebuilds the tray menu on the main thread and emits
+/// `index-updated`, which makes every listening panel re-read the session's
+/// whole transcript from disk). Only the BLOCKED set feeds the badge and the
+/// tray, so a `Done` coming and going must not trigger any of that — a Stop
+/// fires at the end of every single turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Marked {
+    /// Something in the map differs — worth telling the session list.
+    pub changed: bool,
+    /// A `Blocked` entry appeared, vanished, or changed its message.
+    pub blocked_changed: bool,
+}
+
+impl Marked {
+    const NOTHING: Marked = Marked { changed: false, blocked_changed: false };
+}
+
 /// session_id → attention info. Pure state (no Tauri types) so it unit-tests;
 /// the UI fan-out lives in the free functions below.
 #[derive(Default)]
@@ -160,33 +179,38 @@ pub struct AttentionState {
 }
 
 impl AttentionState {
-    /// Record a session as blocked or done. Returns false when nothing changed
-    /// (the same delivery repeated), so callers can skip redundant UI work.
-    /// A `Done` overwrites a `Blocked` for the same session: the turn ending is
-    /// the answer to whatever it was blocked on.
-    pub fn mark(&self, session_id: &str, pty_id: u32, message: &str, kind: Attn) -> bool {
+    /// Record a session as blocked or done. A `Done` overwrites a `Blocked` for
+    /// the same session: the turn ending is the answer to whatever it was
+    /// blocked on.
+    pub fn mark(&self, session_id: &str, pty_id: u32, message: &str, kind: Attn) -> Marked {
         // Only Blocked and Done describe this session. Notify and Ignore are
         // deliberately unstorable: writing them would let an event about another
         // session (or about nothing) overwrite real state.
         if !matches!(kind, Attn::Blocked | Attn::Done) {
-            return false;
+            return Marked::NOTHING;
         }
         let w = Waiting { pty_id, message: message.to_string(), kind };
-        self.waiting.lock().unwrap().insert(session_id.to_string(), w.clone()) != Some(w)
+        let prev = self.waiting.lock().unwrap().insert(session_id.to_string(), w.clone());
+        let changed = prev.as_ref() != Some(&w);
+        let was_blocked = prev.is_some_and(|p| p.kind == Attn::Blocked);
+        Marked { changed, blocked_changed: changed && (was_blocked || kind == Attn::Blocked) }
     }
 
     /// Clear every session flagged in this tab (session ids can rotate within
     /// one pty via /clear, so exit/typing clears by tab).
-    pub fn clear_pty(&self, pty_id: u32) -> bool {
+    pub fn clear_pty(&self, pty_id: u32) -> Marked {
         let mut map = self.waiting.lock().unwrap();
         let before = map.len();
+        let had_blocked = map.values().any(|w| w.pty_id == pty_id && w.kind == Attn::Blocked);
         map.retain(|_, w| w.pty_id != pty_id);
-        map.len() != before
+        let changed = map.len() != before;
+        Marked { changed, blocked_changed: changed && had_blocked }
     }
 
     /// The user can now see these tabs, so their "finished, unseen" markers have
     /// served their purpose. Deliberately leaves `Blocked` alone: looking at a
-    /// permission prompt doesn't answer it.
+    /// permission prompt doesn't answer it — which also means this can never
+    /// change the blocked set, so it never earns the expensive fan-out.
     pub fn seen_ptys(&self, pty_ids: &[u32]) -> bool {
         let mut map = self.waiting.lock().unwrap();
         let before = map.len();
@@ -268,7 +292,7 @@ pub fn handle_hook(app: &AppHandle, pty_id: u32, token_session: Option<&str>, bo
     }
     // Notify announces without recording — a background agent finishing must not
     // overwrite what THIS session's state actually is.
-    let changed = state.mark(sid, pty_id, &h.message, kind);
+    let m = state.mark(sid, pty_id, &h.message, kind);
     let ui_state = ui_state(kind);
     // Emitted on every delivery even when the stored state is unchanged: the
     // frontend uses this to decide whether to notify, and a repeat delivery of
@@ -277,9 +301,25 @@ pub fn handle_hook(app: &AppHandle, pty_id: u32, token_session: Option<&str>, bo
         "session-attention",
         AttentionEvent { session_id: sid.to_string(), pty_id, state: ui_state, message: h.message.clone() },
     );
-    if changed {
+    fan_out(app, m);
+}
+
+/// Push exactly as far as the change reaches. A `Stop` arrives at the end of
+/// every turn, so routing one through `sync_ui` would rebuild the tray menu and
+/// make every open panel re-read the session transcript — for a green check that
+/// only the session list cares about.
+fn fan_out(app: &AppHandle, m: Marked) {
+    if m.blocked_changed {
         sync_ui(app);
+    } else if m.changed {
+        sessions_changed(app);
     }
+}
+
+/// "Re-read the session list." The cheap sibling of `index-updated`, which means
+/// "the transcripts on disk moved" and costs a full re-parse in every listener.
+pub fn sessions_changed(app: &AppHandle) {
+    let _ = app.emit("sessions-changed", ());
 }
 
 /// The frontend can now see these tabs, so drop their "finished, unseen"
@@ -287,8 +327,10 @@ pub fn handle_hook(app: &AppHandle, pty_id: u32, token_session: Option<&str>, bo
 /// answering it.
 pub fn mark_seen(app: &AppHandle, pty_ids: &[u32]) {
     if let Some(state) = app.try_state::<AttentionState>() {
+        // Only ever drops Done markers, so the badge and tray cannot have moved:
+        // the session list is the whole audience for this.
         if state.seen_ptys(pty_ids) {
-            sync_ui(app);
+            sessions_changed(app);
         }
     }
 }
@@ -297,8 +339,8 @@ pub fn mark_seen(app: &AppHandle, pty_ids: &[u32]) {
 pub fn pty_interacted(app: &AppHandle, pty_id: u32) {
     if let Some(state) = app.try_state::<AttentionState>() {
         // cheap containment check first: this runs on every keystroke
-        if state.has_pty(pty_id) && state.clear_pty(pty_id) {
-            sync_ui(app);
+        if state.has_pty(pty_id) {
+            fan_out(app, state.clear_pty(pty_id));
         }
     }
 }
@@ -306,9 +348,7 @@ pub fn pty_interacted(app: &AppHandle, pty_id: u32) {
 /// The session's process is gone; nothing is waiting anymore.
 pub fn pty_exited(app: &AppHandle, pty_id: u32) {
     if let Some(state) = app.try_state::<AttentionState>() {
-        if state.clear_pty(pty_id) {
-            sync_ui(app);
-        }
+        fan_out(app, state.clear_pty(pty_id));
     }
 }
 
@@ -413,18 +453,18 @@ mod tests {
     #[test]
     fn mark_and_clear_track_change() {
         let s = AttentionState::default();
-        assert!(s.mark("sid-1", 7, "Claude needs your permission to use Bash", Attn::Blocked));
+        assert!(s.mark("sid-1", 7, "Claude needs your permission to use Bash", Attn::Blocked).changed);
         assert!(
-            !s.mark("sid-1", 7, "Claude needs your permission to use Bash", Attn::Blocked),
+            !s.mark("sid-1", 7, "Claude needs your permission to use Bash", Attn::Blocked).changed,
             "same message = no change"
         );
-        assert!(s.mark("sid-1", 7, "Claude needs your permission to use Edit", Attn::Blocked), "new message = change");
+        assert!(s.mark("sid-1", 7, "Claude needs your permission to use Edit", Attn::Blocked).changed, "new message = change");
         assert!(s.has_pty(7));
         assert!(!s.has_pty(8));
         assert_eq!(s.snapshot().len(), 1);
 
-        assert!(s.clear_pty(7));
-        assert!(!s.clear_pty(7), "already cleared");
+        assert!(s.clear_pty(7).changed);
+        assert!(!s.clear_pty(7).changed, "already cleared");
         assert!(s.snapshot().is_empty());
     }
 
@@ -434,8 +474,8 @@ mod tests {
         s.mark("sid-old", 7, "m1", Attn::Blocked); // pre-/clear id
         s.mark("sid-new", 7, "m2", Attn::Blocked); // post-/clear id, same tab
         s.mark("sid-other", 9, "m3", Attn::Blocked);
-        assert!(s.clear_pty(7));
-        assert!(!s.clear_pty(7));
+        assert!(s.clear_pty(7).changed);
+        assert!(!s.clear_pty(7).changed);
         let left = s.snapshot();
         assert_eq!(left.len(), 1);
         assert!(left.contains_key("sid-other"));
@@ -493,7 +533,7 @@ mod tests {
     fn a_background_agent_finishing_cannot_erase_a_real_question() {
         let s = AttentionState::default();
         s.mark("parent", 1, "Claude needs your permission to use Bash", Attn::Blocked);
-        assert!(!s.mark("parent", 1, "worker finished", Attn::Notify), "Notify stores nothing");
+        assert!(!s.mark("parent", 1, "worker finished", Attn::Notify).changed, "Notify stores nothing");
         assert_eq!(s.blocked().len(), 1, "the permission prompt survives");
         assert_eq!(s.snapshot()["parent"].kind, Attn::Blocked);
         assert!(s.snapshot()["parent"].message.contains("permission"));
@@ -508,7 +548,7 @@ mod tests {
         assert_eq!(ui_state(Attn::Notify), "info");
         let s = AttentionState::default();
         for kind in [Attn::Notify, Attn::Ignore] {
-            assert!(!s.mark("sid", 1, "m", kind), "{kind:?} is not storable");
+            assert!(!s.mark("sid", 1, "m", kind).changed, "{kind:?} is not storable");
         }
         assert!(s.snapshot().is_empty());
     }
@@ -537,7 +577,7 @@ mod tests {
         // flag outlived the reason for it until the user returned to that tab.
         assert_eq!(classify("Notification", Some("idle_prompt")), Attn::Ignore);
         let s = AttentionState::default();
-        assert!(!s.mark("sid", 3, "Claude is waiting for your input", Attn::Ignore), "Ignore stores nothing");
+        assert!(!s.mark("sid", 3, "Claude is waiting for your input", Attn::Ignore).changed, "Ignore stores nothing");
         assert!(s.snapshot().is_empty());
         assert!(!s.has_pty(3));
     }
@@ -599,6 +639,54 @@ mod tests {
         assert!(left.contains_key("asking-here"), "seeing a prompt does not answer it");
         assert!(left.contains_key("done-elsewhere"), "a tab you cannot see keeps its marker");
         assert!(!s.seen_ptys(&[1, 2]), "idempotent");
+    }
+
+    /// The reason `Marked` exists. `sync_ui` rebuilds the tray menu on the main
+    /// thread and emits `index-updated`, which makes every open panel re-read the
+    /// session's transcript off disk — tens of megabytes on a long session. A
+    /// Stop fires at the end of EVERY turn, so if a plain `Done` reported
+    /// `blocked_changed` the app would do all of that, twice, per turn, forever.
+    /// That is exactly the regression this guards.
+    #[test]
+    fn a_finished_turn_does_not_earn_the_expensive_fan_out() {
+        let s = AttentionState::default();
+        let m = s.mark("sid", 1, "", Attn::Done);
+        assert!(m.changed, "the session list still wants to know");
+        assert!(!m.blocked_changed, "but the badge, tray and index must not be touched");
+
+        // clearing it again is likewise cheap
+        assert!(s.seen_ptys(&[1]));
+        let m = s.mark("sid", 1, "", Attn::Done);
+        assert!(!m.blocked_changed);
+        assert!(!s.clear_pty(1).blocked_changed, "dropping a Done is not a badge event");
+    }
+
+    #[test]
+    fn a_question_arriving_or_leaving_always_earns_it() {
+        let s = AttentionState::default();
+        assert!(s.mark("sid", 1, "permission", Attn::Blocked).blocked_changed, "badge must appear");
+        assert!(
+            !s.mark("sid", 1, "permission", Attn::Blocked).blocked_changed,
+            "the same prompt redelivered changes nothing"
+        );
+        assert!(
+            s.mark("sid", 1, "permission to use Edit", Attn::Blocked).blocked_changed,
+            "the tray menu shows the message, so a new one is a change"
+        );
+        // a Done overwriting a Blocked REMOVES a badge — that must still fan out
+        assert!(s.mark("sid", 1, "", Attn::Done).blocked_changed, "the question is gone: badge must clear");
+        assert!(s.blocked().is_empty());
+    }
+
+    #[test]
+    fn typing_into_a_blocked_tab_earns_it_but_a_quiet_tab_does_not() {
+        let s = AttentionState::default();
+        s.mark("asking", 4, "permission", Attn::Blocked);
+        assert!(s.clear_pty(4).blocked_changed, "answering it clears the badge");
+
+        s.mark("finished", 5, "", Attn::Done);
+        let m = s.clear_pty(5);
+        assert!(m.changed && !m.blocked_changed, "a tab that only finished is cheap to clear");
     }
 
     #[test]

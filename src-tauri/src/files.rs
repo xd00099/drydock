@@ -305,7 +305,33 @@ fn merge_touches(mut base: Vec<transcript::FileTouch>, extra: Vec<transcript::Fi
 #[tauri::command(async)]
 pub fn session_files(db: State<'_, AppDb>, session_id: String) -> Result<Vec<FileTouchView>, String> {
     let path = transcript_file(&db, &session_id)?;
-    let mut touches = transcript::files_touched(&path).map_err(|e| e.to_string())?;
+    // The session's OWN transcript, behind the same (size,mtime) fingerprint the
+    // agent files below already use. `index-updated` is global — it fires when
+    // ANY session's file moves — so the panel is usually asked to re-read a
+    // transcript that hasn't changed since last tick. Parsing it costs a full
+    // read_to_string plus a serde_json::Value per line, which on a long session
+    // is tens of megabytes of allocation for a byte-identical answer.
+    static OWN_TOUCHES: std::sync::Mutex<Option<std::collections::HashMap<String, (String, Vec<transcript::FileTouch>)>>> =
+        std::sync::Mutex::new(None);
+    let own_fp = std::fs::metadata(&path)
+        .map(|m| {
+            let mtime = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
+            format!("{}|{:?}", m.len(), mtime.map(|d| d.as_nanos()))
+        })
+        .unwrap_or_default();
+    let mut touches = {
+        let mut cache = OWN_TOUCHES.lock().unwrap();
+        let map = cache.get_or_insert_with(Default::default);
+        match map.get(&session_id) {
+            // an empty fingerprint means the stat failed — never trust that as a hit
+            Some((fp, cached)) if *fp == own_fp && !own_fp.is_empty() => cached.clone(),
+            _ => {
+                let fresh = transcript::files_touched(&path).map_err(|e| e.to_string())?;
+                map.insert(session_id.clone(), (own_fp, fresh.clone()));
+                fresh
+            }
+        }
+    };
     // A session's footprint includes what its SUBAGENTS edited. This runs on
     // every index tick while the panel is open, so the merged agent touches
     // are cached per session behind a (path,size,mtime) fingerprint — agent

@@ -15,10 +15,16 @@ export function useSessions() {
   useEffect(() => {
     refresh()
     let cancelled = false
-    let un: UnlistenFn | null = null
+    const uns: UnlistenFn[] = []
     // if cleanup beat the listen() promise, unlisten immediately instead of leaking
-    listen('index-updated', refresh).then((u) => { if (cancelled) u(); else un = u })
-    return () => { cancelled = true; un?.() }
+    const sub = (ev: string) =>
+      listen(ev, refresh).then((u) => { if (cancelled) u(); else uns.push(u) })
+    // index-updated = the transcripts on disk moved. sessions-changed = only a
+    // session's live state did; it exists so the end of every turn can refresh
+    // this list without making the transcript-reading panels re-parse the file.
+    sub('index-updated')
+    sub('sessions-changed')
+    return () => { cancelled = true; for (const u of uns) u() }
   }, [refresh])
   return { ...snap, ready, refresh }
 }

@@ -4,6 +4,36 @@ Each tagged release's `## vX.Y.Z` section becomes the GitHub release body and
 the in-app updater's release notes (extracted by `scripts/release-notes.py` in
 CI — a tag without its section fails the release).
 
+## v0.6.1 — 2026-07-30
+
+### The app no longer freezes under load
+
+v0.6.0 could drive the whole machine into "not responding" territory while
+sessions were active — sustained CPU near half a core and memory climbing
+toward 2 GB, until macOS started swapping and every app beachballed. Three
+compounding causes, all fixed:
+
+- **The end of every turn triggered the expensive UI fan-out, twice.** Storing
+  the quiet "finished" marker rebuilt the menu-bar tray and broadcast the same
+  global event the file watcher uses — which every open panel answers by
+  re-reading its session's transcript from disk. Turn ends now send a
+  lightweight "session list changed" signal instead; the tray and dock badge
+  are only rebuilt when a session actually starts or stops waiting on you.
+- **The Briefing panel re-read the whole transcript up to 2.5× per second.**
+  It refreshed on every watcher tick — even collapsed, when it renders as a
+  30px rail. On a long session that transcript is tens of megabytes, so an
+  actively-working session cost a re-parse of the entire file several times a
+  second, forever. A collapsed panel now does nothing at all, and an open one
+  coalesces bursts to at most one refresh every 1.2 seconds.
+- **"Files changed" re-parsed transcripts that hadn't changed.** The watcher's
+  tick is global — any session's file moving made the panel re-read its own
+  session's file too. The parse is now cached behind a size+mtime fingerprint,
+  so an unchanged transcript costs a stat instead of a full read.
+
+Measured on the same machine and workload that froze: CPU while a large
+session works dropped from ~49% sustained to ~9%, idle settles at ~1%, and
+swap pressure returned to normal.
+
 ## v0.6.0 — 2026-07-30
 
 ### Notifications tell you what actually happened
