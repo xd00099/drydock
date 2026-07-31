@@ -13,6 +13,9 @@ import BriefingPanel from '@/features/briefing/BriefingPanel'
 import HomeView from '@/features/home/HomeView'
 import FindBar from '@/features/search/FindBar'
 import { useSessions } from '@/hooks/useSessions'
+import ConfirmCloseDialog from './dialogs/ConfirmCloseDialog'
+import QuitGuardDialog from './dialogs/QuitGuardDialog'
+import TakeoverDialog from './dialogs/TakeoverDialog'
 import { serializeChord, effectiveKeymap, loadOverrides, KEYMAP_EVENT } from '@/lib/keymap'
 import type { ActionId } from '@/lib/keymap'
 import { getSetting } from '@/lib/settings'
@@ -1298,7 +1301,8 @@ export default function App() {
                   r
                     ? {
                         position: 'absolute', left: r.x, top: r.y, width: r.w, height: r.h,
-                        boxSizing: 'border-box', display: 'block', overflow: 'hidden', borderRadius: 4,
+                        boxSizing: 'border-box', display: 'block', overflow: 'hidden',
+                        borderRadius: 'var(--dd-r-lg)',
                         // Session-color chrome: the frame plus a thin tinted
                         // mat wear the session's color so panes read as THEIR
                         // session at a glance; shells keep the neutral steel.
@@ -1321,7 +1325,19 @@ export default function App() {
                           ? projectColor(sess?.project_path, t.id === activeId ? 0.12 : 0.06)
                           : 'var(--dd-bg1)',
                       }
-                    : { position: 'absolute', inset: 8, display: shown ? 'block' : 'none' }
+                    : {
+                        // Unsplit stage: an inset card rather than a bare
+                        // rectangle bleeding into the chrome. box-sizing is
+                        // load-bearing — xterm's FitAddon sizes cols/rows from
+                        // the content box, so the hairline has to come out of
+                        // the pane's own width, not push the PTY 2px wider than
+                        // its container.
+                        position: 'absolute', inset: 8, display: shown ? 'block' : 'none',
+                        boxSizing: 'border-box', overflow: 'hidden',
+                        borderRadius: 'var(--dd-r-lg)',
+                        border: '1px solid var(--dd-hairline)',
+                        boxShadow: 'var(--dd-shadow-1)',
+                      }
                 }
               >
               {t.kind === 'pty' ? (
@@ -1504,106 +1520,30 @@ export default function App() {
       {/* After the home overlay: same z, later in DOM — settings wins if both
           ever mount (the keydown guards make that unreachable today). */}
       <SettingsOverlay open={settingsOpen} onClose={() => setSettingsOpen(false)} />
-      {confirmClose !== null && (() => {
-        const t = tabs.find((x) => x.id === confirmClose)
-        const s = t?.sessionId ? sessions.find((x) => x.session_id === t.sessionId) : undefined
-        return (
-          // z 105: over the settings/home overlays (85) and takeover (100),
-          // under the quit guard (110); compositing layer for WebGL, as ever.
-          // Steal focus from the terminal: otherwise the confirming Enter also
-          // lands in xterm and gets typed into the very session being closed.
-          <div
-            ref={(el) => { if (el && !el.dataset.focused) { el.dataset.focused = '1'; el.focus() } }}
-            tabIndex={-1}
-            style={{ position: 'fixed', inset: 0, zIndex: 105, background: 'rgba(4,6,10,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', transform: 'translateZ(0)', outline: 'none' }}>
-            <div style={{ background: 'var(--dd-surface)', border: '1px solid var(--dd-border2)', borderRadius: 10, padding: '18px 22px', width: 380, fontFamily: 'system-ui' }}>
-              <div style={{ color: 'var(--dd-text)', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Close a session mid-turn?</div>
-              <div style={{ color: 'var(--dd-text2)', fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
-                {clip(s ? sessionLabel(s) : t?.title ?? 'This session', 60)} is working right now — closing the tab interrupts that turn. The session itself stays resumable from the sidebar.
-              </div>
-              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                <button onClick={() => setConfirmClose(null)} style={{ background: 'none', border: '1px solid var(--dd-border2)', borderRadius: 6, color: 'var(--dd-text2)', fontSize: 12, padding: '4px 12px', cursor: 'pointer' }}>Cancel (Esc)</button>
-                <button onClick={() => { closeTab(confirmClose); setConfirmClose(null) }} style={{ background: 'var(--dd-err-bg)', border: '1px solid var(--dd-err-border)', borderRadius: 6, color: 'var(--dd-err-bright)', fontSize: 12, padding: '4px 12px', cursor: 'pointer' }}>Close (⏎)</button>
-              </div>
-            </div>
-          </div>
-        )
-      })()}
-      {quitGuard && (() => {
-        // Recompute at render: the guard only ever opens because SOMETHING was
-        // mid-turn, but a turn can finish while the dialog sits there — the
-        // count stays honest, and the fallback wording covers that race.
-        const busy = tabs.filter((t) => interruptsWork([t], sessions)).length
-        const what = busy > 1 ? `${busy} sessions are mid-turn` : busy === 1 ? 'A session is mid-turn' : 'A session was mid-turn'
-        return (
-        // zIndex + own compositing layer: every other overlay has a z-index, but
-        // this modal had none, so over a terminal's WebGL canvas WebKit painted it
-        // on top yet routed clicks to the canvas (visible but not clickable).
-        // z-110 (above the takeover dialog's 100): a quit requested mid-takeover
-        // must sit on top, matching the keydown handler's quit-guard-first order.
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 110, transform: 'translateZ(0)' }}>
-          <div style={{ background: 'var(--dd-surface2)', color: 'var(--dd-text)', padding: 20, borderRadius: 8, fontFamily: 'system-ui', fontSize: 13, maxWidth: 400 }}>
-            <div style={{ marginBottom: 4, fontWeight: 600 }}>{what} — quitting interrupts it.</div>
-            <div style={{ marginBottom: 12, color: 'var(--dd-text2)' }}>Idle sessions are unaffected: they resume when Drydock reopens.</div>
-            <button
-              style={{ background: 'var(--dd-btn-danger)', color: 'var(--dd-white)', border: 'none', padding: '5px 12px', borderRadius: 5, cursor: 'pointer', fontSize: 12, marginRight: 8 }}
-              onClick={() => invoke('force_quit')}
-            >
-              Quit anyway
-            </button>
-            <button
-              style={{ background: 'var(--dd-border)', color: 'var(--dd-text)', border: '1px solid var(--dd-border2)', borderRadius: 5, padding: '4px 12px', cursor: 'pointer', fontSize: 12 }}
-              onClick={() => setQuitGuard(false)}
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-        )
-      })()}
+      {confirmClose !== null && (
+        <ConfirmCloseDialog
+          tab={tabs.find((x) => x.id === confirmClose)}
+          session={(() => {
+            const t = tabs.find((x) => x.id === confirmClose)
+            return t?.sessionId ? sessions.find((x) => x.session_id === t.sessionId) : undefined
+          })()}
+          onCancel={() => setConfirmClose(null)}
+          onConfirm={() => { closeTab(confirmClose); setConfirmClose(null) }}
+        />
+      )}
+      {quitGuard && (
+        <QuitGuardDialog
+          busyCount={tabs.filter((t) => interruptsWork([t], sessions)).length}
+          onCancel={() => setQuitGuard(false)}
+          onQuitAnyway={() => invoke('force_quit')}
+        />
+      )}
       {takeover && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, transform: 'translateZ(0)' }}>
-          <div style={{ background: 'var(--dd-surface2)', color: 'var(--dd-text)', padding: 20, borderRadius: 8, fontFamily: 'system-ui', fontSize: 13, maxWidth: 440 }}>
-            <div style={{ fontWeight: 600, marginBottom: 8 }}>Take over this session?</div>
-            {!takeover.located ? (
-              <div style={{ color: 'var(--dd-text2)', marginBottom: 12 }}>locating the process…</div>
-            ) : takeover.info ? (
-              <div style={{ marginBottom: 12, lineHeight: 1.6 }}>
-                <div>
-                  Stops <span style={{ fontFamily: 'Menlo, monospace', fontSize: 12 }}>claude</span> (pid {takeover.info.pid}) in{' '}
-                  <b>{takeover.info.app ?? 'another terminal'}</b>
-                  {takeover.info.tty ? <span style={{ color: 'var(--dd-text2)' }}> · {takeover.info.tty}</span> : null}
-                  {takeover.info.cwd ? <span style={{ color: 'var(--dd-text2)' }}> — {clip(takeover.info.cwd, 44)}</span> : null}
-                  , then resumes the session here.
-                </div>
-                {takeover.info.status === 'busy' && (
-                  <div style={{ color: 'var(--dd-warn)', marginTop: 6 }}>
-                    Mid-task right now — the in-flight turn will be lost. Everything already in the transcript survives.
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div style={{ color: 'var(--dd-text2)', marginBottom: 12 }}>
-                The process is already gone — the session just hasn't settled to "ended" yet. Resume it directly.
-              </div>
-            )}
-            {takeover.err && <div style={{ color: 'var(--dd-err)', marginBottom: 10 }}>{takeover.err}</div>}
-            <button
-              style={{ background: takeover.info ? 'var(--dd-btn-danger)' : 'var(--dd-btn-primary)', color: 'var(--dd-white)', border: 'none', padding: '5px 12px', borderRadius: 5, cursor: takeover.located && !takeover.killing ? 'pointer' : 'default', fontSize: 12, marginRight: 8, opacity: takeover.located && !takeover.killing ? 1 : 0.6 }}
-              disabled={!takeover.located || takeover.killing}
-              onClick={confirmTakeover}
-            >
-              {takeover.killing ? 'Taking over…' : takeover.info ? 'Take over' : 'Resume here'}
-            </button>
-            <button
-              style={{ background: 'var(--dd-border)', color: 'var(--dd-text)', border: '1px solid var(--dd-border2)', borderRadius: 5, padding: '4px 12px', cursor: 'pointer', fontSize: 12 }}
-              disabled={takeover.killing}
-              onClick={() => setTakeover(null)}
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
+        <TakeoverDialog
+          state={takeover}
+          onCancel={() => setTakeover(null)}
+          onConfirm={confirmTakeover}
+        />
       )}
       {chipDrag && (
         // drag ghost: pointer-tracked chip label (no native drag image in Tauri)

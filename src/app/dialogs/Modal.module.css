@@ -1,0 +1,47 @@
+/* Shared modal chrome. The cards were bordered rectangles at 8px radius on a
+   flat backdrop; they now read as elevated surfaces — hairline edge plus the
+   shadow-3 token — which is what separates a dialog from the chrome behind it
+   without drawing a box around it. */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 6, 10, 0.6);
+  outline: none;
+  /* own compositing layer — see the note in Modal.tsx */
+  transform: translateZ(0);
+}
+
+.card {
+  background: var(--dd-surface);
+  color: var(--dd-text);
+  padding: 19px 22px;
+  border-radius: var(--dd-r-xl);
+  border: 1px solid var(--dd-hairline);
+  box-shadow: var(--dd-shadow-3);
+  font-family: system-ui;
+  font-size: 13px;
+}
+
+.title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--dd-text);
+  margin-bottom: 6px;
+  letter-spacing: -0.005em;
+}
+
+.body {
+  color: var(--dd-text2);
+  font-size: 12px;
+  line-height: 1.55;
+  margin-bottom: 15px;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}

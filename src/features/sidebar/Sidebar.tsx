@@ -7,6 +7,7 @@ import { IconButton } from '@/components/ui'
 import LiveIndicator from '@/features/session/LiveIndicator'
 import VersionFooter from '@/features/session/VersionFooter'
 import { useChord } from '@/lib/keymap'
+import { STARRED_KEY, byRecency, capGroup, folderKey, groupSessions, isVisible, loadSet, triage, type Group } from './grouping'
 
 type Props = {
   onHome: () => void // show the Home view (recap log + usage) in the center
@@ -29,72 +30,6 @@ type Props = {
   onOpenSettings: () => void // footer gear — same surface as ⌘,
 }
 
-type Group = { path: string; sessions: SessionView[]; latest: number }
-
-const STARRED_KEY = '__starred__'
-// Folder collapse keys share dd.closedGroups with project paths; the prefix
-// can't collide because project paths start with '/'.
-const folderKey = (id: string) => `folder:${id}`
-
-// Visible = not an auto-hidden ghost and (not user-hidden unless revealing hidden).
-function isVisible(s: SessionView, hiddenSet: Set<string>, showHidden: boolean): boolean {
-  if (s.hidden) return false
-  if (hiddenSet.has(s.session_id) && !showHidden) return false
-  return true
-}
-
-const byRecency = (a: SessionView, b: SessionView) => (b.last_message_at ?? 0) - (a.last_message_at ?? 0)
-
-// Project groups. Starred sessions and filed sessions (in an existing user
-// folder) are excluded — they render in their own sections above. One rule:
-// a visible session appears in exactly one place (Starred > folder > project).
-function groupSessions(sessions: SessionView[], hiddenSet: Set<string>, showHidden: boolean, folderIds: Set<string>): Group[] {
-  const byPath = new Map<string, SessionView[]>()
-  for (const s of sessions) {
-    if (s.starred) continue
-    if (s.folder_id && folderIds.has(s.folder_id)) continue
-    if (!isVisible(s, hiddenSet, showHidden)) continue
-    const list = byPath.get(s.project_path) ?? []
-    list.push(s)
-    byPath.set(s.project_path, list)
-  }
-  const groups: Group[] = [...byPath.entries()].map(([path, list]) => {
-    list.sort(byRecency)
-    return { path, sessions: list, latest: Math.max(...list.map((s) => s.last_message_at ?? 0)) }
-  })
-  groups.sort((a, b) => b.latest - a.latest)
-  return groups
-}
-
-// Sessions that want something from the user float to the top, in exactly one
-// place each — the placement rule becomes needs-you > active > Starred > folder
-// > project. `needs` is the section that earns its position: a blocked session
-// is the only thing in the list you cannot make progress without. `active` is
-// busy + just-finished, the transient set that is worth a glance now and
-// worthless in five minutes. Everything else keeps its usual home.
-export function triage(visible: SessionView[]): { needs: SessionView[]; active: SessionView[]; rest: SessionView[] } {
-  const needs: SessionView[] = []
-  const active: SessionView[] = []
-  const rest: SessionView[] = []
-  for (const s of visible) {
-    if (s.live_status === 'needs_input') needs.push(s)
-    else if (s.live_status === 'busy' || s.live_status === 'done') active.push(s)
-    else rest.push(s)
-  }
-  needs.sort(byRecency)
-  active.sort(byRecency)
-  return { needs, active, rest }
-}
-
-/** A project group shows its five most recent sessions and puts the tail behind
- *  a disclosure: past about five, a list stops being something you scan and
- *  becomes something you search (⌘K already does that better than scrolling
- *  ever will). A group of exactly six stays whole — hiding one row behind a
- *  control that costs a row is worse than showing it. */
-export function capGroup<T>(list: T[], expanded: boolean, cap = 5): { shown: T[]; hidden: number } {
-  if (expanded || list.length <= cap + 1) return { shown: list, hidden: 0 }
-  return { shown: list.slice(0, cap), hidden: list.length - cap }
-}
 
 const S = {
   // userSelect none: a pointer drag across rows must never smear a text
@@ -145,9 +80,6 @@ const S = {
   confirmBtn: { background: 'var(--dd-border)', color: 'var(--dd-text)', border: '1px solid var(--dd-border2)', borderRadius: 5, padding: '4px 12px', cursor: 'pointer', fontSize: 12 } as const,
 } as const
 
-function loadSet(key: string): Set<string> {
-  try { return new Set(JSON.parse(localStorage.getItem(key) || '[]') as string[]) } catch { return new Set() }
-}
 
 // Hover highlight for context-menu items (inline styles can't express :hover).
 const menuHover = {

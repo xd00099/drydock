@@ -5,7 +5,7 @@
 // grows past what the eye can separate. Each is invisible in review and obvious
 // on screen — which is exactly the kind of thing that belongs here.
 import { describe, expect, it } from 'vitest'
-import { capGroup, triage } from '@/features/sidebar/Sidebar'
+import { capGroup, triage } from '@/features/sidebar/grouping'
 import { ageTone, projectColor } from '@/lib/types'
 import type { SessionView } from '@/lib/types'
 
