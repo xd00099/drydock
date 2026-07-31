@@ -4,6 +4,42 @@ Each tagged release's `## vX.Y.Z` section becomes the GitHub release body and
 the in-app updater's release notes (extracted by `scripts/release-notes.py` in
 CI — a tag without its section fails the release).
 
+## v0.7.0 — 2026-07-31
+
+### Modern chrome
+
+- **A chrome pass over the whole app**: the titlebar becomes an overlay so the
+  window is all content, window controls soften, and transitions animate. A
+  new **Classic Dark** theme — modeled on VS Code / Cursor's "Dark Modern" —
+  joins the theme picker.
+- Under the hood, the frontend reorganized around a design-token layer and
+  CSS modules, with tests guarding the styling contract — groundwork that
+  made the chrome pass possible and makes future themes cheaper.
+
+### Permission grants that stick
+
+- **macOS folder-access grants no longer reset on every rebuild.** macOS keys
+  privacy permissions to an app's code signature, and ad-hoc builds get a new
+  signature every compile — so each upgrade looked like a brand-new app and
+  re-asked for Documents, Desktop, and friends. Local builds via
+  `scripts/build-app.sh` now sign with whatever Apple code-signing identity
+  the machine has (a free "Apple Development" certificate from Xcode is
+  enough), giving the app a stable identity that keeps grants across
+  rebuilds. Downloaded builds are unchanged for now — a Developer ID
+  certificate is the eventual fix there.
+- Two things worth knowing while we're on the subject: granting Drydock Full
+  Disk Access removes the per-folder prompts entirely, and when a prompt
+  mentions Music or Photos it is macOS attributing a terminal command's file
+  sweep (say, an agent running `grep` across your home directory) to the app
+  hosting the terminal — the same reason Terminal.app asks about Documents.
+
+### Develop Drydock beside Drydock
+
+- `npm run tauri:dev` (or `scripts/build-app.sh --config
+  src-tauri/tauri.dev.conf.json`) now runs as **Drydock Dev**, with its own
+  bundle identifier and data directory. A development build and a daily
+  install can run side by side without contending for one database.
+
 ## v0.6.4 — 2026-07-30
 
 ### ⌘W stops nagging too
