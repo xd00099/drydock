@@ -6,6 +6,8 @@
 #   scripts/build-app.sh --config src-tauri/tauri.dev.conf.json   # Drydock Dev
 set -e
 cd "$(dirname "$0")/.."
+# GUI-spawned and non-login shells often lack cargo on PATH
+PATH="$HOME/.cargo/bin:$PATH"
 identity=$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(.*\)"/\1/p' | head -1)
 if [ -n "$identity" ]; then
   export APPLE_SIGNING_IDENTITY="$identity"
