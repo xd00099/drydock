@@ -55,6 +55,12 @@
 .dd-sessrow .dd-rowbtn { visibility: hidden; }
 .dd-sessrow:hover .dd-rowbtn { visibility: visible; }
 .dd-rowbtn:hover { color: var(--dd-accent-text) !important; }
+/* Row hover tint. Lives here rather than in Sidebar's style object because an
+   inline style can't express :hover — the row's resting background is set
+   inline (it varies with selection), so this only needs to win when NOT
+   selected: the selected row's inline fill is the stronger token already. */
+.dd-sessrow:hover { background: var(--dd-tint) !important; color: var(--dd-text); }
+.dd-sessrow[data-active='1']:hover { background: var(--dd-tint-active) !important; }
 
 /* Split screen: an unfocused pane whose session is blocked on you wears a
    pulsing amber frame (the split-mode sibling of the sidebar/tab dd-attn dot).

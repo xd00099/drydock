@@ -1,0 +1,40 @@
+/* Pill badge for compact metadata: token counts, keyboard hints, statuses.
+   Replaces the bordered mini-rectangle (`border: 1px solid` + 4px radius). */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  padding: 3px 8px;
+  border-radius: var(--dd-r-pill);
+  background: var(--dd-tint);
+  color: var(--dd-text2);
+  font-size: 10px;
+  line-height: 1;
+  font-family: Menlo, Monaco, monospace;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.accent {
+  background: var(--dd-accent-bg);
+  color: var(--dd-accent-text);
+}
+.ok {
+  background: var(--dd-ok-bg);
+  color: var(--dd-ok-bright);
+}
+.warn {
+  background: var(--dd-warn-bg);
+  color: var(--dd-warn-bright);
+}
+.err {
+  background: var(--dd-err-bg);
+  color: var(--dd-err-bright);
+}
+/* Keyboard hint trailing a label ("Briefing ⇧⌘B") — no fill, just recessed. */
+.key {
+  background: transparent;
+  color: var(--dd-dim);
+  padding: 0 0 0 2px;
+  font-size: 9.5px;
+}

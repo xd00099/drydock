@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { fmtTokens, relAge, type CardView, type FileTouch, type SessionUsage, type TasksView, type TimelineItem } from '@/lib/types'
+import { Button, Chip } from '@/components/ui'
 import TimeMachine from '@/features/timemachine/TimeMachine'
 import { FilesChanged } from './FilesChanged'
 import { TasksSection } from './TasksSection'
@@ -27,6 +28,8 @@ function Item({ it }: { it: TimelineItem }) {
     </li>
   )
 }
+
+// Per-file status glyph, git-style: created / modified / gone from disk.
 
 export function BriefingTab({ sessionId, card, starred, files, tasks, usage, projectPath, label, onToggleStar, onRename }: { sessionId: string | null; card: CardView | null; starred: boolean; files: FileTouch[]; tasks: TasksView | null; usage: SessionUsage | null; projectPath?: string; label?: string | null; onToggleStar?: () => void; onRename?: (name: string) => void }) {
   // editing holds the label CAPTURED when the pencil was clicked (null = not
@@ -90,8 +93,7 @@ export function BriefingTab({ sessionId, card, starred, files, tasks, usage, pro
             </button>
           )}
           {usage && usage.total_tokens > 0 && (
-            <span
-              style={{ ...S.chip, flex: 'none', fontFamily: 'Menlo, monospace', alignSelf: 'flex-start', lineHeight: '15px' }}
+            <Chip
               title={
                 `${usage.total_tokens.toLocaleString('en-US')} tokens (input + output + cache writes; cache reads excluded)\n` +
                 usage.rows.map((r) => `${r.model}${r.scope !== 'main' ? ' (agents)' : ''}: ${fmtTokens(r.input)} in · ${fmtTokens(r.output)} out`).join('\n') +
@@ -100,7 +102,7 @@ export function BriefingTab({ sessionId, card, starred, files, tasks, usage, pro
               }
             >
               Σ {fmtTokens(usage.total_tokens)}
-            </span>
+            </Chip>
           )}
         </div>
         {card ? (
@@ -121,12 +123,12 @@ export function BriefingTab({ sessionId, card, starred, files, tasks, usage, pro
         ) : (
           <div style={S.muted}>no briefing card yet</div>
         )}
-        <button
-          style={{ marginTop: 10, background: 'var(--dd-border)', color: 'var(--dd-text)', border: '1px solid var(--dd-border2)', borderRadius: 5, padding: '4px 12px', cursor: 'pointer', fontSize: 12 }}
+        <Button
+          style={{ marginTop: 12 }}
           onClick={() => invoke('refresh_card', { sessionId }).catch(console.error)}
         >
           Refresh card
-        </button>
+        </Button>
       </div>
       <TasksSection view={tasks} />
       <FilesChanged

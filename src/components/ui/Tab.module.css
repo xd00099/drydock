@@ -1,0 +1,83 @@
+/* Borderless tab. The old tab was a bordered box with a 4px top-radius —
+   browser-chrome idiom. Here the active tab is identified by a raised surface
+   (fill + hairline + shadow), so the strip reads as one plane. */
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--dd-gap-2);
+  max-width: 220px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--dd-r-md);
+  background: transparent;
+  color: var(--dd-text2);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background var(--dd-t) var(--dd-ease),
+    color var(--dd-t) var(--dd-ease),
+    box-shadow var(--dd-t) var(--dd-ease);
+}
+.tab:hover {
+  background: var(--dd-tint);
+  color: var(--dd-text);
+}
+.on {
+  background: var(--dd-surface);
+  color: var(--dd-text);
+  font-weight: 550;
+  box-shadow: var(--dd-shadow-1), inset 0 0 0 1px var(--dd-hairline);
+}
+.on:hover {
+  background: var(--dd-surface);
+}
+
+/* Tab label: ellipsis rather than wrap — the strip must never grow taller. */
+.label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Ordinal badge (⌘1…⌘9 target). A pill, not a bordered square. */
+.num {
+  flex: none;
+  font-size: 9.5px;
+  font-family: Menlo, Monaco, monospace;
+  padding: 2px 5px;
+  border-radius: var(--dd-r-pill);
+  background: var(--dd-tint-active);
+  color: var(--dd-text2);
+}
+
+/* Close affordance: holds its slot so the label never reflows on hover. */
+.close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border: 0;
+  border-radius: var(--dd-r-xs);
+  background: transparent;
+  color: var(--dd-dim);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity var(--dd-t) var(--dd-ease),
+    background var(--dd-t) var(--dd-ease),
+    color var(--dd-t) var(--dd-ease);
+}
+.tab:hover .close,
+.on .close {
+  opacity: 1;
+}
+.close:hover {
+  background: var(--dd-tint-active);
+  color: var(--dd-text);
+}

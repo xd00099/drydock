@@ -414,5 +414,3 @@ export function ProjectTab({ projectPath }: { projectPath?: string }) {
     </div>
   )
 }
-
-// One entry in the Artifacts tab: a live render from this run, or a persisted

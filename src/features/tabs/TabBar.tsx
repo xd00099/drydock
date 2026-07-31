@@ -2,6 +2,8 @@ import { useEffect, useRef } from 'react'
 import type { SessionView, Tab } from '@/lib/types'
 import { baseName, clip, projectColor, sessionLabel } from '@/lib/types'
 import { useChord } from '@/lib/keymap'
+import { cx } from '@/components/ui'
+import s from './TabBar.module.css'
 
 type Props = {
   tabs: Tab[]
@@ -36,15 +38,36 @@ function terminalLabels(termTabs: Tab[], dirs: Record<number, string>): Record<n
   return out
 }
 
-const S = {
-  lane: { display: 'flex', alignItems: 'center', gap: 2, padding: '3px 6px', overflowX: 'auto', whiteSpace: 'nowrap' } as const,
-  laneLabel: { flexShrink: 0, fontSize: 9, letterSpacing: 1, color: 'var(--dd-dim2)', marginRight: 6, width: 58, textAlign: 'right' } as const,
-  // userSelect none: chips are drag handles — a drag across labels must not
-  // leave text selections behind
-  chip: { flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6, padding: '3px 8px', borderRadius: 5, cursor: 'pointer', borderLeft: '3px solid transparent', borderBottom: '2px solid transparent', userSelect: 'none' } as const,
-  close: { color: 'var(--dd-dim)' } as const,
-  plus: { flexShrink: 0, background: 'none', border: 'none', color: 'var(--dd-text3)', cursor: 'pointer', fontSize: 14 } as const,
-  mark: { flexShrink: 0, width: 2, height: 16, background: 'var(--dd-accent)', borderRadius: 1 } as const,
+/** Per-tab tint + edge marks. These are the only styles that stay inline: each
+ *  value is derived from the tab's session color, so it can't be a static class.
+ *  `accent` (session hue) and the on-stage mark are box-shadow insets rather
+ *  than borders, so activating a tab never changes the strip's metrics. */
+function chipTint(
+  t: Tab,
+  isActive: boolean,
+  staged: boolean,
+  accent: string | undefined,
+  proj: string | null | undefined
+): React.CSSProperties {
+  // tint the chip in its PROJECT's color: a faint wash when inactive, stronger
+  // when active; the solid strip stays at left. Kept even though sidebar rows
+  // dropped their wash — a handful of chips is not a list you scan, so the
+  // heterogeneity that made the wash costly there doesn't arise.
+  const background = t.sessionId
+    ? projectColor(proj, isActive ? 0.3 : staged ? 0.18 : 0.1)
+    : isActive
+      ? 'var(--dd-tint-active)'
+      : staged
+        ? 'var(--dd-tint)'
+        : 'transparent'
+  // "on stage" mark: a split can show several tabs at once — every visible one
+  // wears it; the focused one also gets the strong wash.
+  const stageMark = staged
+    ? `inset 0 -2px 0 ${t.sessionId ? projectColor(proj) : 'var(--dd-accent-muted)'}`
+    : null
+  const accentMark = accent ? `inset 3px 0 0 ${accent}` : null
+  const shadow = [accentMark, stageMark].filter(Boolean).join(', ')
+  return { background, boxShadow: shadow || undefined }
 }
 
 export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs, unread, draggedId, insertMark, onChipPress, onChipDouble, onChipMenu, onSelect, onClose, onNewShell, onHome }: Props) {
@@ -87,41 +110,37 @@ export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs,
         onPointerDown={(e) => onChipPress(e, t.id, label)}
         onContextMenu={(e) => onChipMenu(e, t.id)}
         title={tip}
-        style={{
-          ...S.chip,
-          // tint the chip in its PROJECT's color: a faint wash when inactive,
-          // stronger when active; the solid strip stays at left. Kept here even
-          // though the sidebar rows dropped their wash — a handful of chips is
-          // not a list you scan, so the heterogeneity that made the wash costly
-          // there doesn't arise.
-          background: t.sessionId
-            ? projectColor(proj, t.id === activeId ? 0.3 : staged ? 0.18 : 0.1)
-            : t.id === activeId ? 'var(--dd-border)' : staged ? 'var(--dd-surface2)' : 'transparent',
-          borderLeftColor: accent ?? 'transparent',
-          // "on stage" underline: a split can show several tabs at once — every
-          // visible one wears the mark; the focused one also gets the strong wash
-          borderBottomColor: staged ? (t.sessionId ? projectColor(proj) : 'var(--dd-accent-muted)') : 'transparent',
-          color: t.exited ? 'var(--dd-dim)' : 'var(--dd-text1)',
-          opacity: t.id === draggedId ? 0.4 : 1,
-        }}
+        className={cx(
+          s.chip,
+          t.id === activeId && s.active,
+          t.exited && s.exited,
+          t.id === draggedId && s.dragging
+        )}
+        style={chipTint(t, t.id === activeId, staged, accent, proj)}
       >
         {num && (
-          <span title={`⌘${num}`} style={{ flexShrink: 0, fontSize: 9, color: 'var(--dd-dim)', fontFamily: 'ui-monospace, monospace', lineHeight: 1 }}>{num}</span>
+          <span title={`⌘${num}`} className={s.ordinal}>{num}</span>
         )}
         {attention && (
-          <span className="dd-attn" title="waiting for your input" style={{ flexShrink: 0, width: 7, height: 7, borderRadius: '50%', background: 'var(--dd-warn)' }} />
+          <span className={cx(s.attn, 'dd-attn')} title="waiting for your input" />
         )}
         {/* a transcript tab is a READER, not a dead terminal: ≣ prefix instead
             of the (misleading) ·ended suffix */}
-        <span style={{ fontStyle: t.preview ? 'italic' : undefined }}>
+        <span className={cx(s.label, t.preview && s.preview)}>
           {t.kind === 'transcript' ? '≣ ' : ''}
           {clip(label, 22)}
           {t.exited && t.kind !== 'transcript' ? ' ·ended' : ''}
         </span>
         {unread[t.id] ? (
-          <span title={`${unread[t.id]} new artifact${unread[t.id] > 1 ? 's' : ''}`} style={{ background: 'var(--dd-accent-muted)', color: 'var(--dd-bg0)', borderRadius: 8, fontSize: 9, fontWeight: 700, padding: '0 5px', lineHeight: '14px' }}>{unread[t.id]}</span>
+          <span title={`${unread[t.id]} new artifact${unread[t.id] > 1 ? 's' : ''}`} className={s.unread}>{unread[t.id]}</span>
         ) : null}
-        <span style={S.close} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onClose(t.id) }}>✕</span>
+        <span
+          className={s.close}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); onClose(t.id) }}
+        >
+          ✕
+        </span>
       </div>
     )
   }
@@ -133,20 +152,20 @@ export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs,
       <>
         {chips.map(({ t, el }) => (
           <span key={t.id} style={{ display: 'contents' }}>
-            {marking && insertMark.beforeId === t.id && <span style={S.mark} />}
+            {marking && insertMark.beforeId === t.id && <span className={s.mark} />}
             {el}
           </span>
         ))}
-        {marking && insertMark.beforeId === null && <span style={S.mark} />}
+        {marking && insertMark.beforeId === null && <span className={s.mark} />}
       </>
     )
   }
 
   return (
-    <div data-tabbar="1" style={{ background: 'var(--dd-bg0)', borderBottom: '1px solid var(--dd-hairline)', fontFamily: 'system-ui', fontSize: 12 }}>
+    <div data-tabbar="1" className={s.bar}>
       {sessionTabs.length > 0 && (
-        <div data-lane="s" style={S.lane}>
-          <span style={S.laneLabel}>SESSIONS</span>
+        <div data-lane="s" className={s.lane}>
+          <span className={s.laneLabel}>SESSIONS</span>
           {laneChips(
             sessionTabs.map((t) => {
               const s = t.sessionId ? sessions.find((x) => x.session_id === t.sessionId) : undefined
@@ -158,13 +177,13 @@ export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs,
           )}
           {/* browser new-tab metaphor: ＋ opens Home (the launchpad), where a
               session is picked or started — spawning one blind needs a project */}
-          <button onClick={onHome} title={`Home — pick or start a session (${homeChord})`} style={S.plus}>＋</button>
+          <button onClick={onHome} title={`Home — pick or start a session (${homeChord})`} className={s.plus}>＋</button>
         </div>
       )}
-      <div data-lane="t" style={{ ...S.lane, borderTop: sessionTabs.length > 0 ? '1px solid var(--dd-surface2)' : undefined }}>
-        <span style={S.laneLabel}>TERMINALS</span>
+      <div data-lane="t" className={cx(s.lane, sessionTabs.length > 0 && s.laneDivided)}>
+        <span className={s.laneLabel}>TERMINALS</span>
         {laneChips(termTabs.map((t) => ({ t, el: chip(t, termNames[t.id], undefined, shellDirs[t.id] ?? 'shell') })), true)}
-        <button onClick={onNewShell} title={`New shell tab (${shellChord})`} style={S.plus}>＋</button>
+        <button onClick={onNewShell} title={`New shell tab (${shellChord})`} className={s.plus}>＋</button>
       </div>
     </div>
   )

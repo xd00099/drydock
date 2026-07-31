@@ -58,7 +58,6 @@ function loadRightTab(): RightTab {
   return saved === 'briefing' || saved === 'project' || saved === 'preview' ? saved : 'briefing'
 }
 
-
 export default function BriefingPanel({ sessionId, projectPath, starred, artifacts, label, onToggleStar, onRename, initialUnread, review, reviewAccent, onReviewQueue, onReviewDiscard, onReviewSend, collapsed, onSetCollapsed, panelJump }: Props) {
   const panelChord = useChord('briefing.toggle')
   const tabChords: Record<RightTab, string> = {

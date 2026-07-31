@@ -11,7 +11,15 @@
   },
   "app": {
     "windows": [
-      { "title": "Drydock", "width": 1100, "height": 720, "minWidth": 600, "minHeight": 400 }
+      {
+        "title": "Drydock",
+        "width": 1100,
+        "height": 720,
+        "minWidth": 600,
+        "minHeight": 400,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
+      }
     ],
     "security": {
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; frame-src 'self' artifact:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'",

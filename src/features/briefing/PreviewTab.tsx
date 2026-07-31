@@ -6,6 +6,7 @@ import ArtifactView from '@/features/artifacts/ArtifactView'
 import { ReviewPanel } from './ReviewPanel'
 import { S } from './styles'
 
+// One entry in the Artifacts tab: a live render from this run, or a persisted
 // one from the session's on-disk gallery.
 type GalleryItem = { id: string; title: string; kind: ArtifactKind; saved?: SavedArtifact }
 
@@ -304,7 +305,7 @@ export function PreviewTab({
         // it's clickable over a terminal's WebGL canvas in WKWebView. tabIndex
         // lets it hold focus so Esc lands here, not in a just-clicked iframe.
         <div ref={overlayRef} tabIndex={-1} style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'var(--dd-bg0)', display: 'flex', flexDirection: 'column', transform: 'translateZ(0)', outline: 'none' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid var(--dd-border)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid var(--dd-hairline)' }}>
             <span style={{ flex: 1, color: 'var(--dd-text)', fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{current.title}</span>
             {current.saved && <span style={S.chip}>saved</span>}
             <span style={S.chip}>{current.kind}</span>

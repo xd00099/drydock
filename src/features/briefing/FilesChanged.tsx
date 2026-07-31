@@ -8,8 +8,6 @@ function relPath(p: string, root?: string): string {
   return root && p.startsWith(root + '/') ? p.slice(root.length + 1) : p
 }
 
-// Per-file status glyph, git-style: created / modified / gone from disk.
-
 function FileBadge({ f }: { f: FileTouch }) {
   const [glyph, color, label] = !f.resolved
     ? ['−', 'var(--dd-err)', 'not on disk anymore (moved or deleted since)']

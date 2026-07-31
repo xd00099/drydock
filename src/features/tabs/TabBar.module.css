@@ -1,0 +1,169 @@
+/* Tab strip. Shape, motion and hover live here; the per-session project tint
+   stays inline in TabBar.tsx because it's computed from the session's color. */
+
+.bar {
+  background: var(--dd-bg0);
+  /* was a hard 1px --dd-border rule — the strip now separates by tone */
+  border-bottom: 1px solid var(--dd-hairline);
+  font-family: system-ui;
+  font-size: 12px;
+}
+
+.lane {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 8px;
+  overflow-x: auto;
+  white-space: nowrap;
+  /* the strip is chrome: no visible scrollbar even when a lane overflows */
+  scrollbar-width: none;
+}
+.lane::-webkit-scrollbar {
+  display: none;
+}
+/* Second lane's divider: barely-there, replacing the --dd-surface2 rule. */
+.laneDivided {
+  border-top: 1px solid var(--dd-hairline);
+}
+
+/* Compact lane label. Was a fixed 58px right-aligned column; now it sizes to
+   its text so the width goes back to the tabs. */
+.laneLabel {
+  flex: none;
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.1em;
+  color: var(--dd-dim2);
+  margin-right: 4px;
+  user-select: none;
+}
+
+/* One tab. userSelect none: chips are drag handles, so a drag across labels
+   must not leave a text selection behind. */
+.chip {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 240px;
+  padding: 5px 9px;
+  border-radius: var(--dd-r-md);
+  cursor: pointer;
+  user-select: none;
+  color: var(--dd-text1);
+  /* the accent strip and on-stage mark are insets now, not layout borders, so
+     activating a tab can't shift the strip's metrics */
+  box-shadow: none;
+  transition:
+    background var(--dd-t) var(--dd-ease),
+    color var(--dd-t) var(--dd-ease),
+    box-shadow var(--dd-t) var(--dd-ease),
+    opacity var(--dd-t) var(--dd-ease);
+}
+.chip:hover {
+  color: var(--dd-text);
+}
+.active {
+  font-weight: 550;
+  color: var(--dd-text);
+}
+.exited {
+  color: var(--dd-dim);
+}
+.dragging {
+  opacity: 0.4;
+}
+
+.ordinal {
+  flex: none;
+  font-size: 9px;
+  color: var(--dd-dim);
+  font-family: ui-monospace, monospace;
+  line-height: 1;
+}
+
+.attn {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--dd-warn);
+}
+
+.label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preview {
+  font-style: italic;
+}
+
+.unread {
+  flex: none;
+  background: var(--dd-accent-muted);
+  color: var(--dd-bg0);
+  border-radius: var(--dd-r-pill);
+  font-size: 9px;
+  font-weight: 700;
+  padding: 0 5px;
+  line-height: 14px;
+}
+
+/* Close ✕ holds its slot so the label never reflows when it appears. */
+.close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: var(--dd-r-xs);
+  color: var(--dd-dim);
+  font-size: 10.5px;
+  opacity: 0;
+  transition:
+    opacity var(--dd-t) var(--dd-ease),
+    background var(--dd-t) var(--dd-ease),
+    color var(--dd-t) var(--dd-ease);
+}
+.chip:hover .close,
+.active .close {
+  opacity: 1;
+}
+.close:hover {
+  background: var(--dd-tint-active);
+  color: var(--dd-text);
+}
+
+.plus {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  background: none;
+  border: 0;
+  border-radius: var(--dd-r-sm);
+  color: var(--dd-text3);
+  cursor: pointer;
+  font-size: 14px;
+  transition:
+    background var(--dd-t) var(--dd-ease),
+    color var(--dd-t) var(--dd-ease);
+}
+.plus:hover {
+  background: var(--dd-tint);
+  color: var(--dd-text);
+}
+
+/* Reorder slot marker. */
+.mark {
+  flex: none;
+  width: 2px;
+  height: 18px;
+  background: var(--dd-accent);
+  border-radius: 1px;
+}

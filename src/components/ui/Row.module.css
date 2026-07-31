@@ -1,0 +1,74 @@
+/* Inset selectable row — sidebar sessions, folder children, list entries.
+ *
+ * The dated look came from a full-bleed square selection fill spanning the
+ * sidebar's full width. Here the row keeps a horizontal margin so its selected
+ * state is a rounded pill floating inside the rail, which is what reads as
+ * modern. Keep .row's margin and the rail's padding in agreement.
+ */
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--dd-gap-2);
+  margin: 1px var(--dd-gap-2);
+  padding: 6px 9px;
+  border-radius: var(--dd-r-md);
+  color: var(--dd-text1);
+  font-size: 12.5px;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background var(--dd-t) var(--dd-ease),
+    color var(--dd-t) var(--dd-ease);
+}
+.row:hover {
+  background: var(--dd-tint);
+  color: var(--dd-text);
+}
+.selected {
+  background: var(--dd-tint-active);
+  color: var(--dd-text);
+}
+.selected:hover {
+  background: var(--dd-tint-active);
+}
+
+/* Nested one level under a folder/project header. */
+.indent {
+  padding-left: 21px;
+}
+
+/* Primary label: takes the slack, truncates before pushing the meta out. */
+.label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Trailing metadata (relative age, counts) — never shrinks. */
+.meta {
+  flex: none;
+  font-size: 11px;
+  color: var(--dd-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Section header for a folder/project group. */
+.group {
+  display: flex;
+  align-items: center;
+  gap: var(--dd-gap-2);
+  margin: 0 var(--dd-gap-2);
+  padding: 6px 9px;
+  border-radius: var(--dd-r-md);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--dd-text);
+  cursor: pointer;
+  user-select: none;
+  transition: background var(--dd-t) var(--dd-ease);
+}
+.group:hover {
+  background: var(--dd-tint);
+}

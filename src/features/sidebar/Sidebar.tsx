@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type { FolderView, SessionView } from '@/lib/types'
 import { ageTone, clampPanelWidth, clip, loadNum, projectColor, relAge, sessionAutoLabel, sessionLabel, shortPath, uuidv4 } from '@/lib/types'
 import ResizeHandle from '@/components/ui/ResizeHandle'
+import { IconButton } from '@/components/ui'
 import LiveIndicator from '@/features/session/LiveIndicator'
 import VersionFooter from '@/features/session/VersionFooter'
 import { useChord } from '@/lib/keymap'
@@ -100,9 +101,41 @@ const S = {
   // selection (nothing in the sidebar is copy-worthy prose anyway)
   side: { width: 300, minWidth: 300, height: '100%', overflowY: 'auto', background: 'var(--dd-bg0)', color: 'var(--dd-text1)', fontFamily: 'system-ui', fontSize: 12, borderRight: '1px solid var(--dd-hairline)', userSelect: 'none', WebkitUserSelect: 'none' } as const,
   rail: { width: 30, minWidth: 30, height: '100%', background: 'var(--dd-bg0)', borderRight: '1px solid var(--dd-hairline)', display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 8 } as const,
-  bar: { display: 'flex', alignItems: 'center', padding: '10px 8px 4px' } as const,
+  // The native titlebar is gone (tauri.conf: titleBarStyle "Overlay"), so macOS
+  // draws the traffic lights straight onto this row — hence the left inset, and
+  // the min-height that keeps the row at least as tall as the lights. The row
+  // doubles as the window's drag handle (data-tauri-drag-region on the element).
+  bar: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 2,
+    minHeight: 'var(--dd-titlebar)',
+    padding: '8px 8px 6px',
+    paddingLeft: 'var(--dd-lights-inset)',
+  } as const,
   head: { display: 'flex', alignItems: 'center', gap: 4, padding: '6px 8px 4px', color: 'var(--dd-text3)', fontWeight: 600 } as const,
-  row: { display: 'block', width: '100%', boxSizing: 'border-box', textAlign: 'left', background: 'none', border: 'none', borderLeft: '3px solid transparent', color: 'var(--dd-text1)', padding: '5px 10px', cursor: 'pointer', fontSize: 12 } as const,
+  // Inset pill, not a full-bleed bar. The selected row used to be a square fill
+  // spanning the rail's whole width — the list-widget idiom. Keeping a 7px
+  // horizontal margin means selection reads as a rounded chip floating inside
+  // the rail. The project stripe moved from `border-left` to a box-shadow inset
+  // so it can't contribute to layout (a border would shift the text by 3px).
+  // width is calc'd because a block <button> won't fill its parent on its own,
+  // and 100% + margin would overflow.
+  row: {
+    display: 'block',
+    width: 'calc(100% - 14px)',
+    boxSizing: 'border-box',
+    margin: '1px 7px',
+    textAlign: 'left',
+    background: 'none',
+    border: 'none',
+    borderRadius: 'var(--dd-r-md)',
+    color: 'var(--dd-text1)',
+    padding: '5px 9px',
+    cursor: 'pointer',
+    fontSize: 12,
+    transition: 'background var(--dd-t) var(--dd-ease), color var(--dd-t) var(--dd-ease), opacity var(--dd-t) var(--dd-ease)',
+  } as const,
   btn: { background: 'none', border: 'none', cursor: 'pointer', color: 'var(--dd-text3)', fontSize: 12, padding: 0 } as const,
   chev: { background: 'none', border: 'none', cursor: 'pointer', color: 'var(--dd-text3)', fontSize: 10, padding: 0, width: 14 } as const,
   menu: { position: 'fixed', background: 'var(--dd-row)', border: '1px solid var(--dd-border2)', borderRadius: 6, padding: 4, boxShadow: '0 6px 20px rgba(0,0,0,.4)', zIndex: 60, fontFamily: 'system-ui', fontSize: 12, minWidth: 180 } as const,
@@ -426,7 +459,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
       return (
         <div
           key={s.session_id}
-          style={{ ...S.row, display: 'flex', alignItems: 'center', gap: 4, cursor: 'default', borderLeftColor: projectColor(s.project_path), background: 'var(--dd-row)' }}
+          style={{ ...S.row, display: 'flex', alignItems: 'center', gap: 4, cursor: 'default', boxShadow: `inset 3px 0 0 ${projectColor(s.project_path)}`, background: 'var(--dd-tint-active)' }}
         >
           <LiveIndicator status={s.live_status} />
           {nameEditor('Session name — empty clears')}
@@ -443,13 +476,15 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
       <button
         key={s.session_id}
         className={`dd-sessrow${flashSid === s.session_id ? ' dd-landed' : ''}`}
+        // marks the selected row so the hover rule keeps its stronger fill
+        data-active={isActive ? '1' : undefined}
         // No per-row tint. The old 10%-alpha wash was ~100x the stripe's area
         // carrying a difference of CIEDE2000 2.60 between adjacent rows — below
         // the 2.3 just-noticeable difference for 7 of 15 neighbouring pairs, so
         // it cost the whole background of the list and told you nothing. The
         // selected row gets a neutral fill instead, which is a distinction you
         // can actually see.
-        style={{ ...S.row, opacity: isDragging ? 0.4 : isHidden ? 0.45 : 1, borderLeftColor: projectColor(s.project_path), background: isActive ? 'var(--dd-row)' : 'transparent' }}
+        style={{ ...S.row, opacity: isDragging ? 0.4 : isHidden ? 0.45 : 1, boxShadow: `inset 3px 0 0 ${projectColor(s.project_path)}`, background: isActive ? 'var(--dd-tint-active)' : 'transparent' }}
         onClick={dragSafe(() => onResume(s))}
         onPointerDown={(e) => beginPress(e, { kind: 'session', sid: s.session_id, label: sessionLabel(s), fromFolder: s.folder_id })}
         onContextMenu={(e) => { e.preventDefault(); if (dragRef.current) return; setMenu({ x: e.clientX, y: e.clientY, s, view: 'main' }) }}
@@ -596,16 +631,23 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
     <div style={{ display: 'flex', height: '100%' }}>
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', width, minWidth: width, background: 'var(--dd-bg0)' }}>
     <div ref={scrollerRef} style={{ ...S.side, width: '100%', minWidth: 0, height: 'auto', flex: 1, borderRight: 'none' }}>
-      <div style={S.bar}>
+      <div style={S.bar} data-tauri-drag-region>
         <span
           onClick={onHome}
           title={`Home — recap log & usage (${homeChord})`}
-          style={{ flex: 1, fontWeight: 700, color: 'var(--dd-text)', cursor: 'pointer' }}
+          style={{
+            flex: 1,
+            fontWeight: 700,
+            fontSize: 11,
+            letterSpacing: '0.09em',
+            color: 'var(--dd-text2)',
+            cursor: 'pointer',
+          }}
         >
           DRYDOCK
         </span>
-        <button
-          style={{ ...S.btn, display: 'flex', alignItems: 'center', marginRight: 8, color: 'var(--dd-text2)' }}
+        <IconButton
+          label="New folder"
           title={'New folder…\nOrganize sessions into working groups — drag them in,\nor right-click a session → Move to folder'}
           onClick={() => {
             setDraft('')
@@ -616,8 +658,14 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
           }}
         >
           <NewFolderGlyph />
-        </button>
-        <button style={{ ...S.btn, fontSize: 15 }} title={`Collapse sidebar (${sidebarChord})`} onClick={() => onSetCollapsed(true)}>«</button>
+        </IconButton>
+        <IconButton
+          label="Collapse sidebar"
+          title={`Collapse sidebar (${sidebarChord})`}
+          onClick={() => onSetCollapsed(true)}
+        >
+          «
+        </IconButton>
       </div>
 
       {/* Triage. Both sections only exist while they have something in them —
