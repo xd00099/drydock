@@ -4,6 +4,25 @@ Each tagged release's `## vX.Y.Z` section becomes the GitHub release body and
 the in-app updater's release notes (extracted by `scripts/release-notes.py` in
 CI — a tag without its section fails the release).
 
+## v0.6.3 — 2026-07-30
+
+### ⌘Q stops nagging about idle sessions
+
+- **The quit confirmation now appears only when quitting would interrupt a
+  turn in flight.** It used to fire for any open tab — and since an idle
+  claude tab keeps its process alive, a sidebar full of resting sessions (the
+  normal state of this app) meant a dialog on every single quit. Idle
+  sessions, sessions waiting on an answer, and finished-unread sessions all
+  survive a quit — relaunching restores the tabs and resumes them — so they
+  quit silently now.
+- The one case that still confirms: a session that is actually mid-turn, by
+  Claude's own self-reported status (the same signal as the sidebar spinner).
+  The dialog says what's at stake and how many turns it would interrupt, and
+  notes that idle sessions are unaffected.
+- Two deliberate edges: shell tabs no longer block quitting (a bare prompt and
+  a running command are indistinguishable from the outside), and a tab so new
+  the index hasn't registered it (~2 seconds) quits without asking.
+
 ## v0.6.2 — 2026-07-30
 
 ### Half a gigabyte back

@@ -328,6 +328,33 @@ export function projectColor(projectPath: string | null | undefined, alpha = 1):
   return alpha >= 1 ? `hsl(${h}, 30%, 52%)` : `hsla(${h}, 30%, 52%, ${alpha})`
 }
 
+/** Would quitting right now interrupt work in flight?
+ *
+ *  Quitting kills the PTYs Drydock owns and nothing else; a relaunch restores
+ *  the tabs and resumes their sessions. So an idle session, one waiting on an
+ *  answer, or one sitting on an unread green check all survive a quit intact —
+ *  only a session that is BUSY (mid-turn, per Claude's own self-reported
+ *  status) has anything to lose. That is the only case that earns a
+ *  confirmation dialog; everything else quits silently.
+ *
+ *  Deliberately NOT guarded:
+ *  - shell tabs: a bare prompt and a running build look identical from here,
+ *    and treating every open shell as precious is what made ⌘Q nag constantly;
+ *  - a session id the index hasn't seen yet (a tab seconds old): the radar
+ *    registers it within ~2s, and the worst case is re-typing one prompt after
+ *    resume — smaller than training the user to click through the dialog. */
+export function quitInterruptsWork(
+  tabs: ReadonlyArray<{ exited?: boolean; sessionId?: string | null }>,
+  sessions: ReadonlyArray<Pick<SessionView, 'session_id' | 'live_status'>>,
+): boolean {
+  return tabs.some(
+    (t) =>
+      !t.exited &&
+      t.sessionId != null &&
+      sessions.some((s) => s.session_id === t.sessionId && s.live_status === 'busy'),
+  )
+}
+
 /** Age → text lightness, three steps. Lightness is an ORDERED channel and age
  *  is an ORDERED variable, so the two match: today reads at full strength, this
  *  week one step down, older two. Nothing is hidden — the list just stops

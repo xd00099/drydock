@@ -17,7 +17,7 @@ import { serializeChord, effectiveKeymap, loadOverrides, KEYMAP_EVENT } from './
 import type { ActionId } from './keymap'
 import { getSetting } from './settings'
 import type { Artifact, ArtifactKind, PaneSearch, RestoreTab, ReviewPrompt, ReviewState, SessionView, Tab, TakeoverInfo } from './types'
-import { EMPTY_REVIEW, baseName, clip, projectColor, sessionLabel, uuidv4 } from './types'
+import { EMPTY_REVIEW, baseName, clip, projectColor, quitInterruptsWork, sessionLabel, uuidv4 } from './types'
 import {
   GUTTER, canSplit, clampRatio, closeStaged, dropOnStage, focusNeighbor, hitTest,
   layoutRects, pruneStage, setRatio, showTab, stagedIds,
@@ -931,11 +931,15 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  // The guard fires only when quitting would interrupt a turn IN FLIGHT (a
+  // busy session in a live tab — see quitInterruptsWork). Idle and waiting
+  // sessions resume on relaunch, so nagging about them taught the user to
+  // click through the dialog, which is worse than no dialog.
   useEffect(() => {
     let un: (() => void) | null = null
     getCurrentWindow()
       .onCloseRequested((e) => {
-        if (tabsRef.current.some((t) => !t.exited)) {
+        if (quitInterruptsWork(tabsRef.current, sessionsRef.current)) {
           e.preventDefault()
           setQuitGuard(true)
         }
@@ -945,13 +949,13 @@ export default function App() {
   }, [])
 
   // ⌘Q via the app menu: the backend defers to us while its PTY map is
-  // non-empty. Re-check our own tabs — a just-closed tab's PTY may not be
-  // reaped yet, and quitting must not silently no-op in that window.
+  // non-empty (it cannot see busy-ness; only the index can), so this listener
+  // is the actual decision point — confirm mid-turn work, otherwise quit.
   useEffect(() => {
     let cancelled = false
     let un: UnlistenFn | null = null
     listen('quit-requested', () => {
-      if (tabsRef.current.some((t) => !t.exited)) setQuitGuard(true)
+      if (quitInterruptsWork(tabsRef.current, sessionsRef.current)) setQuitGuard(true)
       else invoke('force_quit')
     }).then((u) => { if (cancelled) u(); else un = u })
     return () => { cancelled = true; un?.() }
@@ -1524,15 +1528,24 @@ export default function App() {
           </div>
         )
       })()}
-      {quitGuard && (
+      {quitGuard && (() => {
+        // Recompute at render: the guard only ever opens because SOMETHING was
+        // mid-turn, but a turn can finish while the dialog sits there — the
+        // count stays honest, and the fallback wording covers that race.
+        const busy = tabs.filter(
+          (t) => !t.exited && t.sessionId && sessions.find((s) => s.session_id === t.sessionId)?.live_status === 'busy',
+        ).length
+        const what = busy > 1 ? `${busy} sessions are mid-turn` : busy === 1 ? 'A session is mid-turn' : 'A session was mid-turn'
+        return (
         // zIndex + own compositing layer: every other overlay has a z-index, but
         // this modal had none, so over a terminal's WebGL canvas WebKit painted it
         // on top yet routed clicks to the canvas (visible but not clickable).
         // z-110 (above the takeover dialog's 100): a quit requested mid-takeover
         // must sit on top, matching the keydown handler's quit-guard-first order.
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 110, transform: 'translateZ(0)' }}>
-          <div style={{ background: 'var(--dd-surface2)', color: 'var(--dd-text)', padding: 20, borderRadius: 8, fontFamily: 'system-ui', fontSize: 13 }}>
-            <div style={{ marginBottom: 12 }}>Sessions are still running in tabs. Quit anyway?</div>
+          <div style={{ background: 'var(--dd-surface2)', color: 'var(--dd-text)', padding: 20, borderRadius: 8, fontFamily: 'system-ui', fontSize: 13, maxWidth: 400 }}>
+            <div style={{ marginBottom: 4, fontWeight: 600 }}>{what} — quitting interrupts it.</div>
+            <div style={{ marginBottom: 12, color: 'var(--dd-text2)' }}>Idle sessions are unaffected: they resume when Drydock reopens.</div>
             <button
               style={{ background: 'var(--dd-btn-danger)', color: 'var(--dd-white)', border: 'none', padding: '5px 12px', borderRadius: 5, cursor: 'pointer', fontSize: 12, marginRight: 8 }}
               onClick={() => invoke('force_quit')}
@@ -1547,7 +1560,8 @@ export default function App() {
             </button>
           </div>
         </div>
-      )}
+        )
+      })()}
       {takeover && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, transform: 'translateZ(0)' }}>
           <div style={{ background: 'var(--dd-surface2)', color: 'var(--dd-text)', padding: 20, borderRadius: 8, fontFamily: 'system-ui', fontSize: 13, maxWidth: 440 }}>
