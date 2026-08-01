@@ -15,9 +15,21 @@ export type ActionId =
   | 'session.new' | 'sidebar.toggle' | 'briefing.toggle' | 'briefing.preview'
   | 'briefing.tab.briefing' | 'briefing.tab.project'
   | 'settings.toggle' | 'tab.prev' | 'tab.next'
+  | 'view.zoomIn' | 'view.zoomOut' | 'view.zoomReset'
 
 export type Category = 'General' | 'Tabs' | 'Panels' | 'Panes'
-export type ActionDef = { id: ActionId; label: string; category: Category; default: string }
+export type ActionDef = {
+  id: ActionId
+  label: string
+  category: Category
+  default: string
+  /** Extra chords that fire this action but are not shown or rebindable.
+   *  Needed where one physical key reads as two chords: on a US layout ⌘+ is
+   *  Shift+⌘+= and serializes to 'meta+shift+=', while ⌘= is 'meta+='. Users
+   *  mean the same thing by both, so zoom accepts both. An alias is ignored if
+   *  some other action already owns that chord — a real binding always wins. */
+  alsoAccept?: string[]
+}
 export type ChordEvent = { key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey: boolean }
 
 export const KEYMAP_EVENT = 'dd-keymap-changed'
@@ -28,6 +40,14 @@ export const ACTIONS: ActionDef[] = [
   { id: 'find.open', label: 'Find in pane', category: 'General', default: 'meta+f' },
   { id: 'settings.toggle', label: 'Settings', category: 'General', default: 'meta+,' },
   { id: 'session.new', label: 'New claude session…', category: 'General', default: 'meta+n' },
+  // ⌘+ and ⌘- scale the whole webview, xterm included. The chord is stored as
+  // 'meta+=' because '+' needs shift on a US layout and serializeChord
+  // normalizes shifted punctuation to its unshifted key (see SHIFTED).
+  { id: 'view.zoomIn', label: 'Zoom in', category: 'General', default: 'meta+=', alsoAccept: ['meta+shift+='] },
+  { id: 'view.zoomOut', label: 'Zoom out', category: 'General', default: 'meta+-', alsoAccept: ['meta+shift+-'] },
+  // NOT ⌘0 — that is Go Home here, and silently reassigning it would break a
+  // reflex users already have.
+  { id: 'view.zoomReset', label: 'Reset zoom', category: 'General', default: 'meta+shift+0' },
   { id: 'shell.new', label: 'New shell tab', category: 'Tabs', default: 'meta+t' },
   { id: 'tab.close', label: 'Close tab', category: 'Tabs', default: 'meta+w' },
   { id: 'transcript.toggle', label: 'Terminal ⇄ transcript', category: 'Tabs', default: 'meta+shift+t' },
@@ -108,6 +128,11 @@ export function effectiveKeymap(overrides: Record<string, string>): Map<string, 
   for (const a of ACTIONS) {
     const chord = overrides[a.id] ?? a.default
     if (chord) m.set(chord, a.id)
+  }
+  // Aliases go in after every real binding, and never displace one.
+  for (const a of ACTIONS) {
+    if (overrides[a.id]) continue // rebound: the user's chord replaces the family
+    for (const alias of a.alsoAccept ?? []) if (!m.has(alias)) m.set(alias, a.id)
   }
   return m
 }

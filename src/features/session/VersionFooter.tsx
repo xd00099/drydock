@@ -194,7 +194,7 @@ export default function VersionFooter({ busyCount, onRestartForUpdate, onOpenSet
       <button
         onClick={onOpenSettings}
         title={`Settings (${settingsChord})`}
-        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--dd-text3)', fontSize: 16, padding: 0, lineHeight: 1 }}
+        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--dd-text3)', fontSize: 18, padding: 0, lineHeight: 1 }}
       >
         ⚙︎
       </button>

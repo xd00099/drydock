@@ -19,6 +19,7 @@ import TakeoverDialog from './dialogs/TakeoverDialog'
 import { useStageDrag } from './useStageDrag'
 import { useFindBar } from './useFindBar'
 import { useArtifacts } from './useArtifacts'
+import { useZoom } from './useZoom'
 import { serializeChord, effectiveKeymap, loadOverrides, KEYMAP_EVENT } from '@/lib/keymap'
 import type { ActionId } from '@/lib/keymap'
 import { getSetting } from '@/lib/settings'
@@ -33,6 +34,11 @@ let nextTabId = 1
 const EMPTY_ARTIFACTS: Artifact[] = [] // stable ref so an artifact-less panel doesn't churn
 
 export default function App() {
+  const zoom = useZoom()
+  // the keydown dispatcher is registered once, so it reaches actions by ref
+  const zoomRef = useRef(zoom)
+  zoomRef.current = zoom
+
   const { sessions, hidden, folders, ready: sessionsReady, refresh } = useSessions()
   const [tabs, setTabs] = useState<Tab[]>([])
   // The stage: which tabs are visible (split layout tree) and which pane has
@@ -209,6 +215,9 @@ export default function App() {
       case 'tab.next': cycleTab(1); break
       case 'session.new': setNewDialog(true); break
       case 'settings.toggle': setSettingsOpen((v) => !v); break
+      case 'view.zoomIn': zoomRef.current.zoomIn(); break
+      case 'view.zoomOut': zoomRef.current.zoomOut(); break
+      case 'view.zoomReset': zoomRef.current.zoomReset(); break
       default: break
     }
   }

@@ -44,7 +44,27 @@ describe('effectiveKeymap', () => {
     const m = effectiveKeymap({})
     expect(m.get('meta+k')).toBe('palette.toggle')
     expect(m.get('meta+b')).toBe('sidebar.toggle')
-    expect(m.size).toBe(ACTIONS.length)
+    // one entry per action, plus each accepted alias that nothing else claims
+    const aliases = ACTIONS.flatMap((a) => a.alsoAccept ?? [])
+    expect(m.size).toBe(ACTIONS.length + aliases.length)
+  })
+  it('accepts an alias chord as the same action', () => {
+    const m = effectiveKeymap({})
+    // ⌘= and ⌘+ are the same physical key; both zoom in
+    expect(m.get('meta+=')).toBe('view.zoomIn')
+    expect(m.get('meta+shift+=')).toBe('view.zoomIn')
+  })
+  it('an alias never displaces a real binding', () => {
+    // bind something else to the alias chord: the real binding must win
+    const m = effectiveKeymap({ 'sidebar.toggle': 'meta+shift+=' })
+    expect(m.get('meta+shift+=')).toBe('sidebar.toggle')
+    expect(m.get('meta+=')).toBe('view.zoomIn')
+  })
+  it('rebinding an action drops its aliases', () => {
+    const m = effectiveKeymap({ 'view.zoomIn': 'meta+i' })
+    expect(m.get('meta+i')).toBe('view.zoomIn')
+    expect(m.get('meta+shift+=')).toBeUndefined()
+    expect(m.get('meta+=')).toBeUndefined()
   })
   it('an override replaces the default chord entirely', () => {
     const m = effectiveKeymap({ 'sidebar.toggle': 'meta+e' })
