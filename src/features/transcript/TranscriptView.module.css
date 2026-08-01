@@ -1,0 +1,215 @@
+/* Transcript rendering. This file replaces 39 inline style objects that were
+   scattered through the JSX with no shared vocabulary — several of them
+   byte-identical duplicates (the ellipsis span appeared three times, `flexShrink:
+   0` four). What stays inline in the component is only what varies per entry:
+   error vs ok colouring, meta dimming, search-hit highlighting. */
+
+/* ---- shell ---- */
+.root {
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--dd-bg1);
+  color: var(--dd-text1);
+  font-family: Menlo, monospace;
+  font-size: 12px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: var(--dd-surface2);
+}
+/* the agent overlay's header additionally must not shrink */
+.headerFixed {
+  composes: header;
+  flex-shrink: 0;
+}
+
+.scroller {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  font-family: Menlo, monospace;
+  font-size: 12px;
+}
+.scrollerInk {
+  composes: scroller;
+  color: var(--dd-text1);
+}
+
+/* Subagent strip under the header. */
+.agentBar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: var(--dd-bg1);
+  border-bottom: 1px solid var(--dd-surface2);
+}
+.agentCount {
+  flex-shrink: 0;
+  color: var(--dd-dim);
+  font-size: 11px;
+}
+.agentChip {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  background: var(--dd-btn);
+  border: 1px solid var(--dd-hairline-strong);
+  border-radius: var(--dd-r-pill);
+  color: var(--dd-text2);
+  cursor: pointer;
+  transition:
+    background var(--dd-t) var(--dd-ease),
+    color var(--dd-t) var(--dd-ease);
+}
+.agentChip:hover {
+  background: var(--dd-hover);
+  color: var(--dd-text);
+}
+
+/* Fullscreen subagent transcript, laid over the parent. */
+.agentOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  background: var(--dd-bg1);
+  outline: none;
+}
+.agentTitle {
+  color: var(--dd-text2);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- entries ---- */
+.meta {
+  margin: 6px 0;
+  color: var(--dd-dim2);
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+/* Callouts: a recap or a compaction marker, set off by a coloured edge. */
+.recap {
+  margin: 12px 0;
+  padding: 6px 10px;
+  border-left: 3px solid var(--dd-accent-muted);
+  background: rgba(90, 127, 176, 0.09);
+  border-radius: var(--dd-r-xs);
+}
+.compact {
+  margin: 12px 0;
+  padding: 6px 10px;
+  border-left: 3px solid var(--dd-warn-bright);
+  background: rgba(232, 195, 90, 0.07);
+  border-radius: var(--dd-r-xs);
+}
+
+.userTurn {
+  margin: 8px 0;
+  color: var(--dd-text1);
+}
+.assistantTurn {
+  margin: 8px 0;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+.block {
+  margin: 8px 0;
+}
+.wrap {
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+/* Centred separators: "… earlier messages" and the day/time rules. */
+.marker {
+  margin: 12px 0;
+  text-align: center;
+  color: var(--dd-dim2);
+  font-size: 11px;
+}
+.timeMark {
+  margin: 10px 0 2px;
+  text-align: center;
+  color: var(--dd-border3);
+  font-size: 10px;
+}
+
+/* ---- collapsible thinking / tool rows ---- */
+.rowLoose {
+  margin: 3px 0;
+}
+.rowTight {
+  margin: 2px 0;
+}
+.caret {
+  flex-shrink: 0;
+}
+.thinkLabel {
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.thinkBody {
+  margin: 2px 0 6px 16px;
+  color: var(--dd-text3);
+  font-style: italic;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  font-size: 11px;
+}
+.toolName {
+  flex-shrink: 0;
+  color: var(--dd-teal);
+}
+/* one-line summary of a collapsed tool call */
+.ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.toolBody {
+  margin: 2px 0 8px 16px;
+  padding: 6px 8px;
+  background: var(--dd-bg0);
+  border: 1px solid var(--dd-hairline);
+  border-radius: var(--dd-r-sm);
+}
+.toolInput {
+  color: var(--dd-text2);
+}
+.agentBody {
+  margin: 2px 0 6px 16px;
+  color: var(--dd-text3);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  font-size: 11px;
+}
+
+/* ---- states ---- */
+.dim {
+  color: var(--dd-dim);
+}
+.dimRight {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--dd-dim);
+  font-size: 11px;
+}
+.err {
+  color: var(--dd-err);
+}
