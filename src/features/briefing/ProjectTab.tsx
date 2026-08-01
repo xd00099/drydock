@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { baseName, relAge, type McpServer, type Skill } from '@/lib/types'
 import { S, loadStrSet } from './styles'
+import pcls from './ProjectTab.module.css'
 
 function SkillsSection({ projectPath }: { projectPath?: string }) {
   // Fetched per-mount (~17 file reads) so it stays fresh when plugins change and
@@ -29,10 +30,10 @@ function SkillsSection({ projectPath }: { projectPath?: string }) {
     })
 
   const header = (
-    <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
+    <div className={pcls.sectionHead}>
       <span style={S.secHead}>SKILLS</span>
       {Array.isArray(state) && state.length > 0 && (
-        <span style={{ color: 'var(--dd-dim)', fontSize: 10 }}>{state.length} · plugin, personal &amp; project</span>
+        <span className={pcls.hint}>{state.length} · plugin, personal &amp; project</span>
       )}
     </div>
   )
@@ -51,15 +52,15 @@ function SkillsSection({ projectPath }: { projectPath?: string }) {
       {[...groups.entries()].map(([plugin, list]) => {
         const open = expanded.has(plugin)
         return (
-          <div key={plugin} style={{ marginBottom: 4 }}>
+          <div key={plugin} className={pcls.item}>
             <button style={S.groupBtn} onClick={() => toggle(plugin)} title={open ? 'Collapse' : 'Expand'}>
-              <span style={{ width: 10, color: 'var(--dd-dim)' }}>{open ? '▾' : '▸'}</span>
-              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{plugin}</span>
-              <span style={{ color: 'var(--dd-dim)', fontWeight: 400 }}>{list.length}</span>
+              <span className={pcls.caret}>{open ? '▾' : '▸'}</span>
+              <span className={pcls.grow}>{plugin}</span>
+              <span className={pcls.subtle}>{list.length}</span>
             </button>
             {open &&
               list.map((s) => (
-                <div key={s.name} style={{ marginBottom: 7, paddingLeft: 14 }}>
+                <div key={s.name} className={pcls.itemBody}>
                   <div style={S.name}>{s.name}</div>
                   <div style={S.desc} title={s.description}>{s.description}</div>
                 </div>
@@ -289,11 +290,11 @@ function McpSection({ projectPath }: { projectPath?: string }) {
   // ground, own scroll, bounded height — skills can never bury a dead server.
   return (
     <div style={{ flex: secOpen ? '0 1 auto' : 'none', maxHeight: secOpen ? '55%' : undefined, display: 'flex', flexDirection: 'column', borderTop: '1px solid var(--dd-hover)', background: 'var(--dd-well)' }}>
-      <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 7, padding: '8px 12px 6px' }}>
+      <div className={pcls.toolbar}>
         {/* label and age SHRINK (ellipsize) at narrow widths; the dot, the
             count, and ↻ are flex:none so the signal + the cure never clip */}
         <button onClick={toggleOpen} title={secOpen ? 'Collapse' : 'Expand'} style={{ ...S.groupBtn, width: 'auto', flex: '0 1 auto', minWidth: 0, gap: 5, padding: 0 }}>
-          <span style={{ width: 9, flex: 'none', color: 'var(--dd-dim2)' }}>{secOpen ? '▾' : '▸'}</span>
+          <span className={pcls.caretSm}>{secOpen ? '▾' : '▸'}</span>
           <span style={{ ...S.secHead, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>MCP SERVERS</span>
         </button>
         {worst && (
@@ -303,11 +304,11 @@ function McpSection({ projectPath }: { projectPath?: string }) {
           />
         )}
         {servers !== null && servers.length > 0 && (
-          <span style={{ flex: 'none', color: 'var(--dd-dim)', fontSize: 10, whiteSpace: 'nowrap' }}>
+          <span className={pcls.count}>
             {servers.length}{failed > 0 ? ` · ${failed} failed` : ''}
           </span>
         )}
-        <span style={{ flex: 1 }} />
+        <span className={pcls.fill} />
         {/* compact age ('2m'), full wording in the tooltip; turns into a red
             'check failed' when the refresh errors — visible even collapsed,
             so the rollup dot can't silently advertise stale health */}
@@ -333,13 +334,13 @@ function McpSection({ projectPath }: { projectPath?: string }) {
         )}
       </div>
       {secOpen && (
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 12px 10px' }}>
+      <div className={pcls.scroller}>
       {checkErr && (
-        <div title={checkErr} style={{ color: 'var(--dd-err)', fontSize: 10, marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <div title={checkErr} className={pcls.errLine}>
           {checkErr}
         </div>
       )}
-      <div style={{ color: 'var(--dd-dim)', fontSize: 10, marginBottom: 8, lineHeight: 1.4 }}>toggling applies to new sessions · secrets hidden</div>
+      <div className={pcls.note}>toggling applies to new sessions · secrets hidden</div>
       {servers === null ? (
         <div style={S.muted}>loading…</div>
       ) : servers.length === 0 ? (
@@ -351,18 +352,18 @@ function McpSection({ projectPath }: { projectPath?: string }) {
           const dot = dotFor(s)
           return (
             <div key={s.name} style={{ marginBottom: 9, opacity: s.enabled ? 1 : 0.55 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <div className={pcls.row}>
                 {hasTools ? (
                   <button onClick={() => toggleExpand(s.name)} title={open ? 'Hide tools' : 'Show tools'} style={{ ...S.groupBtn, width: 10, flex: 'none', padding: 0 }}>
-                    <span style={{ color: 'var(--dd-dim)' }}>{open ? '▾' : '▸'}</span>
+                    <span className={pcls.dim}>{open ? '▾' : '▸'}</span>
                   </button>
                 ) : (
-                  <span style={{ width: 10, flex: 'none' }} />
+                  <span className={pcls.caretSlot} />
                 )}
                 <StatusDot status={dot.status} title={dot.title} />
                 <span style={{ ...S.name, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={s.name}>{s.name}</span>
                 <span style={S.chip}>{s.kind}</span>
-                <span style={{ color: 'var(--dd-dim2)', fontSize: 9 }}>{s.scope}</span>
+                <span className={pcls.tiny}>{s.scope}</span>
                 <Toggle
                   on={s.enabled}
                   busy={busy.has(s.name)}
@@ -371,11 +372,11 @@ function McpSection({ projectPath }: { projectPath?: string }) {
                 />
               </div>
               {s.detail && (
-                <div style={{ color: 'var(--dd-text3)', wordBreak: 'break-all', fontFamily: 'Menlo, monospace', fontSize: 11, marginTop: 1, paddingLeft: 16 }}>{s.detail}</div>
+                <div className={pcls.path}>{s.detail}</div>
               )}
               {open &&
                 s.tools.map((t) => (
-                  <div key={t} style={{ paddingLeft: 24, marginTop: 4 }}>
+                  <div key={t} className={pcls.nested}>
                     <div style={S.name}>{t}</div>
                     {s.builtin && (
                       <div style={S.desc}>Renders a self-contained HTML / SVG / Markdown artifact into Drydock’s Artifacts tab.</div>
@@ -399,12 +400,12 @@ function McpSection({ projectPath }: { projectPath?: string }) {
 export function ProjectTab({ projectPath }: { projectPath?: string }) {
   const proj = projectPath ? baseName(projectPath) : undefined
   return (
-    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+    <div className={pcls.pane}>
       {/* pinned above the scroll: the scope must stay visible however far the
           skills list is scrolled — both sections below answer to it */}
       {proj && (
-        <div style={{ flex: 'none', padding: '12px 12px 0', color: 'var(--dd-text3)' }}>
-          for project: <span style={{ color: 'var(--dd-text1)' }}>{proj}</span>
+        <div className={pcls.paneHead}>
+          for project: <span className={pcls.strong}>{proj}</span>
         </div>
       )}
       <div style={{ flex: '1 1 auto', minHeight: 0, overflowY: 'auto', padding: proj ? '8px 12px 12px' : 12 }}>
