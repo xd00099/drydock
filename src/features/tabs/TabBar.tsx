@@ -127,7 +127,7 @@ export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs,
         {/* a transcript tab is a READER, not a dead terminal: ≣ prefix instead
             of the (misleading) ·ended suffix */}
         <span className={cx(s.label, t.preview && s.preview)}>
-          {t.kind === 'transcript' ? '≣ ' : ''}
+          {t.kind === 'transcript' ? '≣ ' : t.kind === 'settings' ? '⚙︎ ' : ''}
           {clip(label, 22)}
           {t.exited && t.kind !== 'transcript' ? ' ·ended' : ''}
         </span>
@@ -170,7 +170,7 @@ export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs,
             sessionTabs.map((t) => {
               const s = t.sessionId ? sessions.find((x) => x.session_id === t.sessionId) : undefined
               const label = s ? sessionLabel(s) : t.title
-              const tip = t.kind === 'transcript' ? `${label} — read-only transcript` : label
+              const tip = t.kind === 'transcript' ? `${label} — read-only transcript` : t.kind === 'settings' ? 'Settings' : label
               return { t, el: chip(t, label, t.sessionId ? projectColor(s?.project_path) : undefined, tip, s?.live_status === 'needs_input', s?.project_path) }
             }),
             false

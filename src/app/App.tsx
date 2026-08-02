@@ -8,7 +8,7 @@ import TerminalPane from '@/features/terminal/TerminalPane'
 import TranscriptView from '@/features/transcript/TranscriptView'
 import SearchPalette from '@/features/search/SearchPalette'
 import NewSessionDialog from '@/features/session/NewSessionDialog'
-import SettingsOverlay from '@/features/settings/SettingsOverlay'
+import SettingsPane from '@/features/settings/SettingsPane'
 import BriefingPanel from '@/features/briefing/BriefingPanel'
 import HomeView from '@/features/home/HomeView'
 import FindBar from '@/features/search/FindBar'
@@ -55,7 +55,6 @@ export default function App() {
   const [takeover, setTakeover] = useState<{ s: SessionView; info: TakeoverInfo | null; located: boolean; err: string | null; killing: boolean } | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [newDialog, setNewDialog] = useState(false) // ⌘N: new session in any folder
-  const [settingsOpen, setSettingsOpen] = useState(false) // ⌘, / footer gear
   const [confirmClose, setConfirmClose] = useState<number | null>(null) // close-guard: tab id awaiting confirm
   // full-window Home overlay (⌘K → "usage & timeline"): global data without
   // leaving the active terminal — Esc returns exactly where you were
@@ -132,14 +131,13 @@ export default function App() {
   paletteOpenRef.current = paletteOpen
   const newDialogRef = useRef(newDialog)
   newDialogRef.current = newDialog
-  const settingsOpenRef = useRef(settingsOpen)
-  settingsOpenRef.current = settingsOpen
   const confirmCloseRef = useRef(confirmClose)
   confirmCloseRef.current = confirmClose
   const homeOverlayRef = useRef(homeOverlay)
   homeOverlayRef.current = homeOverlay
   const newShellRef = useRef(() => {})
   const closeActiveRef = useRef(() => {})
+  const toggleSettingsRef = useRef(() => {})
   // for the once-registered keydown listener's confirm-close Enter: closeTab
   // is recreated per render (its lane-aware landing reads fresh tabs/stage) —
   // calling it directly from the [] effect would freeze the FIRST render's
@@ -214,7 +212,7 @@ export default function App() {
       case 'tab.prev': cycleTab(-1); break
       case 'tab.next': cycleTab(1); break
       case 'session.new': setNewDialog(true); break
-      case 'settings.toggle': setSettingsOpen((v) => !v); break
+      case 'settings.toggle': toggleSettingsRef.current(); break
       case 'view.zoomIn': zoomRef.current.zoomIn(); break
       case 'view.zoomOut': zoomRef.current.zoomOut(); break
       case 'view.zoomReset': zoomRef.current.zoomReset(); break
@@ -442,6 +440,18 @@ export default function App() {
   newShellRef.current = () => newShell()
   closeActiveRef.current = () => { if (activeId !== null) requestCloseTab(activeId) }
   closeTabRef.current = closeTab
+  // ⌘, / footer gear. Open-or-focus, except when Settings is already the tab
+  // you're looking at — then the same chord puts it away, which is the toggle
+  // users expect from a modal and still behaves like a tab the rest of the time.
+  toggleSettingsRef.current = () => {
+    const existing = tabsRef.current.find((t) => t.kind === 'settings')
+    if (existing) {
+      if (stageRef.current.active === existing.id) { closeTab(existing.id); return }
+      setStage((st) => showTab(st, existing.id))
+      return
+    }
+    addTab({ title: 'Settings', kind: 'settings', program: null, args: [], cwd: null })
+  }
   starActiveRef.current = () => {
     const s = activeTab?.sessionId ? sessions.find((x) => x.session_id === activeTab.sessionId) : undefined
     if (s) invoke('set_starred', { sessionId: s.session_id, starred: !s.starred }).then(refresh)
@@ -651,15 +661,6 @@ export default function App() {
         if (action) e.preventDefault()
         return
       }
-      // Settings overlay: Esc or the toggle chord closes; everything else is
-      // swallowed. (While the Shortcuts tab RECORDS a chord, its own
-      // capture-phase listener stops propagation — no key reaches here.)
-      if (settingsOpenRef.current) {
-        if (e.key === 'Escape') { setSettingsOpen(false); return }
-        if (action === 'settings.toggle') { e.preventDefault(); setSettingsOpen(false); return }
-        if (action) e.preventDefault()
-        return
-      }
       // ⌘N dialog: its input handles arrows/Tab/Enter itself; Esc must work
       // even when the input lost focus (a click on the hint text), and the
       // toggle chord re-closes it. Every other shortcut is swallowed.
@@ -816,6 +817,7 @@ export default function App() {
   // changed since the click.
   const restartForUpdate = async () => {
     const snapshot = tabsRef.current
+      .filter((t) => t.kind !== 'settings') // cheap to reopen; nothing to restore
       .filter((t) => !(t.terminal && t.exited)) // dead shells aren't worth reopening
       .map((t) => ({
         kind: t.kind === 'transcript' || t.exited ? ('transcript' as const) : t.terminal ? ('shell' as const) : ('claude' as const),
@@ -849,7 +851,7 @@ export default function App() {
         onRestartForUpdate={restartForUpdate}
         collapsed={sidebarCollapsed}
         onSetCollapsed={setSidebarC}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSettings={() => toggleSettingsRef.current()}
       />
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
         {/* In-flow (not fixed at a guessed sidebar offset): it always spans
@@ -947,7 +949,9 @@ export default function App() {
                       }
                 }
               >
-              {t.kind === 'pty' ? (
+              {t.kind === 'settings' ? (
+                <SettingsPane />
+              ) : t.kind === 'pty' ? (
                 <TerminalPane
                   ref={(h) => { paneSearch.current[t.id] = h }}
                   id={t.id}
@@ -1054,10 +1058,11 @@ export default function App() {
           )}
         </div>
       </div>
-      {/* Right panel for any claude/transcript tab (not plain shells). Keyed by
+      {/* Right panel for any claude/transcript tab — not plain shells, and not
+          Settings, which has no session to brief on. Keyed by
           tab id — NOT sessionId — so distinct tabs (e.g. a live session and its
           read-only transcript share one id) each keep their own panel state. */}
-      {activeTab && !activeTab.terminal && (() => {
+      {activeTab && !activeTab.terminal && activeTab.kind !== 'settings' && (() => {
         const s = activeTab.sessionId ? sessions.find((x) => x.session_id === activeTab.sessionId) : undefined
         return (
           <BriefingPanel
@@ -1126,7 +1131,6 @@ export default function App() {
       )}
       {/* After the home overlay: same z, later in DOM — settings wins if both
           ever mount (the keydown guards make that unreachable today). */}
-      <SettingsOverlay open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       {confirmClose !== null && (
         <ConfirmCloseDialog
           tab={tabs.find((x) => x.id === confirmClose)}

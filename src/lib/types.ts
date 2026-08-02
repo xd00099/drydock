@@ -225,7 +225,10 @@ export function uuidv4(): string {
 export type Tab = {
   id: number
   title: string
-  kind: 'pty' | 'transcript'
+  // 'settings' is a chromeless pane with no process and no session — it exists
+  // so Settings is a tab you can leave open beside your work, rather than a
+  // modal that blanks the window.
+  kind: 'pty' | 'transcript' | 'settings'
   // pty fields
   program: string | null // null → $SHELL
   args: string[]

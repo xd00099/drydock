@@ -14,10 +14,7 @@ import type { ActionId, Category } from '@/lib/keymap'
 type Section = 'shortcuts' | 'general' | 'appearance'
 
 const S = {
-  wrap: { position: 'fixed', inset: 0, zIndex: 85, background: 'var(--dd-bg0)', display: 'flex', flexDirection: 'column', transform: 'translateZ(0)', outline: 'none', fontFamily: 'system-ui' } as React.CSSProperties,
-  head: { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid var(--dd-hairline)' } as React.CSSProperties,
-  title: { flex: 1, color: 'var(--dd-text)', fontWeight: 600, fontSize: 13 } as React.CSSProperties,
-  close: { background: 'none', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-sm)', cursor: 'pointer', color: 'var(--dd-text2)', fontSize: 12, lineHeight: 1, padding: '2px 6px' } as React.CSSProperties,
+  wrap: { height: '100%', background: 'var(--dd-bg0)', display: 'flex', flexDirection: 'column', fontFamily: 'system-ui' } as React.CSSProperties,
   body: { flex: 1, minHeight: 0, display: 'flex' } as React.CSSProperties,
   rail: { width: 160, borderRight: '1px solid var(--dd-hairline)', padding: '10px 0', display: 'flex', flexDirection: 'column', gap: 2, flexShrink: 0 } as React.CSSProperties,
   railBtn: (on: boolean) => ({ textAlign: 'left', background: on ? 'var(--dd-btn)' : 'none', border: 'none', borderLeft: on ? '2px solid var(--dd-accent-text)' : '2px solid transparent', color: on ? 'var(--dd-text)' : 'var(--dd-text3)', fontSize: 12, padding: '7px 14px', cursor: 'pointer' }) as React.CSSProperties,
@@ -252,15 +249,18 @@ function AppearancePanel() {
   )
 }
 
-export default function SettingsOverlay({ open, onClose }: { open: boolean; onClose: () => void }) {
+/** Settings, rendered as a pane on the stage.
+ *
+ *  This used to be a fixed, full-viewport overlay with its own "Settings"
+ *  header — which sat under the macOS traffic lights now that the titlebar is
+ *  an overlay. As a tab it inherits the stage's inset card, and the tab strip
+ *  already supplies both the title and the close affordance, so the header goes
+ *  away rather than being nudged out of the lights' way.
+ */
+export default function SettingsPane() {
   const [section, setSection] = useState<Section>('shortcuts')
-  if (!open) return null
   return (
-    <div style={S.wrap} ref={(el) => { if (el && !el.dataset.focused) { el.dataset.focused = '1'; el.focus() } }} tabIndex={-1}>
-      <div style={S.head}>
-        <span style={S.title}>Settings</span>
-        <button onClick={onClose} title="Close (Esc)" style={S.close}>✕</button>
-      </div>
+    <div style={S.wrap}>
       <div style={S.body}>
         <div style={S.rail}>
           {(['shortcuts', 'general', 'appearance'] as Section[]).map((s) => (
