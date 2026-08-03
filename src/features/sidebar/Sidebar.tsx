@@ -516,6 +516,11 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
           title={`Home — recap log & usage (${homeChord})`}
           style={{
             flex: 1,
+            // without this the label cannot shrink, and the 78px traffic-light
+            // inset plus the two buttons push `«` out of the rail entirely
+            minWidth: 0,
+            overflow: 'hidden',
+            whiteSpace: 'nowrap',
             fontWeight: 700,
             fontSize: 11,
             letterSpacing: '0.09em',
@@ -553,7 +558,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
       {needs.length > 0 && (
         <div>
           <div className={cls.head} style={{ color: 'var(--dd-warn)' }} title="Blocked on you — a permission prompt or a question">
-            <span style={{ flex: 1, letterSpacing: 0.3 }}>NEEDS YOU</span>
+            <span style={{ flex: 1, minWidth: 0, letterSpacing: 0.3 }}>NEEDS YOU</span>
             <span style={{ color: 'var(--dd-warn)' }}>{needs.length}</span>
           </div>
           {needs.map((s) => sessionRow(s, true))}
@@ -562,7 +567,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
       {active.length > 0 && (
         <div>
           <div className={cls.head} title="Running now, or finished since you last looked">
-            <span style={{ flex: 1 }}>Active</span>
+            <span style={{ flex: 1, minWidth: 0 }}>Active</span>
             <span style={{ color: 'var(--dd-dim)' }}>{active.length}</span>
           </div>
           {active.map((s) => sessionRow(s, true))}
@@ -575,7 +580,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
             <button className={cls.chev} title={starredClosed ? 'Expand' : 'Collapse'} onClick={() => toggleGroup(STARRED_KEY)}>
               {starredClosed ? '▸' : '▾'}
             </button>
-            <span style={{ flex: 1, cursor: 'pointer', color: 'var(--dd-warn-bright)' }} onClick={() => toggleGroup(STARRED_KEY)}>
+            <span style={{ flex: 1, minWidth: 0, cursor: 'pointer', color: 'var(--dd-warn-bright)' }} onClick={() => toggleGroup(STARRED_KEY)}>
               ★ Starred
             </span>
             <span style={{ color: 'var(--dd-dim)' }}>{starred.length}</span>
@@ -626,7 +631,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
                 {isClosed ? '▸' : '▾'}
               </button>
               <span
-                style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'pointer' }}
+                style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'pointer' }}
                 onClick={() => toggleGroup(g.path)}
               >
                 {/* the group's own color, so a row's stripe resolves to a header

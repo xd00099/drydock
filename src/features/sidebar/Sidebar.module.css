@@ -9,6 +9,12 @@
   min-width: 300px;
   height: 100%;
   overflow-y: auto;
+  /* A nav rail must never scroll sideways. Setting only overflow-y leaves the
+     other axis computing to `auto` (CSS forbids one visible + one auto axis), so
+     any child that overflows — a long project path, a squeezed header — silently
+     produced a horizontal scrollbar along the bottom of the sidebar. Content
+     ellipsizes instead. */
+  overflow-x: hidden;
   background: var(--dd-bg0);
   color: var(--dd-text1);
   font-family: system-ui;
