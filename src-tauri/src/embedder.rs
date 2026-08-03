@@ -106,6 +106,8 @@ pub mod pace {
         /// here instead of idling, so this arm's backoff only matters to the
         /// tests that pin it -- kept because Pacer is a pure schedule and
         /// "what does idling cost" should stay provable.
+        // Only the Pacer tests construct it, hence dead in a non-test build.
+        #[allow(dead_code)]
         Drained,
         /// Rows were pending and none of them landed (model error, failed
         /// write, poison row). Must never be retried at full speed.

@@ -243,7 +243,7 @@ fn usage_sums(
 /// caller gates it behind a store meta key.
 pub fn backfill_usage(store: &mut Store, claude_dir: &Path) -> Result<usize> {
     let mut filled = 0usize;
-    let mut fill = |store: &mut Store, path: &Path, session_id: &str, scope: &str, agent_gate: bool| -> Result<bool> {
+    let fill = |store: &mut Store, path: &Path, session_id: &str, scope: &str, agent_gate: bool| -> Result<bool> {
         let path_str = path.to_string_lossy().to_string();
         let Some(st) = store.get_sync_state(&path_str)? else { return Ok(false) };
         if agent_gate && !store.is_real_session(session_id)? {

@@ -45,9 +45,6 @@ pub const TOOL_ID: &str = "mcp__drydock-artifacts__render_artifact";
 pub const AWAIT_TOOL_NAME: &str = "await_artifact_feedback";
 pub const AWAIT_TOOL_ID: &str = "mcp__drydock-artifacts__await_artifact_feedback";
 
-/// Space-joined `--allowedTools` value pre-approving BOTH tools at spawn.
-pub const ALLOWED_TOOLS: &str = "mcp__drydock-artifacts__render_artifact mcp__drydock-artifacts__await_artifact_feedback";
-
 /// How long a single `await_artifact_feedback` call blocks before returning
 /// `status:"waiting"` (the model then re-calls). Kept safely under Claude Code's
 /// MCP tool-call timeout so the client never aborts the call mid-wait.
@@ -1962,9 +1959,6 @@ mod tests {
     fn tool_id_matches_server_and_tool_names() {
         assert_eq!(TOOL_ID, format!("mcp__{SERVER_NAME}__{TOOL_NAME}"));
         assert_eq!(AWAIT_TOOL_ID, format!("mcp__{SERVER_NAME}__{AWAIT_TOOL_NAME}"));
-        // ALLOWED_TOOLS pre-approves exactly both fully-qualified ids
-        assert!(ALLOWED_TOOLS.contains(TOOL_ID));
-        assert!(ALLOWED_TOOLS.contains(AWAIT_TOOL_ID));
     }
 
     #[test]
