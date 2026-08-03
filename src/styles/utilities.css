@@ -99,3 +99,11 @@
 
 /* Pane divider: invisible until hovered so the gutter stays quiet. */
 .dd-divider:hover { background: rgba(127, 176, 255, 0.22); }
+
+/* File-drop target: the pane a dragged file would land in. An inset ring rather
+   than a border, so nothing in the pane reflows mid-drag — and inset rather than
+   an overlay element because a pane sets overflow:hidden, which would clip a
+   child drawn on its edge (same constraint as .dd-attnring documents above). */
+[data-dropping='1'] {
+  box-shadow: inset 0 0 0 2px var(--dd-accent), inset 0 0 22px rgba(127, 176, 255, 0.18) !important;
+}

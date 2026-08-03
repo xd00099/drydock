@@ -20,6 +20,7 @@ import { useStageDrag } from './useStageDrag'
 import { useFindBar } from './useFindBar'
 import { useArtifacts } from './useArtifacts'
 import { useZoom } from './useZoom'
+import { useFileDrop } from './useFileDrop'
 import { serializeChord, effectiveKeymap, loadOverrides, KEYMAP_EVENT } from '@/lib/keymap'
 import type { ActionId } from '@/lib/keymap'
 import { getSetting } from '@/lib/settings'
@@ -116,6 +117,9 @@ export default function App() {
     reviewByTab, reviewQueue, reviewDiscard, reviewSend,
     forgetTab,
   } = useArtifacts({ visibleRef, tabsRef })
+
+  // Dropped files type their paths into the session under the cursor.
+  const { dropTabId } = useFileDrop({ tabsRef, stageRef })
   visibleRef.current = visible
   const sessionsRef = useRef(sessions) // for once-registered attention/focus listeners
   sessionsRef.current = sessions
@@ -903,6 +907,7 @@ export default function App() {
                 data-staged={onStage ? '1' : '0'}
                 data-focused={t.id === activeId ? '1' : undefined}
                 data-attn={r && attn ? '1' : undefined}
+                data-dropping={t.id === dropTabId ? '1' : undefined}
                 onPointerDownCapture={
                   r ? () => setStage((st) => (st.active !== t.id && stagedIds(st).includes(t.id) ? { ...st, active: t.id } : st)) : undefined
                 }
