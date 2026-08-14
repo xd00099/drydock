@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { ResolvedAgent } from '@/lib/agents'
+import { shortPath } from '@/lib/types'
 import AgentLogo from '@/components/AgentLogo'
 
 // The new-session agent step: pops from ⌘N / Home / sidebar ＋ whenever the
@@ -60,7 +61,7 @@ export default function AgentPicker({ open, agents, cwd, onPick, onClose }: {
             </div>
           ))}
         </div>
-        <div style={S.hint}>opens in {cwd ?? '~'} — configure agents in Settings</div>
+        <div style={S.hint} title={cwd ?? undefined}>opens in {cwd ? shortPath(cwd) : '~'} — configure agents in Settings</div>
       </div>
     </div>
   )
