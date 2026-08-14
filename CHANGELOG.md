@@ -4,6 +4,41 @@ Each tagged release's `## vX.Y.Z` section becomes the GitHub release body and
 the in-app updater's release notes (extracted by `scripts/release-notes.py` in
 CI — a tag without its section fails the release).
 
+## v0.8.0 — 2026-08-14
+
+### Agents beyond Claude
+
+- **Launch any coding agent in a tab — strictly opt-in.** Enable codex, pi,
+  opencode, Copilot, Cursor, droid, or Gemini in **Settings → Agents** (or add
+  any custom command). Out of the box only Claude Code is enabled, so nothing
+  changes until you opt in. With more than one agent enabled, every new
+  session (⌘N, Home, sidebar ＋) first asks which agent to start; with one, it
+  launches directly — exactly today's behavior.
+- **Every agent's startup command is yours to set** — Claude Code's included:
+  make it `claude --some-option` and new sessions, resumes, and post-update
+  restores all use it.
+- **Sessions declare their agent.** Tabs and sidebar rows wear a small
+  monogram in the agent's color, and the tab strip washes in the active
+  agent's color (window tint — toggle in Settings → Agents) so a codex window
+  never gets mistaken for a claude one.
+- Agent tabs live in the sessions lane and survive update restarts.
+- **Codex sessions live in the sidebar.** Drydock discovers codex's session
+  files (`~/.codex/sessions`) — every codex conversation shows up beside your
+  claude sessions with the OpenAI mark, grouped by project, with live activity
+  status; click to resume it in a tab (`codex resume`). New codex tabs pair
+  with their session automatically, resume across update restarts, and report
+  "turn finished" through codex's own notify hook — injected per-launch, never
+  written into `~/.codex`. (Transcript reading/search for codex comes later.)
+- **Real agent marks.** Tabs, sidebar rows, the picker, and Settings wear each
+  agent's actual mark (Claude, OpenAI, Gemini, Copilot, Cursor, droid,
+  opencode, π) — monochrome, tinted per agent, legible on all 12 themes.
+  Custom agents keep their monogram. The window tint covers claude tabs too
+  (claude’s clay); only shells stay neutral.
+- **Quitting Drydock now ends every session and terminal on every exit path.**
+  Closing the window with ✕ used to leave claude/agent/shell processes running
+  in the background; now ⌘Q, window close, and Dock → Quit all terminate every
+  tab's whole process group.
+
 ## v0.7.1 — 2026-08-14
 
 ### The overnight display fix

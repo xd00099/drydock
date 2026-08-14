@@ -250,6 +250,22 @@ pub struct HookEvent {
 
 pub fn parse_hook(body: &[u8]) -> Option<HookEvent> {
     let v: Value = serde_json::from_slice(body).ok()?;
+    // Codex's legacy notify payload (kebab-case, fires on exactly one event:
+    // the end of a turn). Translated into the claude Stop shape here so the
+    // whole attention pipeline — badges, tray, notifications — needs no other
+    // codex awareness. thread-id is codex's session id.
+    if v.get("type").and_then(Value::as_str) == Some("agent-turn-complete") {
+        return Some(HookEvent {
+            event: "Stop".to_string(),
+            session_id: v.get("thread-id").and_then(Value::as_str).map(String::from),
+            message: v
+                .get("last-assistant-message")
+                .and_then(Value::as_str)
+                .map(|s| s.chars().take(200).collect())
+                .unwrap_or_default(),
+            notification_type: None,
+        });
+    }
     Some(HookEvent {
         event: v.get("hook_event_name")?.as_str()?.to_string(),
         session_id: v.get("session_id").and_then(Value::as_str).map(String::from),
@@ -557,6 +573,15 @@ mod tests {
     fn a_failed_turn_says_what_went_wrong() {
         // `error_details` is optional and absent for a plain rate limit; without
         // the `error` fallback the notification would claim the turn finished.
+        let codex = parse_hook(
+            br#"{"type":"agent-turn-complete","thread-id":"0199-abc","turn-id":"t1","cwd":"/p/x","last-assistant-message":"done: fixed the test"}"#,
+        )
+        .unwrap();
+        assert_eq!(codex.event, "Stop");
+        assert_eq!(codex.session_id.as_deref(), Some("0199-abc"));
+        assert_eq!(codex.message, "done: fixed the test");
+        assert_eq!(classify(&codex.event, None), Attn::Done, "codex turn-complete = claude Stop");
+
         let bare = parse_hook(br#"{"session_id":"s","hook_event_name":"StopFailure","error":"rate_limit"}"#).unwrap();
         assert_eq!(bare.message, "rate limit reached");
         let detailed = parse_hook(

@@ -41,6 +41,9 @@ export type SessionView = {
   // and can check the answer (search ranking, "find similar"), not in an
   // ambient tint. Kept on the wire as the substrate for that.
   hue: number | null
+  // 'claude' (full index: transcripts, search, cards) or 'codex' (discovery
+  // tier: rollout scan — resumable, no transcript view/search yet)
+  agent: 'claude' | 'codex'
 }
 
 // A user-created sidebar folder ("working group"), in band order.
@@ -239,6 +242,9 @@ export type Tab = {
   // a plain shell (＋/⌘T), as opposed to a claude session; shown in its own
   // tab-bar lane and named after its working directory
   terminal?: boolean
+  // non-claude agent profile id (lib/agents.ts): launch-tier tab — monogram +
+  // tint identity, no session index/badges. Absent = claude or shell.
+  agent?: string
 }
 
 // One tab in the pre-update-restart snapshot (backend updates::RestoreTab).
@@ -246,11 +252,12 @@ export type Tab = {
 // next boot to rebuild the workspace. claude tabs resume their session, shell
 // tabs reopen at their last cwd, transcript tabs reopen read-only.
 export type RestoreTab = {
-  kind: 'claude' | 'shell' | 'transcript'
+  kind: 'claude' | 'shell' | 'transcript' | 'agent'
   session_id: string | null
   cwd: string | null
   title: string | null
   active: boolean
+  agent?: string | null // profile id, kind "agent" only
 }
 
 export function relAge(ms: number | null): string {

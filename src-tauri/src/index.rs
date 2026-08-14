@@ -37,6 +37,9 @@ pub struct SessionView {
     /// until the session's chunks are embedded (frontend falls back to the
     /// id-hash color).
     pub hue: Option<f64>,
+    /// Which agent owns this session: "claude" (full index) or "codex"
+    /// (discovery-tier: rollout scan — resumable, no transcript search yet).
+    pub agent: String,
 }
 
 /// One user-created sidebar folder, in band order.
@@ -338,6 +341,7 @@ pub fn session_chunks(db: State<'_, AppDb>, session_id: String) -> Result<Vec<Ch
 pub fn sessions_snapshot(
     db: State<'_, AppDb>,
     attention: State<'_, crate::attention::AttentionState>,
+    codex: State<'_, crate::agents::CodexState>,
 ) -> Result<Snapshot, String> {
     let store = db.0.lock().unwrap();
     let summaries: std::collections::HashMap<String, String> =
@@ -381,9 +385,47 @@ pub fn sessions_snapshot(
                 last_message_at: r.last_message_at,
                 starred: r.starred,
                 hidden: r.hidden,
+                agent: "claude".to_string(),
             }
         })
-        .collect();
+        .collect::<Vec<_>>();
+    // Codex sessions ride beside the claude index (discovery tier: rollout
+    // scan, no store row). Busy = rollout touched in the last two minutes;
+    // attention marks (once the notify hook feeds them) join the same way as
+    // claude's. Star/hide/folder stay claude-only until codex gets store rows.
+    let mut sessions = sessions;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    for c in codex.snapshot() {
+        let busy = now_ms.saturating_sub(c.mtime_ms) < crate::agents::ACTIVE_MS;
+        let attn = waiting.get(&c.session_id).filter(|_| busy);
+        sessions.push(SessionView {
+            title: c.title.unwrap_or_else(|| format!("codex · {}", &c.session_id[..8.min(c.session_id.len())])),
+            title_source: "first-prompt".to_string(),
+            name: None,
+            summary: None,
+            latest_recap: None,
+            live_status: match attn.map(|w| w.kind) {
+                Some(crate::attention::Attn::Blocked) => "needs_input".to_string(),
+                Some(crate::attention::Attn::Done) => "done".to_string(),
+                _ if busy => "busy".to_string(),
+                _ => "ended".to_string(),
+            },
+            attention: attn
+                .filter(|w| w.kind == crate::attention::Attn::Blocked)
+                .map(|w| w.message.clone()),
+            folder_id: None,
+            hue: None,
+            session_id: c.session_id,
+            project_path: c.cwd,
+            last_message_at: Some(c.mtime_ms),
+            starred: false,
+            hidden: false,
+            agent: "codex".to_string(),
+        });
+    }
     let hidden = store.hidden_session_ids().map_err(|e| e.to_string())?;
     let folders = store
         .list_folders()

@@ -101,13 +101,17 @@ pub fn app_version() -> String {
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct RestoreTab {
-    /// "claude" (resume the session), "shell" (reopen at cwd), or
-    /// "transcript" (read-only view).
+    /// "claude" (resume the session), "shell" (reopen at cwd), "agent"
+    /// (relaunch the profile's command at cwd), or "transcript" (read-only).
     pub kind: String,
     pub session_id: Option<String>,
     pub cwd: Option<String>,
     pub title: Option<String>,
     pub active: bool,
+    /// Agent profile id for kind "agent". `default` so pre-agents stashes
+    /// (and claude/shell entries, which never set it) keep parsing.
+    #[serde(default)]
+    pub agent: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -184,7 +188,25 @@ mod tests {
             cwd: cwd.map(Into::into),
             title: Some(format!("{kind} tab")),
             active,
+            agent: None,
         }
+    }
+
+    #[test]
+    fn agent_tabs_roundtrip_and_old_stashes_still_parse() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(STASH_FILE);
+        let mut t = tab("agent", None, Some("/p/x"), true);
+        t.agent = Some("codex".into());
+        write_stash(&path, vec![t], None, 0).unwrap();
+        let back = take_stash(&path, 0).unwrap();
+        assert_eq!(back[0].agent.as_deref(), Some("codex"));
+
+        // a stash written before the agent field existed (no `agent` keys)
+        let old = r#"{"saved_at_ms":0,"tabs":[{"kind":"shell","session_id":null,"cwd":null,"title":null,"active":true}]}"#;
+        std::fs::write(&path, old).unwrap();
+        let back = take_stash(&path, 0).unwrap();
+        assert_eq!(back[0].agent, None);
     }
 
     #[test]

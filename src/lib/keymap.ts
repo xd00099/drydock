@@ -27,7 +27,7 @@ export const ACTIONS: ActionDef[] = [
   { id: 'home.show', label: 'Go Home', category: 'General', default: 'meta+0' },
   { id: 'find.open', label: 'Find in pane', category: 'General', default: 'meta+f' },
   { id: 'settings.toggle', label: 'Settings', category: 'General', default: 'meta+,' },
-  { id: 'session.new', label: 'New claude session…', category: 'General', default: 'meta+n' },
+  { id: 'session.new', label: 'New session…', category: 'General', default: 'meta+n' },
   { id: 'shell.new', label: 'New shell tab', category: 'Tabs', default: 'meta+t' },
   { id: 'tab.close', label: 'Close tab', category: 'Tabs', default: 'meta+w' },
   { id: 'transcript.toggle', label: 'Terminal ⇄ transcript', category: 'Tabs', default: 'meta+shift+t' },

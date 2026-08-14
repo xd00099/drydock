@@ -8,6 +8,7 @@ import TerminalPane, { bytesToB64 } from '@/features/terminal/TerminalPane'
 import TranscriptView from '@/features/transcript/TranscriptView'
 import SearchPalette from '@/features/search/SearchPalette'
 import NewSessionDialog from '@/features/session/NewSessionDialog'
+import AgentPicker from '@/features/session/AgentPicker'
 import SettingsOverlay from '@/features/settings/SettingsOverlay'
 import BriefingPanel from '@/features/briefing/BriefingPanel'
 import HomeView from '@/features/home/HomeView'
@@ -19,7 +20,9 @@ import TakeoverDialog from './dialogs/TakeoverDialog'
 import { useStageDrag } from './useStageDrag'
 import { serializeChord, effectiveKeymap, loadOverrides, KEYMAP_EVENT } from '@/lib/keymap'
 import type { ActionId } from '@/lib/keymap'
-import { getSetting } from '@/lib/settings'
+import { getSetting, useSetting } from '@/lib/settings'
+import { claudeCommand, enabledAgents, resolveAgents, useAgents, agentArgs } from '@/lib/agents'
+import type { AgentsConfig, ResolvedAgent } from '@/lib/agents'
 import { watchWake } from '@/lib/wake'
 import type { Artifact, ArtifactKind, PaneSearch, RestoreTab, ReviewPrompt, ReviewState, SessionView, Tab, TakeoverInfo } from '@/lib/types'
 import { EMPTY_REVIEW, baseName, clip, interruptsWork, projectColor, sessionLabel, uuidv4 } from '@/lib/types'
@@ -52,6 +55,18 @@ export default function App() {
   const [takeover, setTakeover] = useState<{ s: SessionView; info: TakeoverInfo | null; located: boolean; err: string | null; killing: boolean } | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [newDialog, setNewDialog] = useState(false) // ⌘N: new session in any folder
+  // The agent picker pops as part of the NEW-SESSION flow (⌘N / Home /
+  // sidebar ＋) whenever the user has enabled 2+ agents in Settings; with
+  // exactly one (the default: just claude) it never appears. The pending
+  // folder AND the offered list ride in the state — frozen at open, so the
+  // probe landing mid-pick can't reflow rows under Enter.
+  const [agentPicker, setAgentPicker] = useState<{ cwd: string; list: ResolvedAgent[] } | null>(null)
+  // Agent profiles (lib/agents.ts): builtins + the user's custom commands,
+  // resolved against the backend config and the login-shell PATH probe.
+  const { cfg: agentsCfg, avail: agentAvail } = useAgents()
+  const agents = resolveAgents(agentsCfg, agentAvail)
+  const agentsRef = useRef(agents)
+  agentsRef.current = agents
   const [settingsOpen, setSettingsOpen] = useState(false) // ⌘, / footer gear
   const [confirmClose, setConfirmClose] = useState<number | null>(null) // close-guard: tab id awaiting confirm
   // full-window Home overlay (⌘K → "usage & timeline"): global data without
@@ -139,6 +154,8 @@ export default function App() {
   paletteOpenRef.current = paletteOpen
   const newDialogRef = useRef(newDialog)
   newDialogRef.current = newDialog
+  const agentPickerRef = useRef(agentPicker)
+  agentPickerRef.current = agentPicker
   const settingsOpenRef = useRef(settingsOpen)
   settingsOpenRef.current = settingsOpen
   const confirmCloseRef = useRef(confirmClose)
@@ -227,7 +244,7 @@ export default function App() {
   }
 
   // replaceSession: sweep up stale tabs (exited ptys, superseded transcripts) for that session
-  const addTab = (t: Omit<Tab, 'id' | 'exited'> & { exited?: boolean }, replaceSession?: string) => {
+  const addTab = (t: Omit<Tab, 'id' | 'exited'> & { exited?: boolean }, replaceSession?: string): number => {
     const tab: Tab = { exited: false, ...t, id: nextTabId++ }
     setTabs((p) => [
       ...p.filter(
@@ -240,6 +257,7 @@ export default function App() {
     // showTab: in a split, the new tab takes over the focused pane (viewport
     // semantics) instead of collapsing the layout
     setStage((st) => showTab(st, tab.id))
+    return tab.id
   }
 
   // interacting with a preview tab makes it permanent
@@ -249,6 +267,27 @@ export default function App() {
     )
 
   const resume = (s: SessionView, opts?: { transcript?: boolean; permanent?: boolean }) => {
+    // Codex sessions (discovery tier): resume via `codex resume`. No
+    // transcript view yet — codex rollouts aren't parsed for reading — so a
+    // transcript request degrades to resume-or-focus. Codex tolerates its
+    // rollouts being reopened, so no live-elsewhere read-only gate either.
+    if (s.agent === 'codex') {
+      const here = tabsRef.current.find((t) => t.sessionId === s.session_id && t.kind === 'pty' && !t.exited)
+      if (here) { setStage((st) => showTab(st, here.id)); return }
+      if (s.session_id.includes("'")) return // spliced single-quoted below
+      const cmd = agentsRef.current.find((a) => a.id === 'codex')?.command ?? 'codex'
+      addTab({
+        title: clip(sessionLabel(s), 24),
+        kind: 'pty',
+        program: null,
+        args: ['-l', '-c', `exec ${cmd} resume '${s.session_id}'`],
+        cwd: s.project_path || null,
+        sessionId: s.session_id,
+        agent: 'codex',
+        preview: !opts?.permanent,
+      }, s.session_id)
+      return
+    }
     // already open in a running tab here: focus it instead of duplicating — but
     // an explicit transcript request (e.g. ⌘F's full-session search) still opens
     // the transcript even while the session is running in a tab.
@@ -269,7 +308,7 @@ export default function App() {
       title: clip(sessionLabel(s), 24),
       kind: 'pty',
       program: null,
-      args: ['-l', '-c', `exec claude --resume '${s.session_id}'`],
+      args: ['-l', '-c', `exec ${claudeCommand(agentsRef.current)} --resume '${s.session_id}'`],
       cwd: s.project_path || null,
       sessionId: s.session_id,
       preview,
@@ -317,29 +356,95 @@ export default function App() {
   // "claude"). Pin the id ourselves via `--session-id` and set it on the tab, so
   // a new session behaves exactly like a resumed one. The label then resolves
   // live from the index once the session is picked up (see TabBar).
-  const newSession = (projectPath: string) => {
+  const newClaudeSession = (projectPath: string, cmd = claudeCommand(agentsRef.current)) => {
     const sessionId = uuidv4()
     addTab({
       title: 'claude',
       kind: 'pty',
       program: null,
-      args: ['-l', '-c', `exec claude --session-id '${sessionId}'`],
+      args: ['-l', '-c', `exec ${cmd} --session-id '${sessionId}'`],
       cwd: projectPath,
       sessionId,
     })
   }
 
-  // ⌘T: a new shell starts where you're working — the active shell's live cwd,
-  // or the active session's project folder; home only as the Home-view fallback.
-  const newShell = () => {
-    const t = tabs.find((x) => x.id === activeId)
-    let cwd: string | null = null
-    if (t?.terminal) cwd = shellDirs[t.id] ?? t.cwd ?? null
-    else if (t) {
-      const s = t.sessionId ? sessions.find((x) => x.session_id === t.sessionId) : undefined
-      cwd = s?.project_path ?? t.cwd ?? null
+  // A launch-tier agent tab: the profile's command in a login shell, identified
+  // by its mark + tint. Codex can't pre-assign a session id (no --session-id
+  // equivalent), so a fresh codex tab pairs with the rollout codex creates for
+  // it: a BOUNDED poll (8 × 2s, stops early on close/exit/success) matches the
+  // newest rollout rooted at this cwd. Once paired, the tab links to its
+  // sidebar row, resumes across update restarts, and receives its badges.
+  const newAgentTab = (a: ResolvedAgent, cwd: string | null) => {
+    const id = addTab({
+      title: cwd ? `${a.name} · ${baseName(cwd)}` : a.name,
+      kind: 'pty',
+      program: null,
+      args: agentArgs(a.command),
+      cwd,
+      agent: a.id,
+    })
+    if (a.id !== 'codex' || !cwd) return
+    const afterMs = Date.now() - 5_000 // clock-skew margin; rollout mtime ≥ spawn
+    let tries = 0
+    const tick = () => {
+      const t = tabsRef.current.find((x) => x.id === id)
+      if (!t || t.exited || t.sessionId) return // closed, died, or already paired
+      invoke<string | null>('codex_latest_session', { cwd, afterMs })
+        .then((sid) => {
+          if (sid && !sid.includes("'")) {
+            setTabs((p) => p.map((x) => (x.id === id ? { ...x, sessionId: sid } : x)))
+          } else if (++tries < 8) {
+            window.setTimeout(tick, 2000)
+          }
+        })
+        .catch(() => {})
     }
-    addTab({ title: 'shell', kind: 'pty', program: null, args: ['-l'], cwd, terminal: true })
+    window.setTimeout(tick, 2500)
+  }
+
+  const launchAgent = (a: ResolvedAgent, projectPath: string) => {
+    if (a.id === 'claude') newClaudeSession(projectPath, a.command)
+    else newAgentTab(a, projectPath)
+  }
+  // Home / ⌘N / sidebar "new session": with exactly one enabled agent (the
+  // default: just claude) it launches directly — with 2+ the picker pops so
+  // the choice is always explicit, never a hidden default.
+  const newSession = (projectPath: string) => {
+    const decide = (list: ResolvedAgent[]) => {
+      const en = enabledAgents(list)
+      if (en.length === 1) launchAgent(en[0], projectPath)
+      else setAgentPicker({ cwd: projectPath, list: en })
+    }
+    if (agentsCfg !== null) {
+      decide(agents)
+      return
+    }
+    // useAgents hasn't landed (first seconds, or its fetch failed): resolve
+    // directly rather than assuming the claude-only default
+    invoke<AgentsConfig | null>('agents_get')
+      .catch(() => null)
+      .then((cfg) => decide(resolveAgents(cfg, {})))
+  }
+
+  // Where a ⌘T shell / picked agent starts: the active shell's live cwd, or
+  // the active session's project folder; home only as the Home-view fallback.
+  const activeCwd = (): string | null => {
+    const t = tabs.find((x) => x.id === activeId)
+    if (!t) return null
+    if (t.terminal || t.agent) return shellDirs[t.id] ?? t.cwd ?? null
+    const s = t.sessionId ? sessions.find((x) => x.session_id === t.sessionId) : undefined
+    return s?.project_path ?? t.cwd ?? null
+  }
+
+  const newShell = () => {
+    addTab({ title: 'shell', kind: 'pty', program: null, args: ['-l'], cwd: activeCwd(), terminal: true })
+  }
+
+  // Picker pick: launch the chosen agent in the folder the new-session flow
+  // already carried (claude keeps the full session flow).
+  const pickAgent = (a: ResolvedAgent) => {
+    const cwd = agentPickerRef.current?.cwd
+    if (cwd) launchAgent(a, cwd)
   }
 
   // Rebuild the workspace stashed just before an update restart (the backend
@@ -348,8 +453,17 @@ export default function App() {
   // tabs whose process had already exited come back as read-only transcripts.
   useEffect(() => {
     invoke<RestoreTab[] | null>('take_stashed_tabs')
-      .then((saved) => {
+      .then(async (saved) => {
         if (!saved?.length) return
+        // tabs relaunch their profile's CURRENT command — resolved here (not
+        // from the stash) so an edited command (claude's included) restores
+        // as edited. This effect runs before useAgents lands, so fetch the
+        // config directly.
+        const cfg = await invoke<AgentsConfig | null>('agents_get').catch(() => null)
+        const resolved = resolveAgents(cfg, {})
+        const claudeCmd = claudeCommand(resolved)
+        const agentById = new Map<string, ResolvedAgent>()
+        for (const a of resolved) agentById.set(a.id, a)
         let active: number | null = null
         const restored: Tab[] = []
         for (const r of saved) {
@@ -358,11 +472,23 @@ export default function App() {
           // malformed — skip it rather than build a broken command
           if (r.session_id?.includes("'")) continue
           const id = nextTabId++
+          const prof = r.kind === 'agent' && r.agent ? agentById.get(r.agent) : undefined
           if (r.kind === 'claude' && r.session_id) {
-            restored.push({ id, title: r.title || 'claude', kind: 'pty', program: null, args: ['-l', '-c', `exec claude --resume '${r.session_id}'`], cwd: r.cwd, sessionId: r.session_id, exited: false })
+            restored.push({ id, title: r.title || 'claude', kind: 'pty', program: null, args: ['-l', '-c', `exec ${claudeCmd} --resume '${r.session_id}'`], cwd: r.cwd, sessionId: r.session_id, exited: false })
           } else if (r.kind === 'transcript' && r.session_id) {
             restored.push({ id, title: r.title || 'session', kind: 'transcript', program: null, args: [], cwd: null, sessionId: r.session_id, exited: true })
           } else if (r.kind === 'shell') {
+            restored.push({ id, title: r.title || 'shell', kind: 'pty', program: null, args: ['-l'], cwd: r.cwd, exited: false, terminal: true })
+          } else if (prof && prof.id === 'codex' && r.session_id) {
+            // a paired codex tab resumes its session, exactly like claude tabs
+            restored.push({ id, title: r.title || prof.name, kind: 'pty', program: null, args: ['-l', '-c', `exec ${prof.command} resume '${r.session_id}'`], cwd: r.cwd, sessionId: r.session_id, exited: false, agent: 'codex' })
+          } else if (prof) {
+            // launch-tier agents relaunch fresh: their own session store
+            // (e.g. `/resume` in-tool) is one keystroke away inside the tab
+            restored.push({ id, title: r.title || prof.name, kind: 'pty', program: null, args: agentArgs(prof.command), cwd: r.cwd, exited: false, agent: prof.id })
+          } else if (r.kind === 'agent') {
+            // profile gone (deleted, or the config fetch failed): keep the
+            // workspace shape with a shell at the same cwd, not a dropped tab
             restored.push({ id, title: r.title || 'shell', kind: 'pty', program: null, args: ['-l'], cwd: r.cwd, exited: false, terminal: true })
           } else {
             continue
@@ -434,6 +560,18 @@ export default function App() {
   }
 
   const activeTab = tabs.find((t) => t.id === activeId)
+
+  // Agent-tab identity for the strip, and the window tint: every session tab
+  // wears its agent's color — claude included — so the window always reads as
+  // its active agent at a glance. Shells stay neutral.
+  const agentsById = Object.fromEntries(agents.map((a) => [a.id, { tint: a.tint, name: a.name }]))
+  const [windowTintOn] = useSetting('windowTint', '1')
+  const activeAgentId =
+    activeTab?.agent ?? (activeTab && !activeTab.terminal && activeTab.sessionId ? 'claude' : null)
+  const activeAgentTint =
+    windowTintOn === '1' && activeAgentId
+      ? agents.find((a) => a.id === activeAgentId)?.tint ?? null
+      : null
 
   // ⌘N recents: most-recent distinct project folders across all known sessions
   const recentDirs = (() => {
@@ -690,6 +828,13 @@ export default function App() {
       if (newDialogRef.current) {
         if (e.key === 'Escape') { setNewDialog(false); return }
         if (action === 'session.new') { e.preventDefault(); setNewDialog(false); return }
+        if (action) e.preventDefault()
+        return
+      }
+      // Agent picker: its box handles arrows/Enter itself; Esc closes (which
+      // cancels the pending new-session), every other shortcut is swallowed.
+      if (agentPickerRef.current) {
+        if (e.key === 'Escape') { setAgentPicker(null); return }
         if (action) e.preventDefault()
         return
       }
@@ -1000,15 +1145,25 @@ export default function App() {
   // changed since the click.
   const restartForUpdate = async () => {
     const snapshot = tabsRef.current
-      .filter((t) => !(t.terminal && t.exited)) // dead shells aren't worth reopening
+      .filter((t) => !((t.terminal || t.agent) && t.exited)) // dead shells/agents aren't worth reopening
       .map((t) => ({
-        kind: t.kind === 'transcript' || t.exited ? ('transcript' as const) : t.terminal ? ('shell' as const) : ('claude' as const),
+        kind:
+          t.kind === 'transcript' || (t.exited && !t.agent)
+            ? ('transcript' as const)
+            : t.terminal
+              ? ('shell' as const)
+              : t.agent
+                ? ('agent' as const)
+                : ('claude' as const),
         session_id: t.sessionId ?? null,
-        cwd: t.terminal ? shellDirsRef.current[t.id] ?? t.cwd : t.cwd,
+        cwd: t.terminal || t.agent ? shellDirsRef.current[t.id] ?? t.cwd : t.cwd,
         title: t.title,
         active: t.id === stageRef.current.active,
+        agent: t.agent ?? null,
       }))
-      .filter((r) => r.kind === 'shell' || r.session_id) // claude/transcript need a session id
+      // claude/transcript need a session id to come back; shells and agent
+      // tabs relaunch from cwd alone
+      .filter((r) => r.kind === 'shell' || r.kind === 'agent' || r.session_id)
     await invoke('stash_tabs', { tabs: snapshot }).catch(() => {})
     await invoke('restart_app').catch(() => {})
   }
@@ -1050,6 +1205,8 @@ export default function App() {
           stagedIds={staged}
           shellDirs={shellDirs}
           unread={unread}
+          agentsById={agentsById}
+          windowTint={activeAgentTint}
           draggedId={chipDrag?.tabId ?? null}
           insertMark={insertMark}
           onChipPress={beginChipDrag}
@@ -1280,6 +1437,13 @@ export default function App() {
         recents={recentDirs}
         onLaunch={(p) => newSession(p)}
         onClose={() => setNewDialog(false)}
+      />
+      <AgentPicker
+        open={agentPicker !== null}
+        agents={agentPicker?.list ?? []}
+        cwd={agentPicker?.cwd ?? null}
+        onPick={pickAgent}
+        onClose={() => setAgentPicker(null)}
       />
       {homeOverlay && (
         // full-window, above panes/find (z<90 artifact-expand, <100 quit guard);

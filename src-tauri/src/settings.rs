@@ -44,6 +44,36 @@ pub struct Settings {
     /// "code", "cursor", "subl". `None`/empty uses macOS `open`, which honors
     /// the default app for that file type.
     pub editor_cmd: Option<String>,
+    /// Built-in agent profiles the user explicitly ENABLED in Settings →
+    /// Agents. Strictly opt-in — defaults to just "claude", so an upgrade
+    /// changes nothing until the user turns agents on. With 2+ enabled, every
+    /// new session pops the picker; with exactly one, it launches directly.
+    pub agents_enabled: Vec<String>,
+    /// Per-builtin startup-command overrides (id → command), e.g.
+    /// claude → "claude --dangerously-skip-permissions". Absent id = the
+    /// registry default. Definitions live in the frontend registry.
+    pub agents_commands: BTreeMap<String, String>,
+    /// User-defined agent profiles: any command, launched as `exec <command>`
+    /// in a login shell. Drydock never interprets the command beyond that
+    /// (and deliberately never decorates it — even a command that happens to
+    /// start with "claude" spawns plain; see pty_spawn's session_id gate).
+    pub agents_custom: Vec<CustomAgent>,
+    /// Keys this build doesn't know (written by a NEWER Drydock). Carried
+    /// through load→save untouched, so running an older build after a
+    /// downgrade doesn't silently erase newer settings.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// A user-defined agent profile (Settings → Agents → custom). `tint` is a CSS
+/// color for the tab monogram + window accent; empty string → neutral.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CustomAgent {
+    pub id: String,
+    pub name: String,
+    pub command: String,
+    pub tint: String,
 }
 
 impl Default for Settings {
@@ -54,6 +84,10 @@ impl Default for Settings {
             artifacts_enabled: true,
             mcp_disabled: Vec::new(),
             editor_cmd: None,
+            agents_enabled: vec!["claude".to_string()],
+            agents_commands: BTreeMap::new(),
+            agents_custom: Vec::new(),
+            extra: serde_json::Map::new(),
         }
     }
 }
@@ -112,6 +146,31 @@ impl SettingsState {
         let snapshot = {
             let mut s = self.inner.lock().unwrap();
             s.artifacts_enabled = on;
+            s.clone()
+        };
+        snapshot.save(&self.data_dir)
+    }
+
+    /// The agents page's whole state in one read (enabled + command overrides
+    /// + customs), so the frontend never sees a torn config across calls.
+    pub fn agents_config(&self) -> (Vec<String>, BTreeMap<String, String>, Vec<CustomAgent>) {
+        let s = self.inner.lock().unwrap();
+        (s.agents_enabled.clone(), s.agents_commands.clone(), s.agents_custom.clone())
+    }
+
+    /// Replace the agents config wholesale (the Settings page owns the full
+    /// list; per-field merging would invent conflicts it can't resolve).
+    pub fn set_agents_config(
+        &self,
+        enabled: Vec<String>,
+        commands: BTreeMap<String, String>,
+        custom: Vec<CustomAgent>,
+    ) -> std::io::Result<()> {
+        let snapshot = {
+            let mut s = self.inner.lock().unwrap();
+            s.agents_enabled = enabled;
+            s.agents_commands = commands;
+            s.agents_custom = custom;
             s.clone()
         };
         snapshot.save(&self.data_dir)
@@ -190,6 +249,54 @@ mod tests {
         // absent key → None (open via the OS default app)
         let absent: Settings = serde_json::from_str(r#"{"claude_env":{}}"#).unwrap();
         assert_eq!(absent.editor_cmd, None);
+    }
+
+    #[test]
+    fn unknown_keys_survive_a_load_save_cycle() {
+        // a NEWER Drydock wrote a key this build doesn't know: editing any
+        // setting here must not erase it
+        let s: Settings = serde_json::from_str(r#"{"card_model":"sonnet","future_feature":{"x":1}}"#).unwrap();
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("future_feature"), "{json}");
+    }
+
+    #[test]
+    fn agents_are_opt_in_only_claude_by_default() {
+        let s = Settings::default();
+        assert_eq!(s.agents_enabled, vec!["claude".to_string()]);
+        assert!(s.agents_commands.is_empty());
+        assert!(s.agents_custom.is_empty());
+        // an upgrade (pre-agents settings.json, absent keys) changes nothing:
+        // exactly one enabled agent → the picker never pops
+        let old: Settings = serde_json::from_str(r#"{"card_model":"sonnet"}"#).unwrap();
+        assert_eq!(old.agents_enabled, vec!["claude".to_string()]);
+        assert!(old.agents_custom.is_empty());
+    }
+
+    #[test]
+    fn agents_config_parses_and_roundtrips() {
+        let dir = std::env::temp_dir().join(format!("drydock-agents-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = SettingsState::new(Settings::default(), dir.clone());
+        state
+            .set_agents_config(
+                vec!["claude".into(), "codex".into()],
+                BTreeMap::from([("claude".to_string(), "claude --dangerously-skip-permissions".to_string())]),
+                vec![CustomAgent { id: "c1".into(), name: "Goose".into(), command: "goose session".into(), tint: "#8a63d2".into() }],
+            )
+            .unwrap();
+        let (enabled, commands, custom) = state.agents_config();
+        assert_eq!(enabled, vec!["claude".to_string(), "codex".to_string()]);
+        assert_eq!(commands.get("claude").unwrap(), "claude --dangerously-skip-permissions");
+        assert_eq!(custom[0].command, "goose session");
+
+        let reloaded = Settings::load(&dir);
+        assert_eq!(reloaded.agents_enabled.len(), 2);
+        assert_eq!(reloaded.agents_custom[0].name, "Goose");
+        // a custom entry with missing fields (hand-edited file) defaults empty
+        let sparse: Settings = serde_json::from_str(r#"{"agents_custom":[{"id":"x"}]}"#).unwrap();
+        assert_eq!(sparse.agents_custom[0].command, "");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

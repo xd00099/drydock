@@ -8,6 +8,8 @@ import { Button } from '@/components/ui'
 import Modal, { ModalActions, ModalBody, ModalTitle } from '@/app/dialogs/Modal'
 import cls from './Sidebar.module.css'
 import LiveIndicator from '@/features/session/LiveIndicator'
+import { BUILTIN_AGENTS } from '@/lib/agents'
+import AgentLogo from '@/components/AgentLogo'
 import VersionFooter from '@/features/session/VersionFooter'
 import { useChord } from '@/lib/keymap'
 import { STARRED_KEY, byRecency, capGroup, folderKey, groupSessions, isVisible, loadSet, triage } from './grouping'
@@ -50,6 +52,14 @@ function groupStatus(list: SessionView[]): SessionView['live_status'] | null {
   if (list.some((s) => s.live_status === 'busy')) return 'busy'
   if (list.some((s) => s.live_status === 'idle')) return 'idle'
   return null
+}
+
+// Which agent owns a session row — claude rows from the full index, codex
+// rows from the rollout scan. The mark comes from the session's own agent
+// field; unknown ids degrade to a monogram inside AgentLogo.
+const AgentMark = ({ agent }: { agent: string }) => {
+  const spec = BUILTIN_AGENTS.find((a) => a.id === agent) ?? BUILTIN_AGENTS[0]
+  return <AgentLogo id={spec.id} name={spec.name} tint={spec.tint} size={14} title={`${spec.name} session`} />
 }
 
 // The one crisp glyph distinguishing user folders from auto project groups.
@@ -365,12 +375,16 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
         // can actually see.
         style={{ opacity: isDragging ? 0.4 : isHidden ? 0.45 : 1, boxShadow: `inset 3px 0 0 ${projectColor(s.project_path)}`, background: isActive ? 'var(--dd-tint-active)' : 'transparent' }}
         onClick={dragSafe(() => onResume(s))}
-        onPointerDown={(e) => beginPress(e, { kind: 'session', sid: s.session_id, label: sessionLabel(s), fromFolder: s.folder_id })}
-        onContextMenu={(e) => { e.preventDefault(); if (dragRef.current) return; setMenu({ x: e.clientX, y: e.clientY, s, view: 'main' }) }}
+        // folder drag is index-backed too — codex rows click, never drag
+        onPointerDown={(e) => { if (s.agent === 'claude') beginPress(e, { kind: 'session', sid: s.session_id, label: sessionLabel(s), fromFolder: s.folder_id }) }}
+        // the menu's actions (star/rename/hide/folders/delete/takeover) are all
+        // index-backed — claude-only until codex sessions get store rows
+        onContextMenu={(e) => { e.preventDefault(); if (dragRef.current || s.agent !== 'claude') return; setMenu({ x: e.clientX, y: e.clientY, s, view: 'main' }) }}
         title={`${s.attention ? `⚠ ${s.attention}\n` : ''}${s.title}${renamed}${s.starred && inFolder ? `\nin folder “${inFolder}”` : ''}\n${s.session_id}\n(right-click for options · drag into a folder)`}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
           <LiveIndicator status={s.live_status} />
+          <AgentMark agent={s.agent} />
           {/* age dims a row, but state overrules age: a session blocked on you
               reads at full strength even if it has been waiting a month — the
               reason it is on screen has nothing to do with when it last ran */}
@@ -379,17 +393,20 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
           </span>
           {/* hover-only: read without resuming (a plain click SPAWNS claude for
               ended sessions — this is the safe browse path). span, not button:
-              a button can't nest inside the row button. */}
-          <span
-            className="dd-rowbtn"
-            role="button"
-            title={`Read transcript (read-only) — never resumes\n${transcriptChord} toggles it for the active session`}
-            onClick={(e) => { e.stopPropagation(); dragSafe(() => onTranscript(s))() }}
-            onPointerDown={(e) => e.stopPropagation()}
-            style={{ flexShrink: 0, color: 'var(--dd-text2)', fontSize: 12, lineHeight: 1, padding: '0 2px' }}
-          >
-            ≣
-          </span>
+              a button can't nest inside the row button. Claude-only: codex
+              rollouts aren't parsed for reading yet. */}
+          {s.agent === 'claude' && (
+            <span
+              className="dd-rowbtn"
+              role="button"
+              title={`Read transcript (read-only) — never resumes\n${transcriptChord} toggles it for the active session`}
+              onClick={(e) => { e.stopPropagation(); dragSafe(() => onTranscript(s))() }}
+              onPointerDown={(e) => e.stopPropagation()}
+              style={{ flexShrink: 0, color: 'var(--dd-text2)', fontSize: 12, lineHeight: 1, padding: '0 2px' }}
+            >
+              ≣
+            </span>
+          )}
           <span style={{ flexShrink: 0, marginLeft: 2, color: 'var(--dd-dim)' }}>{relAge(s.last_message_at)}</span>
         </div>
         {sub && (
@@ -636,7 +653,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
               </span>
               <span style={{ color: 'var(--dd-dim)' }}>{g.sessions.length}</span>
               {isClosed && <LiveIndicator status={groupStatus(g.sessions)} />}
-              <button className={cls.btn} title="New claude session here" onClick={() => onNewSession(g.path)}>＋</button>
+              <button className={cls.btn} title="New session here" onClick={() => onNewSession(g.path)}>＋</button>
             </div>
             {!isClosed && shown.map((s) => sessionRow(s, false))}
             {!isClosed && (tail > 0 || expanded.has(g.path)) && (

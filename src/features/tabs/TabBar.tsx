@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { SessionView, Tab } from '@/lib/types'
 import { baseName, clip, projectColor, sessionLabel } from '@/lib/types'
+import AgentLogo from '@/components/AgentLogo'
 import { useChord } from '@/lib/keymap'
 import { cx } from '@/components/ui'
 import s from './TabBar.module.css'
@@ -12,6 +13,11 @@ type Props = {
   stagedIds: number[] // tabs currently visible on stage (split panes); ⊇ active
   shellDirs: Record<number, string> // live cwd per shell tab id
   unread: Record<number, number> // unseen artifact count per tab id
+  // agent-tab identity: display name + tint per profile id (lib/agents.ts)
+  agentsById: Record<string, { tint: string; name: string }>
+  // active tab's agent tint, or null: washes the strip so the window reads as
+  // that agent's at a glance (the "window tint" toggle lives in Settings)
+  windowTint: string | null
   // drag-to-split / drag-to-reorder (App owns the pointer drag; chips only arm it)
   draggedId: number | null
   insertMark: { beforeId: number | null } | null // reorder slot in the dragged tab's lane
@@ -47,30 +53,36 @@ function chipTint(
   isActive: boolean,
   staged: boolean,
   accent: string | undefined,
-  proj: string | null | undefined
+  proj: string | null | undefined,
+  agTint?: string
 ): React.CSSProperties {
   // tint the chip in its PROJECT's color: a faint wash when inactive, stronger
   // when active; the solid strip stays at left. Kept even though sidebar rows
   // dropped their wash — a handful of chips is not a list you scan, so the
-  // heterogeneity that made the wash costly there doesn't arise.
+  // heterogeneity that made the wash costly there doesn't arise. Agent tabs
+  // have no project (nothing indexes them) — their BRAND tint plays the same
+  // role at the same strengths.
   const background = t.sessionId
     ? projectColor(proj, isActive ? 0.3 : staged ? 0.18 : 0.1)
-    : isActive
-      ? 'var(--dd-tint-active)'
-      : staged
-        ? 'var(--dd-tint)'
-        : 'transparent'
+    : agTint
+      ? `color-mix(in srgb, ${agTint} ${isActive ? 24 : staged ? 14 : 8}%, transparent)`
+      : isActive
+        ? 'var(--dd-tint-active)'
+        : staged
+          ? 'var(--dd-tint)'
+          : 'transparent'
   // "on stage" mark: a split can show several tabs at once — every visible one
   // wears it; the focused one also gets the strong wash.
   const stageMark = staged
-    ? `inset 0 -2px 0 ${t.sessionId ? projectColor(proj) : 'var(--dd-accent-muted)'}`
+    ? `inset 0 -2px 0 ${t.sessionId ? projectColor(proj) : agTint ?? 'var(--dd-accent-muted)'}`
     : null
   const accentMark = accent ? `inset 3px 0 0 ${accent}` : null
   const shadow = [accentMark, stageMark].filter(Boolean).join(', ')
   return { background, boxShadow: shadow || undefined }
 }
 
-export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs, unread, draggedId, insertMark, onChipPress, onChipDouble, onChipMenu, onSelect, onClose, onNewShell, onHome }: Props) {
+
+export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs, unread, agentsById, windowTint, draggedId, insertMark, onChipPress, onChipDouble, onChipMenu, onSelect, onClose, onNewShell, onHome }: Props) {
   const homeChord = useChord('home.show')
   const shellChord = useChord('shell.new')
   const sessionTabs = tabs.filter((t) => !t.terminal)
@@ -100,6 +112,10 @@ export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs,
   const chip = (t: Tab, label: string, accent?: string, tip?: string, attention?: boolean, proj?: string | null) => {
     const staged = stagedIds.includes(t.id)
     const num = chipNum(t.id)
+    // every session-lane tab declares its agent type: explicit agent tabs by
+    // their profile id, claude tabs (agent unset) by the claude mark
+    const agId = t.agent ?? (!t.terminal && t.sessionId ? 'claude' : undefined)
+    const ag = agId ? agentsById[agId] : undefined
     return (
       <div
         key={t.id}
@@ -116,7 +132,7 @@ export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs,
           t.exited && s.exited,
           t.id === draggedId && s.dragging
         )}
-        style={chipTint(t, t.id === activeId, staged, accent, proj)}
+        style={chipTint(t, t.id === activeId, staged, accent, proj, ag?.tint)}
       >
         {num && (
           <span title={`⌘${num}`} className={s.ordinal}>{num}</span>
@@ -124,6 +140,7 @@ export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs,
         {attention && (
           <span className={cx(s.attn, 'dd-attn')} title="waiting for your input" />
         )}
+        {agId && ag && <AgentLogo id={agId} name={ag.name} tint={ag.tint} size={16} />}
         {/* a transcript tab is a READER, not a dead terminal: ≣ prefix instead
             of the (misleading) ·ended suffix */}
         <span className={cx(s.label, t.preview && s.preview)}>
@@ -161,8 +178,20 @@ export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs,
     )
   }
 
+  // The window tint: a hairline of the active agent's brand across the strip's
+  // top edge plus a faint wash fading downward. backgroundImage (not the
+  // background shorthand) so the bar's own base coat from the CSS module
+  // stays underneath — strictly additive: null (a claude/shell tab active, or
+  // the toggle off) renders exactly today's bar.
+  const barTint: React.CSSProperties | undefined = windowTint
+    ? {
+        boxShadow: `inset 0 2px 0 color-mix(in srgb, ${windowTint} 55%, transparent)`,
+        backgroundImage: `linear-gradient(color-mix(in srgb, ${windowTint} 7%, transparent), transparent 70%)`,
+      }
+    : undefined
+
   return (
-    <div data-tabbar="1" className={s.bar}>
+    <div data-tabbar="1" className={s.bar} style={barTint}>
       {sessionTabs.length > 0 && (
         <div data-lane="s" className={s.lane}>
           <span className={s.laneLabel}>SESSIONS</span>

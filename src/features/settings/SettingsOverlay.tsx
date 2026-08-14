@@ -1,5 +1,9 @@
-import { useEffect, useReducer, useState } from 'react'
+import { useEffect, useReducer, useRef, useState } from 'react'
+import { invoke } from '@tauri-apps/api/core'
 import { useSetting } from '@/lib/settings'
+import { AGENTS_EVENT, BUILTIN_AGENTS } from '@/lib/agents'
+import AgentLogo from '@/components/AgentLogo'
+import type { AgentsConfig } from '@/lib/agents'
 import { THEMES } from '@/lib/theme'
 import {
   ACTIONS, KEYMAP_EVENT, actionLabel, chordFor, displayChord, findConflict,
@@ -11,7 +15,7 @@ import type { ActionId, Category } from '@/lib/keymap'
 // fixed inset-0, z 85, below the takeover dialog's 100 and quit guard's 110).
 // Sections rail on the left.
 
-type Section = 'shortcuts' | 'general' | 'appearance'
+type Section = 'shortcuts' | 'general' | 'agents' | 'appearance'
 
 const S = {
   wrap: { position: 'fixed', inset: 0, zIndex: 85, background: 'var(--dd-bg0)', display: 'flex', flexDirection: 'column', transform: 'translateZ(0)', outline: 'none', fontFamily: 'system-ui' } as React.CSSProperties,
@@ -61,7 +65,7 @@ function GeneralPanel() {
       <div style={S.row}>
         <div style={S.rowText}>
           <div style={S.rowLabel}>Default parent folder</div>
-          <div style={S.rowDesc}>Where bare names in the “New claude session” dialog ({newChord}) land: “newthing” becomes {parent.replace(/\/+$/, '')}/newthing.</div>
+          <div style={S.rowDesc}>Where bare names in the “New session” dialog ({newChord}) land: “newthing” becomes {parent.replace(/\/+$/, '')}/newthing.</div>
         </div>
         <input value={parent} onChange={(e) => setParent(e.target.value)} spellCheck={false}
           style={{ background: 'var(--dd-btn)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', color: 'var(--dd-text)', fontSize: 12, fontFamily: 'ui-monospace, monospace', padding: '4px 8px', width: 200 }} />
@@ -72,6 +76,143 @@ function GeneralPanel() {
           <div style={S.rowDesc}>Ask before ⌘W or ✕ closes a tab with a running claude session.</div>
         </div>
         <Toggle on={guard !== '0'} onChange={(v) => setGuard(v ? '1' : '0')} />
+      </div>
+    </div>
+  )
+}
+
+// Settings → Agents: strictly OPT-IN enablement (only claude out of the box —
+// upgrades change nothing), an editable startup command per agent (claude's
+// included: "claude --some-option"), and fully custom commands. Persisted in
+// the backend settings.json (never any vendor's config); AGENTS_EVENT tells
+// App's copy to refetch after the debounced save.
+function AgentsPanel() {
+  const [cfg, setCfg] = useState<AgentsConfig | null>(null)
+  const [avail, setAvail] = useState<Record<string, boolean>>({})
+  const [windowTint, setWindowTint] = useSetting('windowTint', '1')
+  // Persistence is debounced: local state tracks every keystroke, but the
+  // settings.json write + AGENTS_EVENT (which makes App refetch AND re-probe
+  // with a fresh login shell) fire once typing settles. Pending edits flush
+  // on unmount so closing Settings mid-word never loses the edit.
+  const pendingRef = useRef<AgentsConfig | null>(null)
+  const timerRef = useRef(0)
+  const persist = () => {
+    const next = pendingRef.current
+    if (!next) return
+    pendingRef.current = null
+    invoke('agents_set', { enabled: next.enabled, commands: next.commands, custom: next.custom })
+      .then(() => window.dispatchEvent(new CustomEvent(AGENTS_EVENT)))
+      .catch(() => {})
+  }
+  useEffect(() => {
+    invoke<AgentsConfig>('agents_get')
+      .then((c) => {
+        setCfg(c)
+        invoke<Record<string, boolean>>('agents_probe', {
+          commands: BUILTIN_AGENTS.filter((a) => a.id !== 'claude')
+            .map((a) => c.commands?.[a.id]?.trim() || a.command),
+        }).then(setAvail).catch(() => {})
+      })
+      .catch(() => {})
+    return () => { window.clearTimeout(timerRef.current); persist() }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  if (!cfg) return <div style={S.stub}>loading…</div>
+
+  const save = (next: AgentsConfig) => {
+    setCfg(next)
+    pendingRef.current = next
+    window.clearTimeout(timerRef.current)
+    timerRef.current = window.setTimeout(persist, 400)
+  }
+  const setCustom = (i: number, patch: Partial<AgentsConfig['custom'][number]>) =>
+    save({ ...cfg, custom: cfg.custom.map((c, j) => (j === i ? { ...c, ...patch } : c)) })
+  const enabledCount = cfg.enabled.length + cfg.custom.filter((c) => c.command.trim()).length
+
+  const mono = (id: string, name: string, tint: string) => (
+    <AgentLogo id={id} name={name} tint={tint} size={20} />
+  )
+  const input = (w: number): React.CSSProperties => ({ background: 'var(--dd-btn)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', color: 'var(--dd-text)', fontSize: 12, fontFamily: 'ui-monospace, monospace', padding: '4px 8px', width: w })
+
+  return (
+    <div>
+      <div style={{ ...S.rowDesc, padding: '4px 0 10px' }}>
+        Enable the agents you use. With one enabled, new sessions (⌘N, Home, sidebar ＋) launch it
+        directly; with more than one, every new session asks which agent to start. Claude Code keeps
+        the full integration (badges, search, resume); other agents open as plain terminal tabs for now.
+      </div>
+      <div style={S.row}>
+        <div style={S.rowText}>
+          <div style={S.rowLabel}>Window tint</div>
+          <div style={S.rowDesc}>Tint the tab strip in the active agent’s color — claude’s clay, codex’s green — so the window always reads as its agent. Shell tabs stay neutral.</div>
+        </div>
+        <Toggle on={windowTint !== '0'} onChange={(v) => setWindowTint(v ? '1' : '0')} />
+      </div>
+
+      <div style={S.catHead}>built-in agents — enable what you use, and set each one’s startup command</div>
+      {BUILTIN_AGENTS.map((a) => {
+        const on = cfg.enabled.includes(a.id)
+        const cmd = cfg.commands?.[a.id] ?? ''
+        const effective = cmd.trim() || a.command
+        const found = avail[effective]
+        // the last enabled agent can't be disabled — a new session must
+        // always have something to launch
+        const locked = on && enabledCount === 1
+        return (
+          <div key={a.id} style={S.shortcutRow}>
+            {mono(a.id, a.name, a.tint)}
+            <span style={{ color: 'var(--dd-text1)', fontSize: 12, width: 110, flex: 'none' }}>{a.name}</span>
+            <input
+              value={cmd}
+              placeholder={a.command}
+              title={`startup command — e.g. ${a.command} --some-option (empty = default)`}
+              spellCheck={false}
+              style={{ ...input(0), flex: 1, opacity: on ? 1 : 0.5 }}
+              onChange={(e) => {
+                const commands = { ...cfg.commands }
+                if (e.target.value.trim()) commands[a.id] = e.target.value
+                else delete commands[a.id]
+                save({ ...cfg, commands })
+              }}
+            />
+            {a.id !== 'claude' && (
+              <span title={found ? 'found in your login shell' : 'not found in your login shell'}
+                style={{ fontSize: 10, flex: 'none', color: found ? 'var(--dd-ok-bright)' : 'var(--dd-dim)' }}>
+                {found ? '● installed' : '○ not found'}
+              </span>
+            )}
+            <span title={locked ? 'at least one agent must stay enabled' : undefined}>
+              <Toggle on={on} onChange={(v) => {
+                if (locked) return
+                save({ ...cfg, enabled: v ? [...cfg.enabled, a.id] : cfg.enabled.filter((x) => x !== a.id) })
+              }} />
+            </span>
+          </div>
+        )
+      })}
+
+      <div style={S.catHead}>custom agents — always offered once they have a command; delete to remove</div>
+      {cfg.custom.map((c, i) => (
+        <div key={c.id} style={S.shortcutRow}>
+          {mono(c.id, c.name || c.command, c.tint || 'var(--dd-accent-muted)')}
+          <input value={c.name} placeholder="name" spellCheck={false} style={input(100)}
+            onChange={(e) => setCustom(i, { name: e.target.value })} />
+          <input value={c.command} placeholder="command — e.g. codex --profile work" spellCheck={false} style={{ ...input(0), flex: 1 }}
+            onChange={(e) => setCustom(i, { command: e.target.value })} />
+          <input type="color" value={/^#[0-9a-fA-F]{6}$/.test(c.tint) ? c.tint : '#8a63d2'} title="tint"
+            style={{ width: 26, height: 24, padding: 0, border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-sm)', background: 'none', cursor: 'pointer' }}
+            onChange={(e) => setCustom(i, { tint: e.target.value })} />
+          <button onClick={() => save({ ...cfg, custom: cfg.custom.filter((_, j) => j !== i) })}
+            title="remove" style={{ background: 'none', border: 'none', color: 'var(--dd-dim)', cursor: 'pointer', fontSize: 12 }}>✕</button>
+        </div>
+      ))}
+      <button
+        onClick={() => save({ ...cfg, custom: [...cfg.custom, { id: `c${Date.now().toString(36)}`, name: '', command: '', tint: '#8a63d2' }] })}
+        style={{ marginTop: 10, background: 'var(--dd-btn)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', color: 'var(--dd-text2)', fontSize: 12, padding: '5px 10px', cursor: 'pointer' }}
+      >＋ add custom agent</button>
+      <div style={{ ...S.rowDesc, paddingTop: 14 }}>
+        Commands run as “exec &lt;command&gt;” in your login shell — the tab ends when the agent exits.
+        Agent names belong to their vendors; Drydock isn’t affiliated with or endorsed by any of them.
       </div>
     </div>
   )
@@ -263,15 +404,16 @@ export default function SettingsOverlay({ open, onClose }: { open: boolean; onCl
       </div>
       <div style={S.body}>
         <div style={S.rail}>
-          {(['shortcuts', 'general', 'appearance'] as Section[]).map((s) => (
+          {(['shortcuts', 'general', 'agents', 'appearance'] as Section[]).map((s) => (
             <button key={s} style={S.railBtn(section === s)} onClick={() => setSection(s)}>
-              {s === 'shortcuts' ? 'Shortcuts' : s === 'general' ? 'General' : 'Appearance'}
+              {s === 'shortcuts' ? 'Shortcuts' : s === 'general' ? 'General' : s === 'agents' ? 'Agents' : 'Appearance'}
             </button>
           ))}
         </div>
         <div style={S.panel}>
           {section === 'general' && <GeneralPanel />}
           {section === 'shortcuts' && <ShortcutsPanel />}
+          {section === 'agents' && <AgentsPanel />}
           {section === 'appearance' && <AppearancePanel />}
         </div>
       </div>

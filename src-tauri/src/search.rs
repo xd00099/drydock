@@ -76,6 +76,8 @@ fn view(r: drydock_core::store::SessionRow, summary: Option<String>, name: Optio
         // nor folder membership or hue — the palette doesn't render them
         folder_id: None,
         hue: None,
+        // search runs over the store, and only claude sessions have store rows
+        agent: "claude".to_string(),
     }
 }
 

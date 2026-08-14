@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod artifacts;
+mod agents;
 mod attention;
 mod capabilities;
 mod cc_data;
@@ -28,6 +29,19 @@ use tauri::{AppHandle, Emitter, State};
 /// is reliable and naturally excludes plain shells (which pass `["-l"]`).
 fn is_claude_exec(arg: &str) -> bool {
     arg == "exec claude" || arg.starts_with("exec claude ")
+}
+
+/// Same contract for codex tabs (`exec codex`, `exec codex resume '<id>'`,
+/// and command-override forms like `exec codex --profile work`).
+fn is_codex_exec(arg: &str) -> bool {
+    arg == "exec codex" || arg.starts_with("exec codex ")
+}
+
+/// Insert flags right after `exec codex`, preserving the rest — `-c` is a
+/// global flag, so it lands before any `resume` subcommand.
+fn splice_codex_flags(cmd: &str, flags: &str) -> String {
+    let rest = &cmd["exec codex".len()..];
+    format!("exec codex {flags}{rest}")
 }
 
 /// Splice the artifact flags right after `exec claude`, preserving the rest of
@@ -132,8 +146,17 @@ fn pty_spawn(
     //  3. inject the Preview artifact tool when enabled (a per-session
     //     `--mcp-config` at Drydock's loopback server, additive — no --strict —
     //     so the user's own servers are untouched).
+    // session_id gates the splice, not just the string match: every claude tab
+    // Drydock builds pins one (--session-id / --resume), so a CUSTOM agent
+    // profile whose command merely starts with "claude" (matching
+    // is_claude_exec) still runs as the plain `exec <command>` the Agents
+    // settings page promises — no hooks, no MCP, no system-prompt nudge.
     let mut cleanup_files: Vec<std::path::PathBuf> = Vec::new();
-    if let Some(idx) = args.iter().position(|a| is_claude_exec(a)) {
+    if let Some(idx) = session_id
+        .is_some()
+        .then(|| args.iter().position(|a| is_claude_exec(a)))
+        .flatten()
+    {
         if let Some(flags) = disallowed_flags(&settings.mcp_disabled()) {
             args[idx] = splice_claude_flags(&args[idx], &flags);
         }
@@ -174,6 +197,36 @@ fn pty_spawn(
             }
         }
     }
+    // Codex tabs get turn-complete badges the same spawn-time way — never an
+    // edit to ~/.codex. `-c 'notify=[…]'` (a global, per-invocation config
+    // override) points codex's one-event notify hook at a per-tab script that
+    // forwards the payload to the loopback listener. Codex passes the payload
+    // as the FINAL ARGV ARGUMENT with the program's stdio nulled — hence a
+    // script reading "$1", not stdin. Cleaned up on exit like the hook files.
+    if let Some(idx) = args.iter().position(|a| is_codex_exec(a)) {
+        let token = artifacts.mint(id, cwd.clone().map(std::path::PathBuf::from), None);
+        if let Ok(dir) = app.path().app_data_dir() {
+            let hooks_dir = dir.join("hooks");
+            let _ = std::fs::create_dir_all(&hooks_dir);
+            let script_path = hooks_dir.join(format!("notify-{id}.sh"));
+            let script_str = script_path.to_string_lossy().to_string();
+            let script = format!(
+                "#!/bin/sh\ncurl -sS -m 3 -X POST -H 'Authorization: Bearer {token}' --data-binary \"$1\" 'http://127.0.0.1:{}/hook' >/dev/null 2>&1 || true\n",
+                artifacts.port
+            );
+            // path is spliced into shell + TOML quoting — refuse both quote kinds
+            if !script_str.contains('\'') && !script_str.contains('"') && std::fs::write(&script_path, script).is_ok() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
+                }
+                args[idx] = splice_codex_flags(&args[idx], &format!("-c 'notify=[\"{script_str}\"]'"));
+                cleanup_files.push(script_path);
+            }
+        }
+    }
+
     let release_tokens = artifacts.tokens_handle();
     let release_feedback = artifacts.feedback_handle();
     let exit_cleanup = cleanup_files.clone();
@@ -332,6 +385,76 @@ fn set_mcp_enabled(
     } else {
         settings.set_mcp_disabled(&name, !enabled).map_err(|e| e.to_string())
     }
+}
+
+/// The agents page's persisted state, one atomic read. Builtin profile
+/// definitions (names, commands, tints) live in the frontend registry
+/// (src/lib/agents.ts); the backend only stores the user's choices.
+#[derive(serde::Serialize)]
+struct AgentsConfig {
+    enabled: Vec<String>,
+    commands: std::collections::BTreeMap<String, String>,
+    custom: Vec<settings::CustomAgent>,
+}
+
+#[tauri::command]
+fn agents_get(settings: State<'_, settings::SettingsState>) -> AgentsConfig {
+    let (enabled, commands, custom) = settings.agents_config();
+    AgentsConfig { enabled, commands, custom }
+}
+
+#[tauri::command]
+fn agents_set(
+    enabled: Vec<String>,
+    commands: std::collections::BTreeMap<String, String>,
+    custom: Vec<settings::CustomAgent>,
+    settings: State<'_, settings::SettingsState>,
+) -> Result<(), String> {
+    settings.set_agents_config(enabled, commands, custom).map_err(|e| e.to_string())
+}
+
+/// Which of these commands exist in the user's login shell? One shell probe for
+/// the whole list (a login shell costs ~100ms+; per-command spawns would stack).
+/// Only the command's first token is probed, and tokens with shell metacharacters
+/// are reported available rather than spliced into the probe line — the picker
+/// erring visible beats a quoting hole. Blocking-friendly: async runtime, not
+/// the main thread (same as mcp_status).
+#[tauri::command(async)]
+fn agents_probe(commands: Vec<String>) -> std::collections::HashMap<String, bool> {
+    let safe = |t: &str| !t.is_empty() && t.chars().all(|c| c.is_ascii_alphanumeric() || "._-/".contains(c));
+    let mut out: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+    let mut probe: Vec<String> = Vec::new();
+    for cmd in &commands {
+        let tok = cmd.split_whitespace().next().unwrap_or("").to_string();
+        if safe(&tok) {
+            probe.push(tok);
+        } else {
+            out.insert(cmd.clone(), true);
+        }
+    }
+    if probe.is_empty() {
+        return out;
+    }
+    // `command -v a b c` (not a for-loop): POSIX shells AND fish parse it —
+    // $SHELL is whatever the user runs, and a probe the shell can't parse
+    // would report every agent "not found". Output lines are resolved paths
+    // (or the bare name for builtins/aliases), so match by basename.
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+    let line = format!("command -v {}", probe.join(" "));
+    let base = |s: &str| s.rsplit('/').next().unwrap_or(s).to_string();
+    let found: std::collections::HashSet<String> = std::process::Command::new(shell)
+        .args(["-l", "-c", &line])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(|s| base(s.trim())).collect())
+        .unwrap_or_default();
+    for cmd in &commands {
+        let tok = cmd.split_whitespace().next().unwrap_or("");
+        if safe(tok) {
+            out.insert(cmd.clone(), found.contains(&base(tok)));
+        }
+    }
+    out
 }
 
 /// The human queued/sent inline annotations on a rendered artifact: hand them to
@@ -530,6 +653,8 @@ fn main() {
             // Overnight-sleep display recovery: emit `system-woke` so the
             // frontend can rebuild layers + terminals (wake.rs / lib/wake.ts).
             wake::watch(app.handle().clone());
+            // codex session discovery (sidebar rows + tab pairing)
+            agents::start(app.handle());
             // Loopback MCP server for the Preview panel; pty_spawn injects a
             // per-session --mcp-config pointing at it into claude tabs. Renders
             // also persist into <data>/artifacts/<session>/ (the gallery).
@@ -605,6 +730,10 @@ fn main() {
             enricher::get_card,
             enricher::refresh_card,
             enricher::check_claude,
+            agents_get,
+            agents_set,
+            agents_probe,
+            agents::codex_latest_session,
             capabilities::list_skills,
             updates::app_version,
             updates::check_update,
@@ -620,7 +749,19 @@ fn main() {
         // window is already destroyed (nothing left to show a modal in;
         // prevent_exit would leave a windowless zombie). Window close is
         // guarded by the frontend's onCloseRequested, ⌘Q by the menu above.
-        .run(|_, _| {});
+        //
+        // RunEvent::Exit is the one funnel EVERY exit path crosses — the ✕
+        // window close (which never went through force_quit, so it used to
+        // orphan every claude/agent/shell process), force_quit itself
+        // (kill_all again is idempotent: ESRCH), and Dock → Quit. Killing
+        // here is what makes "quitting Drydock ends every session" a
+        // guarantee rather than a property of the polite paths.
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                use tauri::Manager;
+                app.state::<PtyManager>().kill_all();
+            }
+        });
 }
 
 #[cfg(test)]
@@ -679,6 +820,30 @@ mod tests {
         );
         // a name with a single quote can't be shell-quoted safely → dropped
         assert_eq!(disallowed_flags(&["ev'il".into()]), None);
+    }
+
+    #[test]
+    fn codex_exec_matcher_and_splice_cover_resume_and_override_forms() {
+        assert!(is_codex_exec("exec codex"));
+        assert!(is_codex_exec("exec codex resume 'abc'"));
+        assert!(is_codex_exec("exec codex --profile work"));
+        assert!(!is_codex_exec("exec codexx"));
+        assert!(!is_codex_exec("exec claude"));
+        // -c is a global flag: it must land BEFORE the resume subcommand
+        let out = splice_codex_flags("exec codex resume 'abc'", "-c 'notify=[\"/tmp/n.sh\"]'");
+        assert_eq!(out, "exec codex -c 'notify=[\"/tmp/n.sh\"]' resume 'abc'");
+    }
+
+    #[test]
+    fn agents_probe_never_splices_unsafe_tokens_into_the_shell_line() {
+        // every first token here carries shell metacharacters, so nothing is
+        // probed (no shell spawns — the probe list is empty) and each command
+        // reports available rather than silently vanishing from the picker
+        let out = agents_probe(vec!["foo; rm -rf x".into(), "$(evil)".into(), "a'b".into(), "".into()]);
+        assert_eq!(out.get("foo; rm -rf x"), Some(&true));
+        assert_eq!(out.get("$(evil)"), Some(&true));
+        assert_eq!(out.get("a'b"), Some(&true));
+        assert_eq!(out.get(""), Some(&true));
     }
 
     #[test]
