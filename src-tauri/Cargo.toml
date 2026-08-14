@@ -1,6 +1,6 @@
 [package]
 name = "drydock-app"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 
 [build-dependencies]
@@ -20,6 +20,13 @@ chrono = "0.4"
 libc = "0.2"
 getrandom = "0.3"
 fastembed = { version = "4", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Wake-from-sleep detection (wake.rs). Already in the graph via wry/tauri —
+# same versions, no new compile surface.
+objc2-app-kit = { version = "0.3", features = ["NSWorkspace"] }
+objc2-foundation = { version = "0.3", features = ["NSNotification", "NSString", "NSOperation", "block2"] }
+block2 = "0.6"
 
 [features]
 default = ["semantic"]

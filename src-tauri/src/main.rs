@@ -15,6 +15,7 @@ mod search;
 mod settings;
 mod takeover;
 mod updates;
+mod wake;
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
@@ -526,6 +527,9 @@ fn main() {
             // every PTY (terminal tabs) and, in the enricher, into card calls.
             let cfg = settings::Settings::load(&data);
             app.manage(PtyManager::with_env(cfg.env_pairs()));
+            // Overnight-sleep display recovery: emit `system-woke` so the
+            // frontend can rebuild layers + terminals (wake.rs / lib/wake.ts).
+            wake::watch(app.handle().clone());
             // Loopback MCP server for the Preview panel; pty_spawn injects a
             // per-session --mcp-config pointing at it into claude tabs. Renders
             // also persist into <data>/artifacts/<session>/ (the gallery).

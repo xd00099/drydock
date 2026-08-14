@@ -4,6 +4,22 @@ Each tagged release's `## vX.Y.Z` section becomes the GitHub release body and
 the in-app updater's release notes (extracted by `scripts/release-notes.py` in
 CI — a tag without its section fails the release).
 
+## v0.7.1 — 2026-08-14
+
+### The overnight display fix
+
+- **Waking from a long sleep no longer leaves the window scrambled.** After a
+  lid-close, macOS purges the GPU surfaces behind the webview; the app woke
+  compositing stale tiles, and every terminal's WebGL context came back dead —
+  the only cure was quitting and reopening. Drydock now detects the wake
+  (natively, with a clock-jump fallback) and repairs itself in place: the
+  layer tree is rebuilt and every terminal re-arms its GPU renderer, refreshes
+  its glyph atlas, and repaints. Nothing is lost — tabs, scrollback, and
+  running sessions all stay put.
+- A terminal whose WebGL context died used to fall back to the slower DOM
+  renderer *permanently* (visible as scroll jank in Claude's UI). The fallback
+  still happens, but the next wake sweep restores the GPU renderer.
+
 ## v0.7.0 — 2026-07-31
 
 ### Modern chrome

@@ -7,6 +7,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { PaneSearch } from '@/lib/types'
 import { getSearchDecorations, getXtermTheme, THEME_EVENT } from '@/lib/theme'
+import { repairers } from '@/lib/wake'
 import { wheelRows } from '@/lib/wheel'
 import '@xterm/xterm/css/xterm.css'
 
@@ -151,6 +152,9 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
   const searchRef = useRef<SearchAddon | null>(null)
+  // Re-arm a wake-killed WebGL renderer when the pane is next shown (set by
+  // the mount effect, which owns the addon; see the repair pass there).
+  const ensureWebglRef = useRef<(() => void) | null>(null)
   // latest onDidChangeResults payload (fires synchronously inside find calls
   // when decorations are on) — the native "i of n" source
   const resultsRef = useRef<{ index: number; count: number } | null>(null)
@@ -341,14 +345,43 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
     // crisp). Fall back to the DOM renderer if WebGL is unavailable or its
     // context is lost (e.g. many live terminals exceed the browser's GL contexts).
     let webgl: WebglAddon | undefined
-    try {
-      webgl = new WebglAddon()
-      webgl.onContextLoss(() => webgl?.dispose()) // dispose → xterm reverts to DOM
-      term.loadAddon(webgl)
-    } catch {
-      /* no GPU / WebGL blocked — DOM renderer stays; still fully functional */
+    const armWebgl = () => {
+      try {
+        const gl = new WebglAddon()
+        // A lost context kills the addon for good: dispose so xterm falls back
+        // to the DOM renderer and stays usable, but leave `webgl` empty so the
+        // wake sweep re-arms a fresh renderer instead of leaving this pane on
+        // the janky fallback until the app restarts.
+        gl.onContextLoss(() => {
+          gl.dispose()
+          if (webgl === gl) webgl = undefined
+        })
+        term.loadAddon(gl)
+        webgl = gl
+      } catch {
+        webgl = undefined // no GPU / WebGL blocked — DOM renderer, fully functional
+      }
     }
+    armWebgl()
     fit.fit()
+
+    // Wake-from-sleep repair (see lib/wake.ts). Overnight sleep purges GPU
+    // surfaces: the WebGL context comes back dead (→ re-arm) or merely with a
+    // stale glyph atlas (→ flush it; the re-raster defers to the next paint),
+    // and either way the canvas needs a full repaint at current geometry.
+    // Hidden panes don't re-arm here: WebKit force-loses the LRU context past
+    // 16 live ones, so re-arming a wall of background tabs at once would just
+    // churn that budget — they re-arm in the visible-again effect instead.
+    const repair = () => {
+      if (webgl) webgl.clearTextureAtlas()
+      if (host.offsetWidth === 0) return // hidden tab; re-arms + refits on show
+      if (!webgl) armWebgl()
+      fit.fit()
+      term.refresh(0, term.rows - 1)
+      if (readyRef.current) invoke('pty_resize', { id, cols: term.cols, rows: term.rows })
+    }
+    repairers.add(repair)
+    ensureWebglRef.current = () => { if (!webgl) armWebgl() }
 
     // Dragging the window to a display with a different scale factor changes
     // devicePixelRatio WITHOUT changing this element's CSS size, so the
@@ -417,6 +450,8 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
 
     return () => {
       disposed = true
+      repairers.delete(repair)
+      ensureWebglRef.current = null
       window.removeEventListener(THEME_EVENT, onTheme)
       dprQuery?.removeEventListener('change', onDprChange)
       ro.disconnect()
@@ -433,6 +468,7 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
 
   useEffect(() => {
     if (visible && termRef.current && fitRef.current && hostRef.current?.offsetWidth) {
+      ensureWebglRef.current?.()
       fitRef.current.fit()
       if (readyRef.current) {
         invoke('pty_resize', { id, cols: termRef.current.cols, rows: termRef.current.rows })

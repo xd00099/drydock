@@ -20,6 +20,7 @@ import { useStageDrag } from './useStageDrag'
 import { serializeChord, effectiveKeymap, loadOverrides, KEYMAP_EVENT } from '@/lib/keymap'
 import type { ActionId } from '@/lib/keymap'
 import { getSetting } from '@/lib/settings'
+import { watchWake } from '@/lib/wake'
 import type { Artifact, ArtifactKind, PaneSearch, RestoreTab, ReviewPrompt, ReviewState, SessionView, Tab, TakeoverInfo } from '@/lib/types'
 import { EMPTY_REVIEW, baseName, clip, interruptsWork, projectColor, sessionLabel, uuidv4 } from '@/lib/types'
 import {
@@ -94,6 +95,9 @@ export default function App() {
   useEffect(() => {
     invoke<string | null>('check_claude').then(setClaudeVersion).catch(() => setClaudeVersion(null))
   }, [])
+  // Overnight-sleep display recovery: rebuild the layer tree + repair
+  // terminals when the machine wakes (see lib/wake.ts for the full story).
+  useEffect(() => watchWake(), [])
   const tabsRef = useRef(tabs)
   tabsRef.current = tabs
   const stageRef = useRef(stage) // for pointer-drag handlers registered mid-gesture
