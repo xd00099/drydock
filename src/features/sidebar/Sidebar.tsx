@@ -12,6 +12,7 @@ import { BUILTIN_AGENTS } from '@/lib/agents'
 import AgentLogo from '@/components/AgentLogo'
 import VersionFooter from '@/features/session/VersionFooter'
 import { useChord } from '@/lib/keymap'
+import { armWindowDrag } from '@/lib/windowDrag'
 import { STARRED_KEY, byRecency, capGroup, folderKey, groupSessions, isVisible, loadSet, triage } from './grouping'
 
 type Props = {
@@ -308,8 +309,11 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
   }
 
   if (collapsed) {
+    // window-drag handle: with the sidebar collapsed this rail is the only
+    // chrome on the window's left edge — without it a collapsed layout had
+    // almost no draggable surface at all
     return (
-      <div className={cls.rail}>
+      <div className={cls.rail} onPointerDown={armWindowDrag}>
         <button className={cls.btn} style={{ fontSize: 15 }} title={`Expand sidebar (${sidebarChord})`} onClick={() => onSetCollapsed(false)}>»</button>
       </div>
     )
@@ -375,11 +379,10 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
         // can actually see.
         style={{ opacity: isDragging ? 0.4 : isHidden ? 0.45 : 1, boxShadow: `inset 3px 0 0 ${projectColor(s.project_path)}`, background: isActive ? 'var(--dd-tint-active)' : 'transparent' }}
         onClick={dragSafe(() => onResume(s))}
-        // folder drag is index-backed too — codex rows click, never drag
-        onPointerDown={(e) => { if (s.agent === 'claude') beginPress(e, { kind: 'session', sid: s.session_id, label: sessionLabel(s), fromFolder: s.folder_id }) }}
-        // the menu's actions (star/rename/hide/folders/delete/takeover) are all
-        // index-backed — claude-only until codex sessions get store rows
-        onContextMenu={(e) => { e.preventDefault(); if (dragRef.current || s.agent !== 'claude') return; setMenu({ x: e.clientX, y: e.clientY, s, view: 'main' }) }}
+        onPointerDown={(e) => beginPress(e, { kind: 'session', sid: s.session_id, label: sessionLabel(s), fromFolder: s.folder_id })}
+        // every agent gets the menu — rename/folder/hide/delete are id-keyed
+        // and work for codex rows too; the claude-only items gate themselves
+        onContextMenu={(e) => { e.preventDefault(); if (dragRef.current) return; setMenu({ x: e.clientX, y: e.clientY, s, view: 'main' }) }}
         title={`${s.attention ? `⚠ ${s.attention}\n` : ''}${s.title}${renamed}${s.starred && inFolder ? `\nin folder “${inFolder}”` : ''}\n${s.session_id}\n(right-click for options · drag into a folder)`}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -527,7 +530,11 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
     <div style={{ display: 'flex', height: '100%' }}>
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', width, minWidth: width, background: 'var(--dd-bg0)' }}>
     <div ref={scrollerRef} className={cls.side} style={{ width: '100%', minWidth: 0, height: 'auto', flex: 1, borderRight: 'none' }}>
-      <div className={cls.bar} data-tauri-drag-region>
+      {/* the whole header is a window-drag handle (arm-on-move, so the Home
+          label and buttons still click) — the top-left corner is where a hand
+          reaches for a title bar. data-tauri-drag-region couldn't do this: it
+          matches only the exact target, and the children cover the strip. */}
+      <div className={cls.bar} onPointerDown={armWindowDrag}>
         <span
           onClick={onHome}
           title={`Home — recap log & usage (${homeChord})`}
@@ -692,13 +699,17 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
           >
             {menu.view === 'main' ? (
               <>
-                <button className={cls.menuItem} onClick={() => { onToggleStar(menu.s); setMenu(null) }}>
-                  {menu.s.starred ? 'Unstar' : 'Star'}
-                </button>
+                {/* star is a column on the claude index's sessions table —
+                    codex rows have no row there, so a star wouldn't stick */}
+                {menu.s.agent === 'claude' && (
+                  <button className={cls.menuItem} onClick={() => { onToggleStar(menu.s); setMenu(null) }}>
+                    {menu.s.starred ? 'Unstar' : 'Star'}
+                  </button>
+                )}
                 <button
                   className={cls.menuItem}
-                 
-                  title="Drydock-only name — the claude session itself is untouched"
+
+                  title="Drydock-only name — the session file itself is untouched"
                   onClick={() => { setDraft(sessionLabel(menu.s)); setNaming({ kind: 'rename-session', sid: menu.s.session_id, initial: sessionLabel(menu.s) }); setMenu(null) }}
                 >
                   Rename session…
@@ -713,10 +724,14 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
                     Clear name
                   </button>
                 )}
-                <button className={cls.menuItem} onClick={() => { onTranscript(menu.s); setMenu(null) }}>
-                  View transcript
-                </button>
-                {menu.s.live_status !== 'ended' && (
+                {/* codex rollouts aren't parsed for reading yet — same gate as
+                    the row's hover ≣ button */}
+                {menu.s.agent === 'claude' && (
+                  <button className={cls.menuItem} onClick={() => { onTranscript(menu.s); setMenu(null) }}>
+                    View transcript
+                  </button>
+                )}
+                {menu.s.agent === 'claude' && menu.s.live_status !== 'ended' && (
                   <button
                     className={cls.menuItem}
                    
@@ -832,7 +847,11 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
         <Modal z={70} width={380}>
           <ModalTitle>Delete permanently?</ModalTitle>
           <ModalBody>
-            “{clip(sessionLabel(confirmDel), 48)}” — this deletes the transcript from <code>~/.claude</code>. It will no longer be resumable in Claude Code, and this can’t be undone.
+            {confirmDel.agent === 'claude' ? (
+              <>“{clip(sessionLabel(confirmDel), 48)}” — this deletes the transcript from <code>~/.claude</code>. It will no longer be resumable in Claude Code, and this can’t be undone.</>
+            ) : (
+              <>“{clip(sessionLabel(confirmDel), 48)}” — this deletes the session file from <code>~/.codex</code>. It will no longer be resumable in Codex, and this can’t be undone.</>
+            )}
           </ModalBody>
           <ModalActions>
             <Button variant="ghost" onClick={() => setConfirmDel(null)}>Cancel</Button>

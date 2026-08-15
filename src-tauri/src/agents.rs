@@ -28,6 +28,22 @@ impl CodexState {
         self.sessions.lock().unwrap().clone()
     }
 
+    pub fn find(&self, session_id: &str) -> Option<CodexSession> {
+        self.sessions.lock().unwrap().iter().find(|s| s.session_id == session_id).cloned()
+    }
+
+    /// Drop a just-deleted session immediately — the poll thread would take up
+    /// to 5s to notice the file is gone, and the frontend refreshes right after
+    /// a delete, which must not resurrect the row.
+    pub fn forget(&self, session_id: &str) {
+        let mut cur = self.sessions.lock().unwrap();
+        if let Some(i) = cur.iter().position(|s| s.session_id == session_id) {
+            let path = cur[i].path.clone();
+            cur.remove(i);
+            self.cache.lock().unwrap().remove(&path);
+        }
+    }
+
     fn rescan(&self, dir: &std::path::Path) -> bool {
         let fresh = codex::scan_sessions(dir, &mut self.cache.lock().unwrap());
         let mut cur = self.sessions.lock().unwrap();

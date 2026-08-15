@@ -190,11 +190,15 @@ export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs,
       }
     : undefined
 
+  // data-tauri-drag-region on the bar, lanes and lane labels: with the overlay
+  // titlebar there is no native chrome, so the strip's empty space is the
+  // window's drag handle. The attribute only matches the exact event target —
+  // chips and buttons are children with their own handlers, untouched.
   return (
-    <div data-tabbar="1" className={s.bar} style={barTint}>
+    <div data-tabbar="1" data-tauri-drag-region className={s.bar} style={barTint}>
       {sessionTabs.length > 0 && (
-        <div data-lane="s" className={s.lane}>
-          <span className={s.laneLabel}>SESSIONS</span>
+        <div data-lane="s" data-tauri-drag-region className={s.lane}>
+          <span data-tauri-drag-region className={s.laneLabel}>SESSIONS</span>
           {laneChips(
             sessionTabs.map((t) => {
               const s = t.sessionId ? sessions.find((x) => x.session_id === t.sessionId) : undefined
@@ -209,8 +213,8 @@ export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs,
           <button onClick={onHome} title={`Home — pick or start a session (${homeChord})`} className={s.plus}>＋</button>
         </div>
       )}
-      <div data-lane="t" className={cx(s.lane, sessionTabs.length > 0 && s.laneDivided)}>
-        <span className={s.laneLabel}>TERMINALS</span>
+      <div data-lane="t" data-tauri-drag-region className={cx(s.lane, sessionTabs.length > 0 && s.laneDivided)}>
+        <span data-tauri-drag-region className={s.laneLabel}>TERMINALS</span>
         {laneChips(termTabs.map((t) => ({ t, el: chip(t, termNames[t.id], undefined, shellDirs[t.id] ?? 'shell') })), true)}
         <button onClick={onNewShell} title={`New shell tab (${shellChord})`} className={s.plus}>＋</button>
       </div>

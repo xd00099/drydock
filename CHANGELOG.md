@@ -4,6 +4,22 @@ Each tagged release's `## vX.Y.Z` section becomes the GitHub release body and
 the in-app updater's release notes (extracted by `scripts/release-notes.py` in
 CI — a tag without its section fails the release).
 
+## v0.8.1
+
+- **Codex sessions get the sidebar context menu.** Right-click any codex row
+  to rename it, file it into a folder (dragging works too), hide it, or delete
+  it permanently — the delete removes the session file from `~/.codex` behind
+  the same path-safety guard as claude deletes. Star, transcript view, and
+  take-over remain claude-only for now.
+- **The window is actually draggable now.** Two bugs stacked: the drag
+  permission (`core:window:allow-start-dragging`) was never granted, so every
+  drag region in the app was silently dead — and the only region that existed
+  was a few empty pixels in the sidebar header anyway. The permission is
+  granted, and the whole top edge now drags the window like a title bar
+  should: the sidebar header (the DRYDOCK corner — its Home label and buttons
+  still click; a drag starts once the pointer moves), the collapsed-sidebar
+  rail, and the tab strip's empty space.
+
 ## v0.8.0 — 2026-08-14
 
 ### Agents beyond Claude
