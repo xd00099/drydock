@@ -4,7 +4,7 @@ Each tagged release's `## vX.Y.Z` section becomes the GitHub release body and
 the in-app updater's release notes (extracted by `scripts/release-notes.py` in
 CI — a tag without its section fails the release).
 
-## v0.8.1
+## v0.8.1 — 2026-08-14
 
 - **Codex sessions get the sidebar context menu.** Right-click any codex row
   to rename it, file it into a folder (dragging works too), hide it, or delete
