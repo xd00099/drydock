@@ -4,7 +4,7 @@ Each tagged release's `## vX.Y.Z` section becomes the GitHub release body and
 the in-app updater's release notes (extracted by `scripts/release-notes.py` in
 CI — a tag without its section fails the release).
 
-## v0.8.2
+## v0.8.2 — 2026-08-17
 
 - **Agent commands can now be full shell lines.** A startup command like
   `export FOO=1 && codex` used to kill the tab instantly with "exited 0" —
