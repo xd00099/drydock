@@ -21,7 +21,7 @@ import { useStageDrag } from './useStageDrag'
 import { serializeChord, effectiveKeymap, loadOverrides, KEYMAP_EVENT } from '@/lib/keymap'
 import type { ActionId } from '@/lib/keymap'
 import { getSetting, useSetting } from '@/lib/settings'
-import { claudeCommand, enabledAgents, resolveAgents, useAgents, agentArgs } from '@/lib/agents'
+import { claudeCommand, enabledAgents, resolveAgents, useAgents, agentArgs, shellLine } from '@/lib/agents'
 import type { AgentsConfig, ResolvedAgent } from '@/lib/agents'
 import { watchWake } from '@/lib/wake'
 import type { Artifact, ArtifactKind, PaneSearch, RestoreTab, ReviewPrompt, ReviewState, SessionView, Tab, TakeoverInfo } from '@/lib/types'
@@ -280,7 +280,7 @@ export default function App() {
         title: clip(sessionLabel(s), 24),
         kind: 'pty',
         program: null,
-        args: ['-l', '-c', `exec ${cmd} resume '${s.session_id}'`],
+        args: ['-l', '-c', shellLine(`${cmd} resume '${s.session_id}'`)],
         cwd: s.project_path || null,
         sessionId: s.session_id,
         agent: 'codex',
@@ -308,7 +308,7 @@ export default function App() {
       title: clip(sessionLabel(s), 24),
       kind: 'pty',
       program: null,
-      args: ['-l', '-c', `exec ${claudeCommand(agentsRef.current)} --resume '${s.session_id}'`],
+      args: ['-l', '-c', shellLine(`${claudeCommand(agentsRef.current)} --resume '${s.session_id}'`)],
       cwd: s.project_path || null,
       sessionId: s.session_id,
       preview,
@@ -362,7 +362,7 @@ export default function App() {
       title: 'claude',
       kind: 'pty',
       program: null,
-      args: ['-l', '-c', `exec ${cmd} --session-id '${sessionId}'`],
+      args: ['-l', '-c', shellLine(`${cmd} --session-id '${sessionId}'`)],
       cwd: projectPath,
       sessionId,
     })
@@ -474,14 +474,14 @@ export default function App() {
           const id = nextTabId++
           const prof = r.kind === 'agent' && r.agent ? agentById.get(r.agent) : undefined
           if (r.kind === 'claude' && r.session_id) {
-            restored.push({ id, title: r.title || 'claude', kind: 'pty', program: null, args: ['-l', '-c', `exec ${claudeCmd} --resume '${r.session_id}'`], cwd: r.cwd, sessionId: r.session_id, exited: false })
+            restored.push({ id, title: r.title || 'claude', kind: 'pty', program: null, args: ['-l', '-c', shellLine(`${claudeCmd} --resume '${r.session_id}'`)], cwd: r.cwd, sessionId: r.session_id, exited: false })
           } else if (r.kind === 'transcript' && r.session_id) {
             restored.push({ id, title: r.title || 'session', kind: 'transcript', program: null, args: [], cwd: null, sessionId: r.session_id, exited: true })
           } else if (r.kind === 'shell') {
             restored.push({ id, title: r.title || 'shell', kind: 'pty', program: null, args: ['-l'], cwd: r.cwd, exited: false, terminal: true })
           } else if (prof && prof.id === 'codex' && r.session_id) {
             // a paired codex tab resumes its session, exactly like claude tabs
-            restored.push({ id, title: r.title || prof.name, kind: 'pty', program: null, args: ['-l', '-c', `exec ${prof.command} resume '${r.session_id}'`], cwd: r.cwd, sessionId: r.session_id, exited: false, agent: 'codex' })
+            restored.push({ id, title: r.title || prof.name, kind: 'pty', program: null, args: ['-l', '-c', shellLine(`${prof.command} resume '${r.session_id}'`)], cwd: r.cwd, sessionId: r.session_id, exited: false, agent: 'codex' })
           } else if (prof) {
             // launch-tier agents relaunch fresh: their own session store
             // (e.g. `/resume` in-tool) is one keystroke away inside the tab

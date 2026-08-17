@@ -74,11 +74,12 @@ fn host_app(pid: u32) -> Option<String> {
     None
 }
 
-/// Is `pid` (or any ancestor) a process Drydock itself spawned? Our own tab
-/// children exec claude directly, so a claude tab's pid IS in `own` — but a
-/// claude typed into a Drydock SHELL tab is a grandchild of the shell, so the
-/// direct-membership test misses it and takeover would signal a process
-/// living in our own window. Walk up and refuse if we own any ancestor.
+/// Is `pid` (or any ancestor) a process Drydock itself spawned? A simple-
+/// command claude tab execs claude directly, so its pid IS in `own` — but a
+/// claude typed into a Drydock SHELL tab, or launched via a compound startup
+/// command (which keeps a wrapper shell), is a grand-child, so the direct-
+/// membership test misses it and takeover would signal a process living in
+/// our own window. Walk up and refuse if we own any ancestor.
 fn owned_by_drydock(pid: u32, own: &[u32]) -> bool {
     let mut cur = pid;
     for _ in 0..15 {

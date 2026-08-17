@@ -10,9 +10,10 @@ import { invoke } from '@tauri-apps/api/core'
 export type AgentSpec = {
   id: string
   name: string
-  /** Shell line launched as `exec <command>` via `$SHELL -l -c` — the same
-   *  lifecycle as claude tabs: the process replaces the shell, so the tab
-   *  ends when the agent exits. Needs env? Prefix with `env FOO=1 …`. */
+  /** Shell line launched via `$SHELL -l -c` (see shellLine) — the tab ends
+   *  when the command exits. Needs env? `env FOO=1 codex`, `FOO=1 codex` and
+   *  `export FOO=1 && codex` all work. In a compound command keep the agent
+   *  LAST: resume/session ids are appended to the end of the line. */
   command: string
   /** Brand-adjacent accent for the monogram + window tint. Deliberately NOT a
    *  vendor logo: names/logos carry trademark weight, two letters don't. */
@@ -65,10 +66,24 @@ export function monogram(a: { id: string; name: string }): string {
   return (alnum.slice(0, 2) || '?').toUpperCase()
 }
 
+/** The `-c` line for a spawn. Simple commands are exec'd so the agent
+ *  replaces the shell; a compound line (`export FOO=1 && codex`, pipes,
+ *  subshells) must NOT be — zsh treats `exec export …` as "run the builtin,
+ *  then exit the shell", so the tab dies instantly with exit 0 before the
+ *  agent ever starts. Un-exec'd, the -c shell exits when the line finishes:
+ *  same tab lifecycle, just a wrapper shell around the agent. */
+export function shellLine(command: string): string {
+  // metachars OR a leading VAR=value assignment: `exec FOO=1 codex` makes the
+  // shell exec the assignment word itself (exit 127) — same dead tab
+  return /[;&|()`\n]/.test(command) || /^\s*[A-Za-z_][A-Za-z0-9_]*=/.test(command)
+    ? command
+    : `exec ${command}`
+}
+
 /** PTY args for an agent tab — the exact shape claude tabs use, minus the
- *  claude-only splices (the backend only decorates `exec claude …`). */
+ *  claude-only splices. */
 export function agentArgs(command: string): string[] {
-  return ['-l', '-c', `exec ${command}`]
+  return ['-l', '-c', shellLine(command)]
 }
 
 /** Merge builtins + user config + availability probe. Enablement is the

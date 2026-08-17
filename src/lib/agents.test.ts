@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  BUILTIN_AGENTS, agentArgs, claudeCommand, enabledAgents, monogram, resolveAgents,
+  BUILTIN_AGENTS, agentArgs, claudeCommand, enabledAgents, monogram, resolveAgents, shellLine,
 } from './agents'
 import type { AgentsConfig } from './agents'
 
@@ -74,6 +74,23 @@ describe('claudeCommand / agentArgs / monogram', () => {
 
   it('builds the exact login-shell shape claude tabs use', () => {
     expect(agentArgs('codex --profile work')).toEqual(['-l', '-c', 'exec codex --profile work'])
+  })
+
+  it('shellLine execs simple commands but never compound ones', () => {
+    expect(shellLine('codex --profile work')).toBe('exec codex --profile work')
+    // `exec export …` makes zsh run the builtin and exit 0 before the agent
+    // starts — compound lines must run un-exec'd
+    expect(shellLine("export FOO=1 && codex")).toBe("export FOO=1 && codex")
+    expect(shellLine('cd /x; codex')).toBe('cd /x; codex')
+    expect(shellLine('codex 2>&1 | tee log')).toBe('codex 2>&1 | tee log')
+    expect(shellLine('(codex)')).toBe('(codex)')
+    // env-prefix stays exec'd: env is an external command, exec handles it
+    expect(shellLine('env FOO=1 codex')).toBe('exec env FOO=1 codex')
+    // a BARE assignment prefix must not be exec'd either — `exec FOO=1 codex`
+    // makes the shell exec the assignment word itself (exit 127)
+    expect(shellLine('FOO=1 codex')).toBe('FOO=1 codex')
+    expect(shellLine('API_KEY=x claude --resume')).toBe('API_KEY=x claude --resume')
+    expect(agentArgs('export FOO=1 && codex')).toEqual(['-l', '-c', 'export FOO=1 && codex'])
   })
 
   it('monograms: builtins fixed, customs from the name, junk degrades to ?', () => {

@@ -24,46 +24,129 @@ use files::unique_path;
 use pty::PtyManager;
 use tauri::{AppHandle, Emitter, State};
 
-/// True for the shell commands Drydock builds to launch claude (`exec claude`
-/// and `exec claude --resume '<id>'`). Drydock owns these strings, so the match
-/// is reliable and naturally excludes plain shells (which pass `["-l"]`).
+/// Where the agent's command word ENDS inside a Drydock-built shell line, or
+/// None if the line doesn't invoke that agent. Simple commands arrive as
+/// `exec <command>`; compound overrides (env setup like `export FOO=1 &&
+/// codex`) arrive bare, because `exec` on a compound line makes the shell run
+/// the first builtin and exit (frontend shellLine). The word only counts in
+/// COMMAND position — line start, or after `exec`/`env`/assignments/flags, or
+/// after a `&&`/`||`/`;` — so `echo exec claude` and env VALUES containing the
+/// name never match. Basename comparison lets `/opt/bin/codex` decorate too.
+/// Naturally excludes plain shells (their args are just `-l`, a flag).
+///
+/// The tokenizer is QUOTE-AWARE at the top level: a quoted span glues into
+/// one token, so `--prompt 'run x && codex'` is a single opaque token — never
+/// an operator, never the agent word, and `FOO='a b'` stays one assignment.
+/// A quoted token never matches (splicing near quotes risks re-pairing them),
+/// and unbalanced quotes refuse the whole line. Known accepted edge: a flag's
+/// separate VALUE in prefix position (`env -u codex mytool`) reads as the
+/// command word — flag arity is unknowable here, and agent overrides don't
+/// realistically take that shape.
+fn find_agent_word(line: &str, word: &str) -> Option<usize> {
+    // (start, end, contained a quote)
+    let mut toks: Vec<(usize, usize, bool)> = Vec::new();
+    {
+        let mut start: Option<usize> = None;
+        let mut quoted = false;
+        let mut in_q: Option<char> = None;
+        let mut end_pos = 0;
+        for (i, c) in line.char_indices() {
+            end_pos = i + c.len_utf8();
+            if let Some(q) = in_q {
+                if c == q {
+                    in_q = None;
+                }
+                continue; // inside quotes: everything is token body
+            }
+            if c == '\'' || c == '"' {
+                in_q = Some(c);
+                quoted = true;
+                if start.is_none() {
+                    start = Some(i);
+                }
+                continue;
+            }
+            if c.is_whitespace() {
+                if let Some(s) = start.take() {
+                    toks.push((s, i, quoted));
+                    quoted = false;
+                }
+            } else if start.is_none() {
+                start = Some(i);
+            }
+        }
+        if in_q.is_some() {
+            return None; // unbalanced quotes — refuse to reason about it
+        }
+        if let Some(s) = start {
+            toks.push((s, end_pos, quoted));
+        }
+    }
+    let mut expect_cmd = true;
+    for (s, e, quoted) in toks {
+        let tok = &line[s..e];
+        if expect_cmd {
+            // still in the command's prefix, not the command itself
+            if tok == "exec" || tok == "env" || tok.contains('=') || tok.starts_with('-') {
+                continue;
+            }
+            let clean = tok.trim_end_matches(';');
+            let base = clean.rsplit('/').next().unwrap_or(clean);
+            // a trailing `;` (tok != clean) would garble a splice — skip it;
+            // the launch still works, only the decoration is declined
+            if !quoted && base == word && clean == tok {
+                return Some(e);
+            }
+            expect_cmd = tok.ends_with(';') && !quoted;
+        } else if !quoted && (tok == "&&" || tok == "||" || tok == ";" || tok.ends_with(';')) {
+            expect_cmd = true;
+        }
+    }
+    None
+}
+
+/// True for the shell lines Drydock builds to launch claude — `exec claude`,
+/// `exec claude --resume '<id>'`, and compound overrides like
+/// `export FOO=1 && claude`.
 fn is_claude_exec(arg: &str) -> bool {
-    arg == "exec claude" || arg.starts_with("exec claude ")
+    find_agent_word(arg, "claude").is_some()
 }
 
 /// Same contract for codex tabs (`exec codex`, `exec codex resume '<id>'`,
-/// and command-override forms like `exec codex --profile work`).
+/// override forms like `exec codex --profile work`, and compound overrides).
 fn is_codex_exec(arg: &str) -> bool {
-    arg == "exec codex" || arg.starts_with("exec codex ")
+    find_agent_word(arg, "codex").is_some()
 }
 
-/// Insert flags right after `exec codex`, preserving the rest — `-c` is a
+/// Insert flags right after the codex word, preserving the rest — `-c` is a
 /// global flag, so it lands before any `resume` subcommand.
 fn splice_codex_flags(cmd: &str, flags: &str) -> String {
-    let rest = &cmd["exec codex".len()..];
-    format!("exec codex {flags}{rest}")
+    let Some(end) = find_agent_word(cmd, "codex") else { return cmd.to_string() };
+    format!("{} {}{}", &cmd[..end], flags, &cmd[end..])
 }
 
-/// Splice the artifact flags right after `exec claude`, preserving the rest of
-/// the command (e.g. ` --resume '<id>'`). `cfg_path` is single-quoted, so the
-/// caller must ensure it has no single quote. NUDGE is single-quote-safe by
-/// construction (asserted in artifacts.rs tests).
+/// Splice the artifact flags right after the claude word, preserving the rest
+/// of the command (e.g. ` --resume '<id>'`). `cfg_path` is single-quoted, so
+/// the caller must ensure it has no single quote. NUDGE is single-quote-safe
+/// by construction (asserted in artifacts.rs tests).
 fn inject_artifact_flags(cmd: &str, cfg_path: &str) -> String {
-    let rest = &cmd["exec claude".len()..];
+    let Some(end) = find_agent_word(cmd, "claude") else { return cmd.to_string() };
     format!(
-        "exec claude --mcp-config '{cfg}' --allowedTools {tool} {await_tool} --append-system-prompt '{nudge}'{rest}",
+        "{head} --mcp-config '{cfg}' --allowedTools {tool} {await_tool} --append-system-prompt '{nudge}'{rest}",
+        head = &cmd[..end],
         cfg = cfg_path,
         tool = artifacts::TOOL_ID,
         await_tool = artifacts::AWAIT_TOOL_ID,
         nudge = artifacts::NUDGE,
+        rest = &cmd[end..],
     )
 }
 
-/// Insert an arbitrary flag string right after `exec claude`, preserving the
+/// Insert an arbitrary flag string right after the claude word, preserving the
 /// rest. Used to splice the MCP deny-list ahead of any `--resume`/`--session-id`.
 fn splice_claude_flags(cmd: &str, flags: &str) -> String {
-    let rest = &cmd["exec claude".len()..];
-    format!("exec claude {flags}{rest}")
+    let Some(end) = find_agent_word(cmd, "claude") else { return cmd.to_string() };
+    format!("{} {}{}", &cmd[..end], flags, &cmd[end..])
 }
 
 /// The per-session `--settings` JSON registering the hooks that forward their
@@ -798,6 +881,50 @@ mod tests {
         assert!(!is_claude_exec("-l"));
         assert!(!is_claude_exec("exec claudette"));
         assert!(!is_claude_exec("echo exec claude"));
+        // compound and env-prefixed override forms (spawned WITHOUT exec —
+        // see shellLine in lib/agents.ts) match too
+        assert!(is_claude_exec("export FOO=1 && claude --resume 'sid'"));
+        assert!(is_claude_exec("env FOO=1 claude"));
+        assert!(is_claude_exec("/opt/homebrew/bin/claude --session-id 'sid'"));
+        // the name inside an env VALUE is not an invocation
+        assert!(!is_claude_exec("export BIN=/x/claude && codex"));
+    }
+
+    #[test]
+    fn find_agent_word_only_matches_command_position() {
+        // after ; (attached or spaced) the next word is a command again
+        assert!(find_agent_word("cd /x; codex", "codex").is_some());
+        assert!(find_agent_word("cd /x ; codex", "codex").is_some());
+        // a trailing ; on the agent word itself is refused (splice would garble)
+        assert!(find_agent_word("codex; echo done", "codex").is_none());
+        // an argument is not an invocation
+        assert!(find_agent_word("man codex", "codex").is_none());
+        // the offset lands exactly after the word — splices insert there
+        let line = "export A=1 && /usr/local/bin/codex resume 'x'";
+        let end = find_agent_word(line, "codex").unwrap();
+        assert_eq!(&line[..end], "export A=1 && /usr/local/bin/codex");
+    }
+
+    #[test]
+    fn find_agent_word_never_matches_inside_quotes() {
+        // operators inside a quoted argument must not create command
+        // positions — a mid-quote splice re-pairs the user's quotes and can
+        // kill the launch outright (found by adversarial review)
+        assert!(find_agent_word("claude --append-system-prompt 'run tests && codex review' --resume 's'", "codex").is_none());
+        assert!(find_agent_word("mytool --run 'x && codex -v' --serve", "codex").is_none());
+        // ...while the REAL invocation after the quoted arg still matches,
+        // with the offset outside the quotes
+        let line = "echo 'ready; codex on deck' && codex";
+        let end = find_agent_word(line, "codex").unwrap();
+        assert_eq!(end, line.len());
+        // a quoted assignment value with spaces is ONE token: the prefix-skip
+        // holds and the agent behind it still decorates
+        assert!(find_agent_word("env FOO='a b' claude", "claude").is_some());
+        assert!(find_agent_word("FOO='a b' claude --resume 'sid'", "claude").is_some());
+        // a quoted command word declines (launch works, decoration doesn't)
+        assert!(find_agent_word("'codex' resume 'x'", "codex").is_none());
+        // unbalanced quotes refuse the whole line
+        assert!(find_agent_word("codex --flag 'oops", "codex").is_none());
     }
 
     #[test]
@@ -832,6 +959,9 @@ mod tests {
         // -c is a global flag: it must land BEFORE the resume subcommand
         let out = splice_codex_flags("exec codex resume 'abc'", "-c 'notify=[\"/tmp/n.sh\"]'");
         assert_eq!(out, "exec codex -c 'notify=[\"/tmp/n.sh\"]' resume 'abc'");
+        // compound override: the env setup stays intact, flags follow the word
+        let out = splice_codex_flags("export API=x && codex resume 'abc'", "-c 'n'");
+        assert_eq!(out, "export API=x && codex -c 'n' resume 'abc'");
     }
 
     #[test]

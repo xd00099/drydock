@@ -4,6 +4,16 @@ Each tagged release's `## vX.Y.Z` section becomes the GitHub release body and
 the in-app updater's release notes (extracted by `scripts/release-notes.py` in
 CI — a tag without its section fails the release).
 
+## v0.8.2
+
+- **Agent commands can now be full shell lines.** A startup command like
+  `export FOO=1 && codex` used to kill the tab instantly with "exited 0" —
+  the launcher wrapped every command in `exec`, and zsh runs `exec export …`
+  as "run the builtin, then exit the shell". Compound commands (env setup,
+  `&&` chains, pipes) now launch correctly, and codex turn-finished badges,
+  claude hooks, and resume all survive the env prefix — Drydock finds the
+  agent inside the line instead of requiring it to come first.
+
 ## v0.8.1 — 2026-08-14
 
 - **Codex sessions get the sidebar context menu.** Right-click any codex row

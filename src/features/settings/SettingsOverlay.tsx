@@ -165,7 +165,7 @@ function AgentsPanel() {
             <input
               value={cmd}
               placeholder={a.command}
-              title={`startup command — e.g. ${a.command} --some-option (empty = default)`}
+              title={`startup command — e.g. ${a.command} --some-option, or export FOO=1 && ${a.command} (empty = default)`}
               spellCheck={false}
               style={{ ...input(0), flex: 1, opacity: on ? 1 : 0.5 }}
               onChange={(e) => {
@@ -197,7 +197,7 @@ function AgentsPanel() {
           {mono(c.id, c.name || c.command, c.tint || 'var(--dd-accent-muted)')}
           <input value={c.name} placeholder="name" spellCheck={false} style={input(100)}
             onChange={(e) => setCustom(i, { name: e.target.value })} />
-          <input value={c.command} placeholder="command — e.g. codex --profile work" spellCheck={false} style={{ ...input(0), flex: 1 }}
+          <input value={c.command} placeholder="command — e.g. codex --profile work, or export FOO=1 && codex" spellCheck={false} style={{ ...input(0), flex: 1 }}
             onChange={(e) => setCustom(i, { command: e.target.value })} />
           <input type="color" value={/^#[0-9a-fA-F]{6}$/.test(c.tint) ? c.tint : '#8a63d2'} title="tint"
             style={{ width: 26, height: 24, padding: 0, border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-sm)', background: 'none', cursor: 'pointer' }}
@@ -211,7 +211,8 @@ function AgentsPanel() {
         style={{ marginTop: 10, background: 'var(--dd-btn)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', color: 'var(--dd-text2)', fontSize: 12, padding: '5px 10px', cursor: 'pointer' }}
       >＋ add custom agent</button>
       <div style={{ ...S.rowDesc, paddingTop: 14 }}>
-        Commands run as “exec &lt;command&gt;” in your login shell — the tab ends when the agent exits.
+        Commands run in your login shell — the tab ends when the command exits. Env setups like
+        “export FOO=1 &amp;&amp; codex” work; in a compound command, keep the agent last.
         Agent names belong to their vendors; Drydock isn’t affiliated with or endorsed by any of them.
       </div>
     </div>
