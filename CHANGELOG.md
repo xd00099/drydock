@@ -4,6 +4,20 @@ Each tagged release's `## vX.Y.Z` section becomes the GitHub release body and
 the in-app updater's release notes (extracted by `scripts/release-notes.py` in
 CI — a tag without its section fails the release).
 
+## v0.8.3
+
+- **Codex sessions now wear codex's own names.** Sidebar rows read the thread
+  list straight from codex's local database: the AI-generated thread name (or
+  your rename in codex) becomes the title, with the first prompt as the
+  subtitle. Just as important, recent codex versions (≥ ~0.147) stopped
+  keeping session files where Drydock looked — sessions moved into that
+  database and old rollouts into an archive folder — so without this, codex
+  rows would silently thin out and new "paginated" threads would never appear
+  at all. Older codex installs keep working through the original file scan,
+  and codex-internal subagent threads are filtered out. Read-only, as always:
+  Drydock never writes another tool's data — which also means DB-only threads
+  offer Hide instead of Delete.
+
 ## v0.8.2 — 2026-08-17
 
 - **Agent commands can now be full shell lines.** A startup command like

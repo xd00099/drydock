@@ -38,14 +38,29 @@ impl CodexState {
     pub fn forget(&self, session_id: &str) {
         let mut cur = self.sessions.lock().unwrap();
         if let Some(i) = cur.iter().position(|s| s.session_id == session_id) {
-            let path = cur[i].path.clone();
+            if let Some(path) = cur[i].path.clone() {
+                self.cache.lock().unwrap().remove(&path);
+            }
             cur.remove(i);
-            self.cache.lock().unwrap().remove(&path);
         }
     }
 
     fn rescan(&self, dir: &std::path::Path) -> bool {
-        let fresh = codex::scan_sessions(dir, &mut self.cache.lock().unwrap());
+        // sqlite tier first (codex ≥ ~0.147 keeps threads there and may have
+        // no rollout files at all); the rollout scan still runs so an install
+        // mid-migration keeps its file-only sessions, and remains the sole
+        // source on older codex versions.
+        let fs = codex::scan_sessions(dir, &mut self.cache.lock().unwrap());
+        let fresh = match codex::scan_threads_db(dir) {
+            Some(mut db) => {
+                let seen: std::collections::HashSet<String> =
+                    db.iter().map(|s| s.session_id.clone()).collect();
+                db.extend(fs.into_iter().filter(|s| !seen.contains(&s.session_id)));
+                db.sort_by_key(|s| std::cmp::Reverse(s.mtime_ms));
+                db
+            }
+            None => fs,
+        };
         let mut cur = self.sessions.lock().unwrap();
         if *cur == fresh {
             false

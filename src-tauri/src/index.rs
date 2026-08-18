@@ -408,7 +408,7 @@ pub fn sessions_snapshot(
             title_source: "first-prompt".to_string(),
             name: names.get(&c.session_id).cloned(),
             summary: None,
-            latest_recap: None,
+            latest_recap: c.recap,
             live_status: match attn.map(|w| w.kind) {
                 Some(crate::attention::Attn::Blocked) => "needs_input".to_string(),
                 Some(crate::attention::Attn::Done) => "done".to_string(),
@@ -589,11 +589,12 @@ fn remove_session(store: &mut Store, claude: &std::path::Path, session_id: &str)
 }
 
 /// Codex delete guard, same philosophy as the claude one: only a .jsonl under
-/// <codex_dir>/sessions whose own meta line names this exact session id. The
+/// <codex_dir>/sessions or <codex_dir>/archived_sessions (codex ≥ ~0.147
+/// moves rollouts there) whose own meta line names this exact session id. The
 /// re-parse costs one line read and makes the identity check independent of
 /// whatever produced the path.
 fn is_safe_rollout(p: &std::path::Path, codex_dir: &std::path::Path, session_id: &str) -> bool {
-    p.starts_with(codex_dir.join("sessions"))
+    (p.starts_with(codex_dir.join("sessions")) || p.starts_with(codex_dir.join("archived_sessions")))
         && p.extension().and_then(|x| x.to_str()) == Some("jsonl")
         && drydock_core::codex::parse_rollout(p, 0).is_some_and(|s| s.session_id == session_id)
 }
@@ -603,10 +604,15 @@ fn remove_codex_session(
     codex_dir: &std::path::Path,
     cs: &drydock_core::codex::CodexSession,
 ) -> Result<(), String> {
-    if !is_safe_rollout(&cs.path, codex_dir, &cs.session_id) {
-        return Err(format!("refusing to delete unexpected path: {}", cs.path.display()));
+    // a paginated thread lives only inside codex's own sqlite — Drydock never
+    // writes vendor stores, so there is no file it can safely delete
+    let Some(path) = cs.path.as_deref() else {
+        return Err("this codex session lives in codex's own database — hide it instead".into());
+    };
+    if !is_safe_rollout(path, codex_dir, &cs.session_id) {
+        return Err(format!("refusing to delete unexpected path: {}", path.display()));
     }
-    match std::fs::remove_file(&cs.path) {
+    match std::fs::remove_file(path) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // already gone
         Err(e) => return Err(format!("could not delete rollout: {e}")),
@@ -714,8 +720,13 @@ mod tests {
         let stray = tmp.path().join("other.jsonl");
         std::fs::write(&stray, "{}\n").unwrap();
         assert!(!is_safe_rollout(&stray, tmp.path(), CID));
-        let forged = drydock_core::codex::CodexSession { path: stray, ..cs.clone() };
+        let forged = drydock_core::codex::CodexSession { path: Some(stray), ..cs.clone() };
         assert!(remove_codex_session(&mut store, tmp.path(), &forged).is_err());
+        // a paginated thread (no rollout file) declines the delete outright
+        let pathless = drydock_core::codex::CodexSession { path: None, ..cs };
+        assert!(remove_codex_session(&mut store, tmp.path(), &pathless)
+            .unwrap_err()
+            .contains("hide it instead"));
     }
 
     #[test]

@@ -19,13 +19,20 @@ use std::path::{Path, PathBuf};
 pub struct CodexSession {
     pub session_id: String,
     pub cwd: String,
-    /// First real user prompt (injected AGENTS.md / IDE-context / environment
-    /// preambles skipped), clipped — the sidebar title.
+    /// Sidebar title. From the threads DB: the user's rename, else codex's
+    /// own AI-curated thread name, else the raw first prompt (clipped). From
+    /// a rollout scan: the first real user prompt (preambles skipped).
     pub title: Option<String>,
-    /// File mtime in ms — codex appends during a turn, so a recent mtime
-    /// means the session is (or just was) active.
+    /// One-line description under the title: the first user prompt, filled
+    /// only when the title is a CURATED name (otherwise it would repeat it).
+    pub recap: Option<String>,
+    /// Last-activity ms — file mtime (rollout tier) or recency/updated from
+    /// the threads DB. Recent ⇒ the session is (or just was) active.
     pub mtime_ms: i64,
-    pub path: PathBuf,
+    /// The rollout file, when one exists. Paginated threads (codex ≥ ~0.147)
+    /// live only in codex's own sqlite and have no file — Drydock never
+    /// writes vendor stores, so those can be hidden but not deleted.
+    pub path: Option<PathBuf>,
 }
 
 /// $CODEX_HOME override honored, matching the CLI's own resolution.
@@ -89,7 +96,118 @@ pub fn parse_rollout(path: &Path, mtime_ms: i64) -> Option<CodexSession> {
             break;
         }
     }
-    Some(CodexSession { session_id, cwd, title, mtime_ms, path: path.to_path_buf() })
+    Some(CodexSession { session_id, cwd, title, recap: None, mtime_ms, path: Some(path.to_path_buf()) })
+}
+
+/// Collapse whitespace and clip to the sidebar-title budget. The threads DB's
+/// `title` is the raw first prompt for un-named threads — one real row was a
+/// 36 KB dev-server log, so clipping here is a correctness matter, not taste.
+fn clean_title(s: &str) -> Option<String> {
+    let joined = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if joined.is_empty() {
+        return None;
+    }
+    Some(joined.chars().take(120).collect())
+}
+
+/// Primary discovery tier for codex ≥ ~0.147: the `threads` table in
+/// `<codex>/state_<N>.sqlite` (highest N wins). That version moved session
+/// state into sqlite — `sessions/` empties out, rollouts land in
+/// `archived_sessions/`, and new "paginated" threads have NO rollout file at
+/// all — so a filesystem scan alone goes blind. Read-only; any schema
+/// surprise (a future state_N+1) returns None and the caller falls back to
+/// the rollout scan. Subagent threads are codex's own internal helpers, not
+/// user sessions — filtered.
+pub fn scan_threads_db(codex_dir: &Path) -> Option<Vec<CodexSession>> {
+    let mut best: Option<(u32, PathBuf)> = None;
+    for f in std::fs::read_dir(codex_dir).ok()?.flatten() {
+        let name = f.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some(n) = name
+            .strip_prefix("state_")
+            .and_then(|r| r.strip_suffix(".sqlite"))
+            .and_then(|n| n.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if best.as_ref().map_or(true, |(b, _)| n > *b) {
+            best = Some((n, f.path()));
+        }
+    }
+    let (_, db) = best?;
+    let conn = rusqlite::Connection::open_with_flags(
+        &db,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .ok()?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, title, first_user_message, cwd, rollout_path,
+                    COALESCE(recency_at_ms, updated_at_ms, created_at_ms, 0),
+                    thread_source, history_mode
+             FROM threads",
+        )
+        .ok()?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<String>>(5)?,
+                r.get::<_, i64>(6)?,
+                r.get::<_, Option<String>>(7)?,
+                r.get::<_, Option<String>>(8)?,
+            ))
+        })
+        .ok()?;
+    let mut out = Vec::new();
+    for row in rows.flatten() {
+        let (id, name, title, first_msg, cwd, rollout_path, recency, source, history_mode) = row;
+        if !matches!(source.as_deref(), None | Some("") | Some("user")) {
+            continue; // subagent threads
+        }
+        let named = name.as_deref().map(str::trim).is_some_and(|n| !n.is_empty());
+        let curated_title = title.as_deref().unwrap_or("");
+        let first = first_msg.as_deref().unwrap_or("");
+        // curated = codex generated a short name distinct from the raw prompt
+        let curated = named || (!curated_title.is_empty() && curated_title != first);
+        let shown = if named { name.as_deref().unwrap_or("") } else { curated_title };
+        // Paginated threads carry a STALE rollout_path to a file codex never
+        // wrote (verified on a real 0.147 install) — their transcript lives
+        // only in codex's sqlite, so they get no path: delete declines, hide
+        // is the offer. For file-backed threads, a missing file is a husk
+        // codex can no longer replay — and exactly what "Delete permanently"
+        // just did: skipping it is what makes the delete stick.
+        let paginated = history_mode.as_deref() == Some("paginated");
+        let mut path = if paginated {
+            None
+        } else {
+            rollout_path.filter(|p| !p.is_empty()).map(PathBuf::from)
+        };
+        if !paginated {
+            match path.as_deref() {
+                Some(p) if p.exists() => {}
+                // codex's compression worker zstd-compresses rollouts older
+                // than ~7 days IN PLACE (<file>.jsonl → .jsonl.zst) — the
+                // thread is alive, there's just no plain file left to delete
+                Some(p) if p.with_extension("jsonl.zst").exists() => path = None,
+                _ => continue,
+            }
+        }
+        out.push(CodexSession {
+            session_id: id,
+            cwd: cwd.unwrap_or_default(),
+            title: clean_title(shown).or_else(|| clean_title(first)),
+            recap: if curated { clean_title(first) } else { None },
+            mtime_ms: recency,
+            path,
+        });
+    }
+    out.sort_by_key(|s| std::cmp::Reverse(s.mtime_ms));
+    Some(out)
 }
 
 /// Walk `<codex_dir>/sessions/YYYY/MM/DD/*.jsonl`. `cache` carries parses
@@ -226,5 +344,90 @@ mod tests {
         let out3 = scan_sessions(tmp.path(), &mut cache);
         assert!(out3.is_empty());
         assert!(cache.is_empty(), "deleted rollouts must not pin cache entries");
+    }
+
+    /// A state_5-shaped fixture with every row shape found in a real
+    /// ~/.codex: curated title, raw-prompt title (huge), user rename,
+    /// subagent, paginated (no rollout file), and a deleted-file husk.
+    fn write_threads_db(dir: &Path, rows: &[(&str, Option<&str>, &str, &str, Option<&str>, i64, Option<&str>, Option<&str>)]) {
+        let conn = rusqlite::Connection::open(dir.join("state_5.sqlite")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE threads (
+                id TEXT PRIMARY KEY, name TEXT, title TEXT, first_user_message TEXT,
+                cwd TEXT, rollout_path TEXT, recency_at_ms INTEGER,
+                updated_at_ms INTEGER, created_at_ms INTEGER, thread_source TEXT,
+                history_mode TEXT
+            )",
+        )
+        .unwrap();
+        for (id, name, title, first, path, recency, source, mode) in rows {
+            conn.execute(
+                "INSERT INTO threads (id, name, title, first_user_message, cwd, rollout_path, recency_at_ms, thread_source, history_mode)
+                 VALUES (?1, ?2, ?3, ?4, '/p/proj', ?5, ?6, ?7, ?8)",
+                rusqlite::params![id, name, title, first, path, recency, source, mode],
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn threads_db_supplies_titles_recaps_and_filters() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rollout = write_rollout(
+            &tmp.path().join("archived_sessions"),
+            "rollout-2026-07-17T14-28-12-aaa.jsonl",
+            &[META],
+        );
+        let rollout_str = rollout.to_str().unwrap();
+        // the DB records the plain .jsonl path; only the .zst exists on disk
+        let zst_plain = tmp.path().join("archived_sessions/rollout-2026-06-01T00-00-00-fff.jsonl");
+        std::fs::write(zst_plain.with_extension("jsonl.zst"), b"zstd").unwrap();
+        let huge = "x".repeat(40_000);
+        write_threads_db(
+            tmp.path(),
+            &[
+                // curated: codex named it, first prompt becomes the recap
+                ("aaa", None, "Add stereo duplication tool", "please duplicate my left channel", Some(rollout_str), 300, Some("user"), Some("legacy")),
+                // paginated: rollout_path is STALE (codex 0.147 never writes
+                // the file) — must SURVIVE, path None; huge raw title clipped
+                ("bbb", None, huge.as_str(), huge.as_str(), Some("/nonexistent/stale.jsonl"), 200, None, Some("paginated")),
+                // user rename wins over the curated title
+                ("ccc", Some("my audio thing"), "Old name", "first words", None, 400, Some("user"), Some("paginated")),
+                // subagent threads are codex-internal — filtered
+                ("ddd", None, "guardian dump", "x", None, 999, Some("subagent"), Some("legacy")),
+                // file-backed but the file is gone (deleted) — filtered
+                ("eee", None, "husk", "x", Some("/nonexistent/r.jsonl"), 500, None, Some("legacy")),
+                // zstd-compressed by codex's worker: .jsonl gone, .jsonl.zst
+                // present — alive, but nothing plain left to delete
+                ("fff", None, "compressed one", "old prompt", Some(zst_plain.to_str().unwrap()), 100, None, Some("legacy")),
+            ],
+        );
+        let out = scan_threads_db(tmp.path()).unwrap();
+        let ids: Vec<&str> = out.iter().map(|s| s.session_id.as_str()).collect();
+        assert_eq!(ids, vec!["ccc", "aaa", "bbb", "fff"], "recency order, subagent + husk dropped");
+        assert_eq!(out[3].path, None, "compressed rollout: alive but not deletable");
+
+        let aaa = &out[1];
+        assert_eq!(aaa.title.as_deref(), Some("Add stereo duplication tool"));
+        assert_eq!(aaa.recap.as_deref(), Some("please duplicate my left channel"));
+        assert_eq!(aaa.path.as_deref(), Some(rollout.as_path()));
+
+        let bbb = &out[2];
+        assert_eq!(bbb.title.as_ref().unwrap().chars().count(), 120, "raw-prompt titles are clipped");
+        assert_eq!(bbb.recap, None, "recap would just repeat an un-curated title");
+        assert_eq!(bbb.path, None);
+
+        let ccc = &out[0];
+        assert_eq!(ccc.title.as_deref(), Some("my audio thing"));
+        assert_eq!(ccc.recap.as_deref(), Some("first words"));
+    }
+
+    #[test]
+    fn no_state_db_means_fallback_to_the_rollout_scan() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(scan_threads_db(tmp.path()).is_none());
+        // an unreadable/garbage state file also falls back rather than erroring
+        std::fs::write(tmp.path().join("state_7.sqlite"), "not a database").unwrap();
+        assert!(scan_threads_db(tmp.path()).is_none());
     }
 }
