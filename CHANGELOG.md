@@ -4,7 +4,7 @@ Each tagged release's `## vX.Y.Z` section becomes the GitHub release body and
 the in-app updater's release notes (extracted by `scripts/release-notes.py` in
 CI — a tag without its section fails the release).
 
-## v0.8.3
+## v0.8.3 — 2026-08-17
 
 - **Codex sessions now wear codex's own names.** Sidebar rows read the thread
   list straight from codex's local database: the AI-generated thread name (or
