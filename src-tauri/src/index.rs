@@ -134,7 +134,7 @@ fn backup_path(app: &AppHandle) -> PathBuf {
 /// read, and with it every name/star/flag from before the rebuild.
 static BACKUP_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-fn write_backup(app: &AppHandle, store: &Store) {
+pub(crate) fn write_backup(app: &AppHandle, store: &Store) {
     if !BACKUP_READY.load(std::sync::atomic::Ordering::SeqCst) {
         return; // the store still has it; the first post-restore mutation persists everything
     }
@@ -587,60 +587,44 @@ fn remove_session(store: &mut Store, claude: &std::path::Path, session_id: &str)
     store.delete_session(session_id).map_err(|e| e.to_string())
 }
 
-/// Codex delete guard, same philosophy as the claude one: only a .jsonl under
-/// <codex_dir>/sessions or <codex_dir>/archived_sessions (codex ≥ ~0.147
-/// moves rollouts there) whose own meta line names this exact session id. The
-/// re-parse costs one line read and makes the identity check independent of
-/// whatever produced the path.
-fn is_safe_rollout(p: &std::path::Path, codex_dir: &std::path::Path, session_id: &str) -> bool {
-    (p.starts_with(codex_dir.join("sessions")) || p.starts_with(codex_dir.join("archived_sessions")))
-        && p.extension().and_then(|x| x.to_str()) == Some("jsonl")
-        && drydock_core::codex::parse_rollout(p, 0).is_some_and(|s| s.session_id == session_id)
-}
-
-fn remove_codex_session(
-    store: &mut Store,
-    codex_dir: &std::path::Path,
-    cs: &drydock_core::codex::CodexSession,
-) -> Result<(), String> {
-    // a paginated thread lives only inside codex's own sqlite — Drydock never
-    // writes vendor stores, so there is no file it can safely delete
-    let Some(path) = cs.path.as_deref() else {
-        return Err("this codex session lives in codex's own database — hide it instead".into());
-    };
-    if !is_safe_rollout(path, codex_dir, &cs.session_id) {
-        return Err(format!("refusing to delete unexpected path: {}", path.display()));
-    }
-    match std::fs::remove_file(path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // already gone
-        Err(e) => return Err(format!("could not delete rollout: {e}")),
-    }
-    // clears the id-keyed flag rows (name/hidden/folder) — codex has no
-    // sessions row, so the rest of delete_session is a no-op
-    store.delete_session(&cs.session_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_session_permanently(
     app: AppHandle,
     db: State<'_, AppDb>,
     codex: State<'_, crate::agents::CodexState>,
     session_id: String,
 ) -> Result<(), String> {
-    let mut store = db.0.lock().unwrap();
-    // codex rollouts live under ~/.codex — matched first, so a codex id never
-    // falls through to the claude path and silently deletes nothing
-    if let Some(cs) = codex.find(&session_id) {
+    // Serialize native deletion with discovery/indexing, so an in-flight poll
+    // cannot reinsert a snapshot captured before the delete completed.
+    let _gate = codex.index_guard();
+    let deleting_codex = if let Some(cs) = codex.find(&session_id) {
         let dir = drydock_core::codex::codex_dir().ok_or("codex dir unavailable")?;
-        remove_codex_session(&mut store, &dir, &cs)?;
+        let cfg = crate::settings::Settings::load(&app.path().app_data_dir().map_err(|e| e.to_string())?);
+        // Do not hold the IPC store lock while the bounded native command runs.
+        crate::codex_delete::delete(&dir, &cs.session_id, &cfg)?;
         codex.forget(&session_id);
+        codex.rescan(&dir); // native deletion can also remove spawned descendants
+        true
+    } else {
+        let store = db.0.lock().unwrap();
+        if store.meta_get(&format!("agent:{session_id}")).map_err(|e| e.to_string())?.as_deref() == Some("codex") {
+            return Err("This Codex session is no longer available. Refresh the session list and retry.".into());
+        }
+        false
+    };
+    let mut store = db.0.lock().unwrap();
+    if deleting_codex {
+        store.delete_session(&session_id).map_err(|e| e.to_string())?;
+        if let Some(dir) = drydock_core::codex::codex_dir() {
+            crate::agents::prune_deleted_codex(&mut store, &dir, &codex.snapshot()).map_err(|e| e.to_string())?;
+        }
     } else {
         remove_session(&mut store, &claude_dir(), &session_id)?;
     }
     // refresh the backup too, or the deleted session's star/folder membership
     // would resurrect as a dangling row on the next restore
     write_backup(&app, &store);
+    let _ = app.emit("index-updated", ());
     Ok(())
 }
 
@@ -694,38 +678,6 @@ mod tests {
         std::fs::remove_file(&file).unwrap(); // file vanished out from under us
         remove_session(&mut store, tmp.path(), SID).unwrap(); // still drops the index row
         assert!(store.get_session(SID).unwrap().is_none());
-    }
-
-    #[test]
-    fn remove_codex_session_deletes_rollout_and_flag_rows() {
-        const CID: &str = "22222222-2222-2222-2222-222222222222";
-        let tmp = tempfile::tempdir().unwrap();
-        let day = tmp.path().join("sessions/2026/08/14");
-        std::fs::create_dir_all(&day).unwrap();
-        let file = day.join(format!("rollout-2026-08-14T10-00-00-{CID}.jsonl"));
-        std::fs::write(&file, format!(
-            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{CID}\",\"cwd\":\"/Users/dev/work\"}}}}\n"
-        )).unwrap();
-        let mut store = Store::open_in_memory().unwrap();
-        store.set_session_hidden(CID, true).unwrap();
-        store.set_session_name(CID, "keep me").unwrap();
-        let cs = drydock_core::codex::parse_rollout(&file, 0).unwrap();
-        remove_codex_session(&mut store, tmp.path(), &cs).unwrap();
-        assert!(!file.exists(), "rollout file should be gone");
-        assert!(store.hidden_session_ids().unwrap().is_empty(), "flag rows should be purged");
-        assert!(store.session_names().unwrap().is_empty());
-
-        // guard refuses a path outside <codex_dir>/sessions and an id mismatch
-        let stray = tmp.path().join("other.jsonl");
-        std::fs::write(&stray, "{}\n").unwrap();
-        assert!(!is_safe_rollout(&stray, tmp.path(), CID));
-        let forged = drydock_core::codex::CodexSession { path: Some(stray), ..cs.clone() };
-        assert!(remove_codex_session(&mut store, tmp.path(), &forged).is_err());
-        // a paginated thread (no rollout file) declines the delete outright
-        let pathless = drydock_core::codex::CodexSession { path: None, ..cs };
-        assert!(remove_codex_session(&mut store, tmp.path(), &pathless)
-            .unwrap_err()
-            .contains("hide it instead"));
     }
 
     #[test]

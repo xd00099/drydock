@@ -132,6 +132,8 @@
 .menuItem:hover:not(:disabled) {
   background: var(--dd-tint-hover);
 }
+.menuItem:disabled { cursor: default; }
+.deleteError { margin: 0 16px 12px; color: var(--dd-err-bright); font-size: var(--dd-text-sm); overflow-wrap: anywhere; }
 
 .nameInput {
   flex: 1;

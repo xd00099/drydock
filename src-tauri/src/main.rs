@@ -6,6 +6,7 @@ mod attention;
 mod capabilities;
 mod cc_data;
 mod collaboration;
+mod codex_delete;
 mod embedder;
 mod enricher;
 mod files;

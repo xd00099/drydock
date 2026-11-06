@@ -557,6 +557,12 @@ impl Store {
         Ok(())
     }
 
+    pub fn agent_session_ids(&self, agent: &str) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT substr(key, 7) FROM meta WHERE key LIKE 'agent:%' AND value = ?1")?;
+        let ids = stmt.query_map(params![agent], |r| r.get(0))?.collect::<Result<Vec<_>, _>>()?;
+        Ok(ids)
+    }
+
     /// Remove a session the USER deleted: everything goes, including the
     /// user-flag tables (hidden/name/folder) — an explicit delete is the one
     /// declaration that a session's flags shouldn't ever come back.
@@ -586,6 +592,7 @@ impl Store {
         tx.execute("DELETE FROM sync_state WHERE session_id = ?1", params![session_id])?;
         tx.execute("DELETE FROM session_usage WHERE session_id = ?1", params![session_id])?;
         if purge_flags {
+            tx.execute("DELETE FROM meta WHERE key = 'agent:' || ?1 OR key = 'codex-briefing-v1:' || ?1", params![session_id])?;
             tx.execute("DELETE FROM hidden_sessions WHERE session_id = ?1", params![session_id])?;
             tx.execute("DELETE FROM session_names WHERE session_id = ?1", params![session_id])?;
             tx.execute("DELETE FROM folder_sessions WHERE session_id = ?1", params![session_id])?;

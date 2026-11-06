@@ -29,7 +29,7 @@ type Props = {
   onNewSession: (projectPath: string) => void
   onToggleStar: (s: SessionView) => void
   onHide: (sessionId: string, hide: boolean) => void
-  onDelete: (sessionId: string) => void
+  onDelete: (sessionId: string) => Promise<void>
   onRefresh: () => void // re-pull the snapshot after a folder mutation
   updateBusyCount: number // claude tabs mid-turn — gates the update restart
   onRestartForUpdate: () => Promise<void> // stash tabs + relaunch (App owns tabs)
@@ -123,6 +123,8 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
   const [menu, setMenu] = useState<{ x: number; y: number; s: SessionView; view: 'main' | 'folders' } | null>(null)
   const [folderMenu, setFolderMenu] = useState<{ x: number; y: number; f: FolderView; index: number } | null>(null)
   const [confirmDel, setConfirmDel] = useState<SessionView | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const [confirmDelFolder, setConfirmDelFolder] = useState<{ f: FolderView; count: number } | null>(null)
   const [naming, setNaming] = useState<Naming | null>(null)
   // Controlled editor text: the sidebar re-sorts on every index tick, and a
@@ -322,6 +324,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
   }
 
   const hiddenSet = new Set(hidden)
+  const hiddenCount = sessions.filter((s) => !s.hidden && hiddenSet.has(s.session_id)).length
   const folderIds = new Set(folders.map((f) => f.id))
   // Triage runs FIRST, so everything downstream sees only the sessions that
   // aren't already accounted for at the top. That keeps the invariant the
@@ -726,12 +729,12 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
       {groups.length === 0 && starred.length === 0 && folders.length === 0 && (
         <div style={{ padding: 16, color: 'var(--dd-dim)' }}>indexing ~/.claude…</div>
       )}
-      {hidden.length > 0 && (
+      {hiddenCount > 0 && (
         <button
           className={cls.btn} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 10px', marginTop: 4, color: 'var(--dd-dim)' }}
           onClick={() => setShowHidden((v) => !v)}
         >
-          {showHidden ? '▾' : '▸'} {hidden.length} hidden
+          {showHidden ? '▾' : '▸'} {hiddenCount} hidden
         </button>
       )}
 
@@ -803,7 +806,11 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
                 ) : (
                   <button className={cls.menuItem} onClick={() => { onHide(menu.s.session_id, true); setMenu(null) }}>Hide from Drydock</button>
                 )}
-                <button className={cls.menuItem} style={{ color: 'var(--dd-err-bright)' }} onClick={() => { setConfirmDel(menu.s); setMenu(null) }}>
+                <button
+                  className={cls.menuItem}
+                  style={{ color: 'var(--dd-err-bright)' }}
+                  onClick={() => { setDeleteError(null); setConfirmDel(menu.s); setMenu(null) }}
+                >
                   Delete permanently…
                 </button>
               </>
@@ -890,18 +897,31 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
       )}
 
       {confirmDel && (
-        <Modal z={70} width={380}>
+        <Modal z={70} width={380} grabFocus>
           <ModalTitle>Delete permanently?</ModalTitle>
           <ModalBody>
             {confirmDel.agent === 'claude' ? (
               <>“{clip(sessionLabel(confirmDel), 48)}” — this deletes the transcript from <code>~/.claude</code>. It will no longer be resumable in Claude Code, and this can’t be undone.</>
             ) : (
-              <>“{clip(sessionLabel(confirmDel), 48)}” — this deletes the session file from <code>~/.codex</code>. It will no longer be resumable in Codex, and this can’t be undone.</>
+              <>“{clip(sessionLabel(confirmDel), 48)}” — this permanently deletes the Codex conversation and its spawned subagent sessions. They will no longer be resumable, and this can’t be undone.</>
             )}
           </ModalBody>
+          {deleteError && <div className={cls.deleteError} role="alert">{deleteError}</div>}
           <ModalActions>
-            <Button variant="ghost" onClick={() => setConfirmDel(null)}>Cancel</Button>
-            <Button variant="danger" onClick={() => { onDelete(confirmDel.session_id); setConfirmDel(null) }}>Delete</Button>
+            <Button variant="ghost" disabled={deleting} onClick={() => { setConfirmDel(null); setDeleteError(null) }}>Cancel</Button>
+            <Button variant="danger" disabled={deleting} onClick={async () => {
+              if (deleting) return
+              setDeleting(true)
+              setDeleteError(null)
+              try {
+                await onDelete(confirmDel.session_id)
+                setConfirmDel(null)
+              } catch (error) {
+                setDeleteError(String(error))
+              } finally {
+                setDeleting(false)
+              }
+            }}>{deleting ? 'Deleting…' : 'Delete'}</Button>
           </ModalActions>
         </Modal>
       )}

@@ -4,6 +4,21 @@ Each tagged release's `## vX.Y.Z` section becomes the GitHub release body and
 the in-app updater's release notes (extracted by `scripts/release-notes.py` in
 CI — a tag without its section fails the release).
 
+## v1.1.1 — 2026-11-06
+
+- **Permanently delete Codex conversations.** Delete now uses Codex's native
+  `delete --force` command with the exact session UUID, covering database-backed
+  histories as well as rollout files. Codex removes its own conversation and
+  spawned descendants; Drydock clears the corresponding index data and flags.
+  Requires a Codex CLI that supports `codex delete --force`.
+- **Deletion failures stay visible.** The confirmation stays open while deletion
+  runs, prevents repeated submissions, and shows failures with a retry option.
+  Codex confirmations explain that spawned subagent sessions are deleted too.
+- **Accurate Hidden counts.** The sidebar counts only existing user-hidden
+  sessions. Deletions made directly through Codex are reconciled with Drydock's
+  index, including database-backed sessions and stale hide flags. Deletion and
+  indexing are serialized so an older scan cannot bring a deleted session back.
+
 ## v1.1.0 — 2026-11-06
 
 - **A sidebar with hierarchy.** Sessions now sit under collapsible workspaces

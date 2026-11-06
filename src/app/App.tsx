@@ -1182,7 +1182,7 @@ export default function App() {
         onNewSession={newSession}
         onToggleStar={(s) => invoke('set_starred', { sessionId: s.session_id, starred: !s.starred }).then(refresh)}
         onHide={(sessionId, hide) => invoke('set_hidden', { sessionId, hidden: hide }).then(refresh)}
-        onDelete={(sessionId) => invoke('delete_session_permanently', { sessionId }).then(refresh).catch((e) => console.error('delete failed:', e))}
+        onDelete={(sessionId) => invoke<void>('delete_session_permanently', { sessionId }).then(refresh)}
         onRefresh={refresh}
         updateBusyCount={updateBusyCount}
         onRestartForUpdate={restartForUpdate}

@@ -20,11 +20,15 @@ pub const ACTIVE_MS: i64 = 120_000;
 
 #[derive(Default)]
 pub struct CodexState {
+    indexing: Mutex<()>,
     sessions: Mutex<Vec<CodexSession>>,
     cache: Mutex<HashMap<PathBuf, (i64, Option<CodexSession>)>>,
 }
 
 impl CodexState {
+    pub(crate) fn index_guard(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.indexing.lock().unwrap()
+    }
     pub fn snapshot(&self) -> Vec<CodexSession> {
         self.sessions.lock().unwrap().clone()
     }
@@ -46,7 +50,7 @@ impl CodexState {
         }
     }
 
-    fn rescan(&self, dir: &std::path::Path) -> bool {
+    pub(crate) fn rescan(&self, dir: &std::path::Path) -> bool {
         // sqlite tier first (codex ≥ ~0.147 keeps threads there and may have
         // no rollout files at all); the rollout scan still runs so an install
         // mid-migration keeps its file-only sessions, and remains the sole
@@ -86,6 +90,37 @@ impl CodexState {
     }
 }
 
+/// External/native deletion also removes metadata-only sessions, which have no
+/// sync_state path. Prune only when a readable Codex DB confirms absence and
+/// neither discovery nor an existing indexed rollout can account for the id.
+pub(crate) fn prune_deleted_codex(
+    store: &mut drydock_core::store::Store,
+    dir: &std::path::Path,
+    discovered: &[CodexSession],
+) -> anyhow::Result<bool> {
+    let Some(known) = codex::thread_ids(dir) else { return Ok(false) };
+    prune_missing_codex(store, &known, discovered)
+}
+
+fn prune_missing_codex(
+    store: &mut drydock_core::store::Store,
+    known: &std::collections::HashSet<String>,
+    discovered: &[CodexSession],
+) -> anyhow::Result<bool> {
+    let mut changed = false;
+    for id in store.agent_session_ids("codex")? {
+        if known.contains(&id) || discovered.iter().any(|s| s.session_id == id) { continue; }
+        if let Some(path) = store.transcript_path(&id)? {
+            let path = std::path::Path::new(&path);
+            if path.try_exists().ok() != Some(false)
+                || path.with_extension("jsonl.zst").try_exists().ok() != Some(false) { continue; }
+        }
+        store.delete_session(&id)?;
+        changed = true;
+    }
+    Ok(changed)
+}
+
 /// Manage the state and start the poll thread. 5s cadence: the sidebar is a
 /// radar, not a terminal — sub-second freshness buys nothing here. Steady
 /// state costs a directory walk (stat only; parses are mtime-cached) and
@@ -98,6 +133,7 @@ pub fn start(app: &AppHandle) {
         let mut prev_active: Vec<String> = Vec::new();
         loop {
             let state = handle.state::<CodexState>();
+            let gate = state.index_guard();
             let changed = state.rescan(&dir);
             let now_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -109,6 +145,11 @@ pub fn start(app: &AppHandle) {
             let mut indexed = false;
             if let Some(db_path) = db_path {
                 if let Ok(mut store) = drydock_core::store::Store::open(&db_path) {
+                    match prune_deleted_codex(&mut store, &dir, &state.snapshot()) {
+                        Ok(true) => { indexed = true; crate::index::write_backup(&handle, &store); }
+                        Ok(false) => {}
+                        Err(e) => eprintln!("codex deletion cleanup: {e:#}"),
+                    }
                     // Never infer deletion from a partial discovery scan. A
                     // missing file is independently confirmed before pruning.
                     if let Ok(paths) = store.all_synced_paths() {
@@ -173,6 +214,7 @@ pub fn start(app: &AppHandle) {
                 prev_active = active;
                 let _ = handle.emit("index-updated", ());
             }
+            drop(gate);
             std::thread::sleep(std::time::Duration::from_secs(5));
         }
     });
@@ -196,4 +238,47 @@ pub fn codex_latest_session(
             s.title.as_ref().is_some_and(|t| t.contains(marker)) || s.recap.as_ref().is_some_and(|t| t.contains(marker))))
         .max_by_key(|s| s.mtime_ms)
         .map(|s| s.session_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use drydock_core::store::Store;
+    use std::collections::HashSet;
+
+    fn seed(store: &mut Store, id: &str) {
+        store.meta_set(&format!("agent:{id}"), "codex").unwrap();
+        store.apply_delta(id, &Default::default(), &[]).unwrap();
+        store.set_session_hidden(id, true).unwrap();
+        store.set_session_name(id, "my session").unwrap();
+    }
+
+    #[test]
+    fn external_deletion_cleans_metadata_only_sessions_flags_and_orphans() {
+        let mut store = Store::open_in_memory().unwrap();
+        for id in ["deleted", "survivor"] { seed(&mut store, id); }
+        store.meta_set("agent:orphan", "codex").unwrap();
+        store.set_session_hidden("orphan", true).unwrap();
+        let known = HashSet::from(["survivor".into()]);
+        assert!(prune_missing_codex(&mut store, &known, &[]).unwrap());
+        assert!(store.get_session("deleted").unwrap().is_none());
+        assert_eq!(store.hidden_session_ids().unwrap(), vec!["survivor"]);
+        assert_eq!(store.agent_session_ids("codex").unwrap(), vec!["survivor"]);
+        assert_eq!(store.session_names().unwrap(), vec![("survivor".into(), "my session".into())]);
+        assert!(!prune_missing_codex(&mut store, &known, &[]).unwrap());
+    }
+
+    #[test]
+    fn incomplete_discovery_and_missing_vendor_database_preserve_existing_sessions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        seed(&mut store, "db-only");
+        seed(&mut store, "file-only");
+        let rollout = tmp.path().join("rollout.jsonl");
+        std::fs::write(&rollout, "still here").unwrap();
+        store.set_sync_state(rollout.to_str().unwrap(), "file-only", 0, 0, None, None).unwrap();
+        assert!(!prune_missing_codex(&mut store, &HashSet::from(["db-only".into()]), &[]).unwrap());
+        assert!(!prune_deleted_codex(&mut store, tmp.path(), &[]).unwrap());
+        assert_eq!(store.hidden_session_ids().unwrap().len(), 2);
+    }
 }

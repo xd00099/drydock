@@ -44,6 +44,10 @@ const render = () => act(async () => root.render(<Sidebar {...props} />))
 const button = (label: string) => host.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!
 const rows = () => [...host.querySelectorAll<HTMLButtonElement>('.dd-sessrow')]
 const click = (element: HTMLElement) => act(async () => element.click())
+const textButton = (text: string) => [...host.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent === text)!
+const openSessionMenu = () => act(async () => {
+  rows()[0].dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 10, clientY: 10 }))
+})
 
 it('opens the current project, previews three including the selection, and shows all on demand', async () => {
   await render()
@@ -102,4 +106,52 @@ it('keeps Active, Starred and custom folders above the workspace tree without du
   expect(text.indexOf('Starred')).toBeLessThan(text.indexOf('My work'))
   expect(text.indexOf('My work')).toBeLessThan(text.indexOf('Workspaces'))
   for (const title of ['Running', 'Pinned', 'Filed']) expect(rows().filter((r) => r.title.startsWith(`${title}\n`))).toHaveLength(1)
+})
+
+it('offers permanent deletion for Codex history and explains that descendants are deleted too', async () => {
+  vi.mocked(props.onDelete).mockResolvedValueOnce()
+  await render()
+  await openSessionMenu()
+  expect(textButton('Delete permanently…').disabled).toBe(false)
+  await click(textButton('Delete permanently…'))
+  expect(host.textContent).toContain('spawned subagent sessions')
+  await click(textButton('Delete'))
+  expect(props.onDelete).toHaveBeenCalledWith('Session 1')
+  expect(props.onHide).not.toHaveBeenCalled()
+})
+
+it('counts only existing user-hidden sessions and updates after external deletion', async () => {
+  props.hidden = ['Session 1', 'Session 2', 'already-deleted']
+  await render()
+  expect(textButton('▸ 2 hidden')).toBeTruthy()
+  await click(textButton('▸ 2 hidden'))
+  expect(textButton('▾ 2 hidden')).toBeTruthy()
+  props = { ...props, sessions: props.sessions.filter((s) => s.session_id !== 'Session 1') }
+  await render()
+  expect(textButton('▾ 1 hidden')).toBeTruthy()
+  props = { ...props, sessions: props.sessions.filter((s) => s.session_id !== 'Session 2') }
+  await render()
+  expect([...host.querySelectorAll('button')].some((b) => /\d+ hidden$/.test(b.textContent ?? ''))).toBe(false)
+})
+
+it('waits for deletion, prevents repeat submits, shows failures and allows retry', async () => {
+  let reject!: (error: Error) => void
+  vi.mocked(props.onDelete).mockImplementationOnce(() => new Promise<void>((_resolve, fail) => { reject = fail }))
+  await render()
+  await openSessionMenu()
+  await click(textButton('Delete permanently…'))
+  await click(textButton('Delete'))
+  expect(textButton('Deleting…').disabled).toBe(true)
+  expect(textButton('Cancel').disabled).toBe(true)
+  await click(textButton('Deleting…'))
+  expect(props.onDelete).toHaveBeenCalledTimes(1)
+  await act(async () => reject(new Error('Could not delete rollout: permission denied')))
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain('permission denied')
+  expect(host.textContent).toContain('Delete permanently?')
+  expect(textButton('Delete').disabled).toBe(false)
+  vi.mocked(props.onDelete).mockResolvedValueOnce()
+  await click(textButton('Delete'))
+  expect(props.onDelete).toHaveBeenCalledTimes(2)
+  expect(host.textContent).not.toContain('Delete permanently?')
+  expect(host.querySelector('[role="alert"]')).toBeNull()
 })

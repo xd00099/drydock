@@ -121,15 +121,7 @@ fn clean_title(s: &str) -> Option<String> {
     Some(joined.chars().take(120).collect())
 }
 
-/// Primary discovery tier for codex ≥ ~0.147: the `threads` table in
-/// `<codex>/state_<N>.sqlite` (highest N wins). That version moved session
-/// state into sqlite — `sessions/` empties out, rollouts land in
-/// `archived_sessions/`, and new "paginated" threads have NO rollout file at
-/// all — so a filesystem scan alone goes blind. Read-only; any schema
-/// surprise (a future state_N+1) returns None and the caller falls back to
-/// the rollout scan. Subagent threads are codex's own internal helpers, not
-/// user sessions — filtered.
-pub fn scan_threads_db(codex_dir: &Path) -> Option<Vec<CodexSession>> {
+fn threads_db_path(codex_dir: &Path) -> Option<PathBuf> {
     let mut best: Option<(u32, PathBuf)> = None;
     for f in std::fs::read_dir(codex_dir).ok()?.flatten() {
         let name = f.file_name();
@@ -145,7 +137,28 @@ pub fn scan_threads_db(codex_dir: &Path) -> Option<Vec<CodexSession>> {
             best = Some((n, f.path()));
         }
     }
-    let (_, db) = best?;
+    best.map(|(_, db)| db)
+}
+
+/// A complete read of all vendor thread ids, independent of sidebar filters.
+/// None means unavailable/unsupported, never evidence of deletion.
+pub fn thread_ids(codex_dir: &Path) -> Option<std::collections::HashSet<String>> {
+    let conn = rusqlite::Connection::open_with_flags(threads_db_path(codex_dir)?, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    let mut stmt = conn.prepare("SELECT id FROM threads").ok()?;
+    let ids = stmt.query_map([], |row| row.get(0)).ok()?.collect::<Result<_, _>>().ok()?;
+    Some(ids)
+}
+
+/// Primary discovery tier for codex ≥ ~0.147: the `threads` table in
+/// `<codex>/state_<N>.sqlite` (highest N wins). That version moved session
+/// state into sqlite — `sessions/` empties out, rollouts land in
+/// `archived_sessions/`, and new "paginated" threads have NO rollout file at
+/// all — so a filesystem scan alone goes blind. Read-only; any schema
+/// surprise (a future state_N+1) returns None and the caller falls back to
+/// the rollout scan. Subagent threads are codex's own internal helpers, not
+/// user sessions — filtered.
+pub fn scan_threads_db(codex_dir: &Path) -> Option<Vec<CodexSession>> {
+    let db = threads_db_path(codex_dir)?;
     let conn = rusqlite::Connection::open_with_flags(
         &db,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -175,8 +188,8 @@ pub fn scan_threads_db(codex_dir: &Path) -> Option<Vec<CodexSession>> {
         })
         .ok()?;
     let mut out = Vec::new();
-    for row in rows.flatten() {
-        let (id, name, title, first_msg, cwd, rollout_path, recency, source, history_mode) = row;
+    for row in rows {
+        let (id, name, title, first_msg, cwd, rollout_path, recency, source, history_mode) = row.ok()?;
         if !is_user_thread_source(source.as_deref()) {
             continue; // subagent and Guardian review threads
         }
@@ -523,8 +536,23 @@ mod tests {
     fn no_state_db_means_fallback_to_the_rollout_scan() {
         let tmp = tempfile::tempdir().unwrap();
         assert!(scan_threads_db(tmp.path()).is_none());
+        assert!(thread_ids(tmp.path()).is_none());
         // an unreadable/garbage state file also falls back rather than erroring
         std::fs::write(tmp.path().join("state_7.sqlite"), "not a database").unwrap();
         assert!(scan_threads_db(tmp.path()).is_none());
+        assert!(thread_ids(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn authoritative_thread_ids_include_internal_and_pathless_threads() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_threads_db(tmp.path(), &[
+            ("user", None, "User", "prompt", None, 1, Some("user"), Some("paginated")),
+            ("child", None, "Child", "task", None, 2, Some("subagent"), Some("paginated")),
+        ]);
+        assert_eq!(thread_ids(tmp.path()).unwrap(), std::collections::HashSet::from(["user".into(), "child".into()]));
+        // A future/corrupt database is not evidence that all threads vanished.
+        std::fs::write(tmp.path().join("state_6.sqlite"), "invalid").unwrap();
+        assert!(thread_ids(tmp.path()).is_none());
     }
 }
