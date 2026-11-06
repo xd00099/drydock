@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { homeDir } from '@tauri-apps/api/path'
 import type { FolderView, SessionView } from '@/lib/types'
 import { ageTone, clampPanelWidth, clip, loadNum, projectColor, relAge, sessionAutoLabel, sessionLabel, shortPath, uuidv4 } from '@/lib/types'
 import ResizeHandle from '@/components/ui/ResizeHandle'
@@ -14,7 +15,7 @@ import AgentLogo from '@/components/AgentLogo'
 import VersionFooter from '@/features/session/VersionFooter'
 import { useChord } from '@/lib/keymap'
 import { armWindowDrag } from '@/lib/windowDrag'
-import { STARRED_KEY, byRecency, capGroup, folderKey, groupSessions, isVisible, loadSet, triage } from './grouping'
+import { STARRED_KEY, branchOpen, byRecency, capGroup, folderKey, groupSessions, groupWorkspaces, isVisible, loadSet, loadTreeChoices, projectKey, triage, workspaceKey } from './grouping'
 
 type Props = {
   onHome: () => void // show the Home view (recap log + usage) in the center
@@ -59,9 +60,9 @@ function groupStatus(list: SessionView[]): SessionView['live_status'] | null {
 // Which agent owns a session row — claude rows from the full index, codex
 // rows from the rollout scan. The mark comes from the session's own agent
 // field; unknown ids degrade to a monogram inside AgentLogo.
-const AgentMark = ({ agent }: { agent: string }) => {
+const AgentMark = ({ agent, size = 14 }: { agent: string; size?: number }) => {
   const spec = BUILTIN_AGENTS.find((a) => a.id === agent) ?? BUILTIN_AGENTS[0]
-  return <AgentLogo id={spec.id} name={spec.name} tint={spec.tint} size={14} title={`${spec.name} session`} />
+  return <AgentLogo id={spec.id} name={spec.name} tint={spec.tint} size={size} title={`${spec.name} session`} />
 }
 
 // The one crisp glyph distinguishing user folders from auto project groups.
@@ -110,10 +111,14 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
     return () => window.removeEventListener('resize', reclamp)
   }, [])
   const [closed, setClosed] = useState<Set<string>>(() => loadSet('dd.closedGroups'))
-  // project groups the user opened past the five-row cap (separate key from
+  // project groups the user opened past the three-row cap (separate key from
   // dd.closedGroups: "expanded" and "collapsed" are independent states — a
   // group can be collapsed while still remembering it was expanded)
   const [expanded, setExpanded] = useState<Set<string>>(() => loadSet('dd.expandedGroups'))
+  const [treeChoices, setTreeChoices] = useState(loadTreeChoices)
+  const [home, setHome] = useState('')
+  const revealedSession = useRef(activeSessionId)
+  useEffect(() => { void homeDir().then(setHome).catch(() => {}) }, [])
   const [showHidden, setShowHidden] = useState(false)
   const [menu, setMenu] = useState<{ x: number; y: number; s: SessionView; view: 'main' | 'folders' } | null>(null)
   const [folderMenu, setFolderMenu] = useState<{ x: number; y: number; f: FolderView; index: number } | null>(null)
@@ -218,6 +223,13 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
       return next
     })
 
+  const toggleBranch = (key: string, isOpen: boolean) =>
+    setTreeChoices((prev) => {
+      const next = { ...prev, [key]: !isOpen }
+      localStorage.setItem('dd.sidebarTree', JSON.stringify(next))
+      return next
+    })
+
   const landFlash = (sid: string) => {
     clearTimeout(flashTimer.current)
     setFlashSid(sid)
@@ -309,17 +321,6 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
     fn()
   }
 
-  if (collapsed) {
-    // window-drag handle: with the sidebar collapsed this rail is the only
-    // chrome on the window's left edge — without it a collapsed layout had
-    // almost no draggable surface at all
-    return (
-      <div className={cls.rail} onPointerDown={armWindowDrag}>
-        <button className={cls.btn} style={{ fontSize: 15 }} title={`Expand sidebar (${sidebarChord})`} onClick={() => onSetCollapsed(false)}><Icon name="right" size={14} /></button>
-      </div>
-    )
-  }
-
   const hiddenSet = new Set(hidden)
   const folderIds = new Set(folders.map((f) => f.id))
   // Triage runs FIRST, so everything downstream sees only the sessions that
@@ -338,9 +339,33 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
   }
   filed.forEach((list) => list.sort(byRecency))
   const groups = groupSessions(rest, hiddenSet, showHidden, folderIds)
+  const workspaces = groupWorkspaces(groups, home)
+  const selectedProject = sessions.find((s) => s.session_id === activeSessionId)?.project_path
+  const defaultProject = selectedProject ?? groups[0]?.path
+  const selectedWorkspace = workspaces.find((w) => w.projects.some((g) => g.path === selectedProject))?.path
+
+  // Reveal a session selected from search or another tab once. Later index
+  // updates must leave a branch the user deliberately collapsed alone.
+  useEffect(() => {
+    if (!activeSessionId || selectedWorkspace === undefined || selectedProject === undefined || revealedSession.current === activeSessionId) return
+    revealedSession.current = activeSessionId
+    setTreeChoices((prev) => {
+      const next = { ...prev, [workspaceKey(selectedWorkspace)]: true, [projectKey(selectedProject)]: true }
+      localStorage.setItem('dd.sidebarTree', JSON.stringify(next))
+      return next
+    })
+  }, [activeSessionId, selectedProject, selectedWorkspace])
+
+  if (collapsed) {
+    return (
+      <div className={cls.rail} onPointerDown={armWindowDrag}>
+        <button className={cls.btn} style={{ fontSize: 15 }} title={`Expand sidebar (${sidebarChord})`} onClick={() => onSetCollapsed(false)}><Icon name="right" size={14} /></button>
+      </div>
+    )
+  }
 
   // One session row, shared by Starred, folders and project groups.
-  const sessionRow = (s: SessionView, showProject: boolean) => {
+  const sessionRow = (s: SessionView, showProject: boolean, nested = false) => {
     const isHidden = hiddenSet.has(s.session_id)
     const isActive = s.session_id === activeSessionId // session shown in the active tab
     const isDragging = drag?.kind === 'session' && drag.sid === s.session_id
@@ -353,7 +378,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
       return (
         <div
           key={s.session_id}
-          className={cls.row} style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'default', background: 'var(--dd-tint-active)' }}
+          className={`${cls.row}${nested ? ` ${cls.treeRow}` : ''}`} style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'default', background: 'var(--dd-tint-active)' }}
         >
           <LiveIndicator status={s.live_status} />
           {nameEditor('Session name — empty clears')}
@@ -369,7 +394,8 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
     return (
       <button
         key={s.session_id}
-        className={`${cls.row} dd-sessrow${flashSid === s.session_id ? ' dd-landed' : ''}`}
+        className={`${cls.row}${nested ? ` ${cls.treeRow}` : ''} dd-sessrow${flashSid === s.session_id ? ' dd-landed' : ''}`}
+        aria-current={isActive ? 'page' : undefined}
         // marks the selected row so the hover rule keeps its stronger fill
         data-active={isActive ? '1' : undefined}
         // No per-row tint. The old 10%-alpha wash was ~100x the stripe's area
@@ -388,7 +414,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
           <LiveIndicator status={s.live_status} />
-          <AgentMark agent={s.agent} />
+          <AgentMark agent={s.agent} size={nested ? 12 : 14} />
           {/* age dims a row, but state overrules age: a session blocked on you
               reads at full strength even if it has been waiting a month — the
               reason it is on screen has nothing to do with when it last ran */}
@@ -412,7 +438,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
           )}
           <span className={cls.age}>{relAge(s.last_message_at)}</span>
         </div>
-        {sub && (
+        {sub && !nested && (
           <div className={cls.preview}>
             {sub}
           </div>
@@ -629,41 +655,74 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
         </div>
       )}
 
-      {groups.map((g) => {
-        const isClosed = closed.has(g.path)
-        const { shown, hidden: tail } = capGroup(g.sessions, expanded.has(g.path))
-        return (
-          <div key={g.path}>
-            <div className={cls.head} title={g.path}>
-              <button className={cls.chev} title={isClosed ? 'Expand project' : 'Collapse project'} onClick={() => toggleGroup(g.path)}>
-                {isClosed ? '▸' : '▾'}
-              </button>
-              <span
-                style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'pointer' }}
-                onClick={() => toggleGroup(g.path)}
-              >
-                {/* the group's own color, so a row's stripe resolves to a header
-                    two rows up rather than to a claim about its contents */}
-                <span style={{ display: 'inline-block', width: 7, height: 7, borderRadius: 2, marginRight: 6, background: projectColor(g.path), verticalAlign: 'baseline' }} />
-                {shortPath(g.path)}
-              </span>
-              <span style={{ color: 'var(--dd-dim)' }}>{g.sessions.length}</span>
-              {isClosed && <LiveIndicator status={groupStatus(g.sessions)} />}
-              <button className={cls.btn} title="New session here" onClick={() => onNewSession(g.path)}>＋</button>
-            </div>
-            {!isClosed && shown.map((s) => sessionRow(s, false))}
-            {!isClosed && (tail > 0 || expanded.has(g.path)) && (
-              <button
-                className={cls.btn} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '2px 10px 5px 26px', color: 'var(--dd-dim2)' }}
-                title={tail > 0 ? `Show all ${g.sessions.length} — or ${searchChord} to search every session` : 'Back to the five most recent'}
-                onClick={() => toggleExpanded(g.path)}
-              >
-                {tail > 0 ? `▸ ${tail} older` : '▾ show fewer'}
-              </button>
-            )}
-          </div>
-        )
-      })}
+      {workspaces.length > 0 && (
+        <section className={cls.workspaces} aria-label="Workspaces">
+          <div className={cls.sectionLabel}>Workspaces</div>
+          {workspaces.map((workspace) => {
+            const key = workspaceKey(workspace.path)
+            const isOpen = branchOpen(treeChoices, key, workspace.projects.some((g) => g.path === defaultProject))
+            return (
+              <div key={workspace.path} className={cls.workspace}>
+                <button
+                  className={cls.workspaceHead}
+                  aria-expanded={isOpen}
+                  aria-label={`${workspace.label} workspace`}
+                  title={`${workspace.path || 'Sessions without a project directory'} · ${workspace.projects.length} projects · ${workspace.count} sessions`}
+                  onClick={() => toggleBranch(key, isOpen)}
+                >
+                  <Icon name="right" size={12} className={isOpen ? cls.openChevron : cls.treeChevron} />
+                  <Icon name="folder" size={14} />
+                  <span className={cls.branchLabel}>{workspace.label}</span>
+                  <span className={cls.count}>{workspace.count}</span>
+                </button>
+                {isOpen && (
+                  <div className={cls.workspaceProjects}>
+                    {workspace.projects.map((g) => {
+                      const key = projectKey(g.path)
+                      const isOpen = branchOpen(treeChoices, key, g.path === defaultProject && !closed.has(g.path))
+                      const { shown, hidden: tail } = capGroup(g.sessions, expanded.has(g.path), 3, g.sessions.find((s) => s.session_id === activeSessionId))
+                      return (
+                        <div key={g.path} className={cls.project}>
+                          <div className={cls.projectHead}>
+                            <button
+                              className={cls.projectToggle}
+                              aria-expanded={isOpen}
+                              aria-label={`${g.label} project`}
+                              title={g.path || 'No project directory'}
+                              onClick={() => toggleBranch(key, isOpen)}
+                            >
+                              <Icon name="right" size={11} className={isOpen ? cls.openChevron : cls.treeChevron} />
+                              <span className={cls.projectDot} style={{ background: projectColor(g.path) }} />
+                              <span className={cls.branchLabel}>{g.label}</span>
+                              <span className={cls.count}>{g.sessions.length}</span>
+                              {!isOpen && <LiveIndicator status={groupStatus(g.sessions)} />}
+                            </button>
+                            {g.path && <button className={cls.newSession} title={`New session in ${g.path}`} aria-label={`New session in ${g.label}`} onClick={() => onNewSession(g.path)}><Icon name="plus" size={13} /></button>}
+                          </div>
+                          {isOpen && (
+                            <div className={cls.projectSessions}>
+                              {shown.map((s) => sessionRow(s, false, true))}
+                              {g.sessions.length > 3 && (
+                                <button
+                                  className={cls.showAll}
+                                  title={tail > 0 ? `Show all ${g.sessions.length} sessions — ${searchChord} to search` : 'Back to the three most recent'}
+                                  onClick={() => toggleExpanded(g.path)}
+                                >
+                                  {tail > 0 ? `Show all ${g.sessions.length} sessions` : 'Show fewer'}
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </section>
+      )}
       {groups.length === 0 && starred.length === 0 && folders.length === 0 && (
         <div style={{ padding: 16, color: 'var(--dd-dim)' }}>indexing ~/.claude…</div>
       )}

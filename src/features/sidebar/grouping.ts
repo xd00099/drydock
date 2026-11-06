@@ -8,6 +8,64 @@
 import type { SessionView } from '@/lib/types'
 
 export type Group = { path: string; sessions: SessionView[]; latest: number }
+export type Workspace = {
+  path: string
+  label: string
+  projects: (Group & { label: string })[]
+  count: number
+  latest: number
+}
+
+export const workspaceKey = (path: string) => `workspace:${path}`
+export const projectKey = (path: string) => `project:${path}`
+
+const cleanPath = (path: string) => path.replace(/\/+$/, '') || (path.startsWith('/') ? '/' : '')
+const parentPath = (path: string) => path.slice(0, path.lastIndexOf('/')) || '/'
+const inside = (path: string, root: string) => path === root || path.startsWith(`${root}/`)
+const homeRoot = (path: string) => path.match(/^\/(?:Users|home)\/[^/]+/)?.[0]
+
+/** Group sibling projects under their shared parent, folding deeper projects
+ *  into an existing workspace. Home and filesystem roots never swallow the
+ *  other workspaces. Original project paths remain the identity/resume target. */
+export function groupWorkspaces(groups: Group[], home = ''): Workspace[] {
+  const normalizedHome = cleanPath(home)
+  const roots = new Set(groups.filter((g) => g.path).map((g) => {
+    const path = cleanPath(g.path)
+    const parent = parentPath(path)
+    return path === homeRoot(path) || parent === '/' ? path : parent
+  }))
+  const workspaces = new Map<string, Workspace>()
+  for (const group of groups) {
+    const path = cleanPath(group.path)
+    const root = roots.has(path) ? path : [...roots]
+      .filter((r) => inside(path, r) && (r !== homeRoot(path) || parentPath(path) === r || path === r))
+      .sort((a, b) => a.length - b.length || a.localeCompare(b))[0] ?? path
+    const label = !root ? 'Other sessions'
+      : normalizedHome && inside(root, normalizedHome) ? `~${root.slice(normalizedHome.length)}` : root
+    const workspace = workspaces.get(root) ?? { path: root, label, projects: [], count: 0, latest: 0 }
+    workspace.projects.push({ ...group, label: path === root ? 'Workspace sessions' : path.slice(root.length + 1) })
+    workspace.count += group.sessions.length
+    workspace.latest = Math.max(workspace.latest, group.latest)
+    workspaces.set(root, workspace)
+  }
+  for (const workspace of workspaces.values()) {
+    workspace.projects.sort((a, b) => b.latest - a.latest || a.path.localeCompare(b.path))
+  }
+  return [...workspaces.values()].sort((a, b) => b.latest - a.latest || a.path.localeCompare(b.path))
+}
+
+/** Explicit choices override the currently selected project's default reveal. */
+export function branchOpen(choices: Record<string, boolean>, key: string, defaultOpen: boolean): boolean {
+  return choices[key] ?? defaultOpen
+}
+
+export function loadTreeChoices(): Record<string, boolean> {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem('dd.sidebarTree') || '{}')
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+    return Object.fromEntries(Object.entries(value).filter(([, open]) => typeof open === 'boolean'))
+  } catch { return {} }
+}
 
 export const STARRED_KEY = '__starred__'
 // Folder collapse keys share dd.closedGroups with project paths; the prefix
@@ -64,14 +122,13 @@ export function triage(visible: SessionView[]): { needs: SessionView[]; active: 
   return { needs, active, rest }
 }
 
-/** A project group shows its five most recent sessions and puts the tail behind
- *  a disclosure: past about five, a list stops being something you scan and
- *  becomes something you search (⌘K already does that better than scrolling
- *  ever will). A group of exactly six stays whole — hiding one row behind a
- *  control that costs a row is worse than showing it. */
-export function capGroup<T>(list: T[], expanded: boolean, cap = 5): { shown: T[]; hidden: number } {
-  if (expanded || list.length <= cap + 1) return { shown: list, hidden: 0 }
-  return { shown: list.slice(0, cap), hidden: list.length - cap }
+/** Three recent sessions per project; keep the selected session in view even
+ *  when it is older than the preview. Expanding reveals the complete history. */
+export function capGroup<T>(list: T[], expanded: boolean, cap = 3, selected?: T): { shown: T[]; hidden: number } {
+  if (expanded || list.length <= cap) return { shown: list, hidden: 0 }
+  const shown = list.slice(0, cap)
+  if (selected !== undefined && list.includes(selected) && !shown.includes(selected)) shown[cap - 1] = selected
+  return { shown, hidden: list.length - shown.length }
 }
 
 /** Collapsed-group / hidden-session id sets persist as a JSON string array. */

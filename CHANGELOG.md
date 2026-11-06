@@ -4,6 +4,22 @@ Each tagged release's `## vX.Y.Z` section becomes the GitHub release body and
 the in-app updater's release notes (extracted by `scripts/release-notes.py` in
 CI — a tag without its section fails the release).
 
+## v1.1.0 — 2026-11-06
+
+- **A sidebar with hierarchy.** Sessions now sit under collapsible workspaces
+  and projects, grouped by their parent directories. Indentation, subtle
+  connector lines, compact session rows, and agent badges make the levels
+  easier to scan. Active, Starred, and custom folders remain above the tree.
+- **Keep the current work in view.** The current project opens by default,
+  explicit expand/collapse choices survive restarts, and selecting a session
+  reveals its workspace and project. Each project previews three sessions,
+  keeping an older selected session visible, with **Show all** for its history.
+- **Restore missing Codex sessions.** Discovered user threads no longer get
+  hidden simply because they have no parsed local user messages. This covers
+  database-backed histories and older IDE prompt formats, and automatically
+  repairs affected existing index rows. Explicit Hide choices are preserved;
+  Guardian review and subagent threads remain excluded from discovery.
+
 ## v1.0.1 — 2026-11-05
 
 - **Keep internal Codex threads out of the session list.** Guardian reviews

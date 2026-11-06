@@ -89,6 +89,36 @@ fn codex_rollout_shares_transcript_search_and_briefing_context() {
 }
 
 #[test]
+fn metadata_only_codex_sessions_are_visible_without_inventing_messages() {
+    let mut store = Store::open_in_memory().unwrap();
+    let delta = drydock_core::accumulator::SessionDelta {
+        project_path: Some("/project".into()),
+        first_prompt: Some("Repair reconnect".into()),
+        last_message_at: Some(1234),
+        ..Default::default()
+    };
+    store.apply_delta("paginated", &delta, &[
+        drydock_core::chunker::Chunk {
+            role: "user".into(), text: "Repair reconnect".into(), ts: Some(1234),
+        },
+    ]).unwrap();
+    store.apply_delta("ghost", &Default::default(), &[]).unwrap();
+    // Existing installations already have these rows marked as ghosts.
+    assert!(store.get_session("paginated").unwrap().unwrap().hidden);
+    store.set_session_hidden("paginated", true).unwrap();
+    assert!(store.clear_session_ghost("paginated").unwrap());
+    assert!(!store.clear_session_ghost("paginated").unwrap(), "polling is idempotent");
+
+    let row = store.get_session("paginated").unwrap().unwrap();
+    assert!(!row.hidden);
+    assert_eq!(row.message_count, 0);
+    assert_eq!(row.user_message_count, 0);
+    assert_eq!(store.search_keyword("reconnect", 10).unwrap().len(), 1);
+    assert_eq!(store.hidden_session_ids().unwrap(), vec!["paginated"]);
+    assert!(store.get_session("ghost").unwrap().unwrap().hidden);
+}
+
+#[test]
 fn concurrent_agent_writers_preserve_every_delta() {
     let tmp = tempfile::tempdir().unwrap();
     let db = tmp.path().join("index.db");

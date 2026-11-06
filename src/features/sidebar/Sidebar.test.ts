@@ -5,7 +5,7 @@
 // grows past what the eye can separate. Each is invisible in review and obvious
 // on screen — which is exactly the kind of thing that belongs here.
 import { describe, expect, it } from 'vitest'
-import { capGroup, triage } from '@/features/sidebar/grouping'
+import { branchOpen, capGroup, groupSessions, groupWorkspaces, loadTreeChoices, projectKey, triage, workspaceKey } from '@/features/sidebar/grouping'
 import { ageTone, projectColor } from '@/lib/types'
 import type { SessionView } from '@/lib/types'
 
@@ -76,15 +76,20 @@ describe('triage', () => {
 describe('capGroup', () => {
   const list = (n: number) => Array.from({ length: n }, (_, i) => i)
 
-  it('shows everything up to six — hiding one row costs more than it saves', () => {
-    for (const n of [0, 1, 5, 6]) {
+  it('shows everything up to three', () => {
+    for (const n of [0, 1, 2, 3]) {
       expect(capGroup(list(n), false)).toEqual({ shown: list(n), hidden: 0 })
     }
   })
 
-  it('caps at five once there are seven or more', () => {
-    expect(capGroup(list(7), false)).toEqual({ shown: [0, 1, 2, 3, 4], hidden: 2 })
-    expect(capGroup(list(40), false).hidden).toBe(35)
+  it('caps at three and offers the remaining history', () => {
+    expect(capGroup(list(4), false)).toEqual({ shown: [0, 1, 2], hidden: 1 })
+    expect(capGroup(list(40), false).hidden).toBe(37)
+  })
+
+  it('keeps an older selected session visible within the three-row preview', () => {
+    expect(capGroup(list(8), false, 3, 6)).toEqual({ shown: [0, 1, 6], hidden: 5 })
+    expect(capGroup(list(8), false, 3, 99)).toEqual({ shown: [0, 1, 2], hidden: 5 })
   })
 
   it('shows the whole group once expanded', () => {
@@ -150,5 +155,56 @@ describe('ageTone', () => {
       expect(i).toBeGreaterThanOrEqual(prev)
       prev = i
     }
+  })
+})
+
+
+describe('workspace hierarchy', () => {
+  const workspaces = (paths: string[]) => groupWorkspaces(groupSessions(paths.map((project_path, i) => session({
+    project_path, last_message_at: 100 - i,
+  })), new Set(), false, new Set()), '/Users/dev')
+
+  it('groups sibling projects, folds nested projects in, and keeps full identities', () => {
+    const tree = workspaces(['/Users/dev/local/drydock', '/Users/dev/local/shop', '/Users/dev/local/harper/api', '/Users/dev/Desktop/harper/api'])
+    expect(tree.map((w) => w.label)).toEqual(['~/local', '~/Desktop/harper'])
+    expect(tree[0].projects.map((g) => g.label)).toEqual(['drydock', 'shop', 'harper/api'])
+    expect(tree[0].count).toBe(3)
+    expect(tree[0].projects[2].path).toBe('/Users/dev/local/harper/api')
+    expect(tree[1].projects[0].path).toBe('/Users/dev/Desktop/harper/api')
+  })
+
+  it('keeps home and workspace-root sessions without swallowing other workspaces', () => {
+    const tree = workspaces(['/Users/dev', '/Users/dev/local', '/Users/dev/local/drydock', '/Users/dev/Desktop/harper/api'])
+    expect(tree.map((w) => w.label)).toEqual(['~', '~/local', '~/Desktop/harper'])
+    expect(tree[1].projects.map((g) => g.label)).toEqual(['Workspace sessions', 'drydock'])
+    expect(tree.flatMap((w) => w.projects.flatMap((g) => g.sessions))).toHaveLength(4)
+  })
+
+  it('respects path boundaries and handles missing and external directories', () => {
+    const tree = workspaces(['/Users/dev/local/a', '/Users/dev/local-other/b', '/private/tmp/probe', ''])
+    expect(tree.map((w) => w.label)).toEqual(['~/local', '~/local-other', '/private/tmp', 'Other sessions'])
+    expect(workspaces(['/Users/other/project'])[0].label).toBe('/Users/other')
+    expect(workspaces(['/'])[0].projects[0].path).toBe('/')
+  })
+
+  it('does not put triaged, starred, filed or hidden sessions back into the tree', () => {
+    const all = [session({ live_status: 'busy' }), session({ starred: true }), session({ folder_id: 'f' }), session({ hidden: true }), session()]
+    const { rest } = triage(all)
+    const tree = groupWorkspaces(groupSessions(rest, new Set(), false, new Set(['f'])))
+    expect(tree.flatMap((w) => w.projects.flatMap((g) => g.sessions))).toEqual([all[4]])
+  })
+
+  it('remembers explicit collapse choices over selection defaults and rejects malformed storage', () => {
+    const key = workspaceKey('/Users/dev/local')
+    expect(branchOpen({}, key, true)).toBe(true)
+    expect(branchOpen({ [key]: false }, key, true)).toBe(false)
+    expect(projectKey('/Users/dev/local')).not.toBe(key)
+    localStorage.setItem('dd.sidebarTree', JSON.stringify({ [key]: false, bad: 'true' }))
+    expect(loadTreeChoices()).toEqual({ [key]: false })
+    for (const corrupt of ['null', '[]', '{bad']) {
+      localStorage.setItem('dd.sidebarTree', corrupt)
+      expect(loadTreeChoices()).toEqual({})
+    }
+    localStorage.removeItem('dd.sidebarTree')
   })
 })

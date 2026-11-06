@@ -502,6 +502,16 @@ impl Store {
         Self::row_in_conn(&self.conn, session_id)
     }
 
+    /// A discovered user session can be real without parsed local user
+    /// messages. Clear only the derived ghost flag; the user's Hide choice
+    /// lives separately in hidden_sessions and must survive discovery.
+    pub fn clear_session_ghost(&self, session_id: &str) -> Result<bool> {
+        Ok(self.conn.execute(
+            "UPDATE sessions SET hidden = 0 WHERE session_id = ?1 AND hidden != 0",
+            params![session_id],
+        )? > 0)
+    }
+
     pub fn list_sessions(&self) -> Result<Vec<SessionRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT session_id FROM sessions ORDER BY last_message_at DESC NULLS LAST",

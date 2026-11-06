@@ -154,6 +154,12 @@ pub fn start(app: &AppHandle) {
                                 store.apply_delta(&session.session_id, &delta, &chunks)?;
                                 indexed = true;
                             }
+                            // Discovery already excludes internal threads.
+                            // Zero parsed user messages can mean paginated
+                            // history or an older IDE prompt format, not a
+                            // ghost. Repair existing rows too; user Hide
+                            // choices live in a separate table.
+                            indexed |= store.clear_session_ghost(&session.session_id)?;
                             store.set_agent_live_status(&session.session_id,
                                 if now_ms.saturating_sub(session.mtime_ms) < ACTIVE_MS { "busy" } else { "ended" })?;
                             Ok(())
