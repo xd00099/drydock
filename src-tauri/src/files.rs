@@ -304,6 +304,10 @@ fn merge_touches(mut base: Vec<transcript::FileTouch>, extra: Vec<transcript::Fi
 /// every index tick while the panel is open).
 #[tauri::command(async)]
 pub fn session_files(db: State<'_, AppDb>, session_id: String) -> Result<Vec<FileTouchView>, String> {
+    if let Some(facts) = crate::cc_data::codex_briefing(&db, &session_id)? {
+        let root = db.0.lock().unwrap().get_session(&session_id).map_err(|e| e.to_string())?.map(|s| s.project_path).unwrap_or_default();
+        return Ok(resolve_touches(facts.files, &root, &[]));
+    }
     let path = transcript_file(&db, &session_id)?;
     // The session's OWN transcript, scanned INCREMENTALLY. `index-updated` is
     // global — it fires when ANY session's file moves — and the panel refreshes

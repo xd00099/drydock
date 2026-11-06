@@ -202,7 +202,7 @@ export default function BriefingPanel({ sourceAgent, agents, onHandoff, onOpenSe
             onSend={onReviewSend}
           />
         ) : tab === 'briefing' ? (
-          <BriefingTab sessionId={sessionId} card={card} starred={starred} files={files} tasks={tasks} usage={usage} projectPath={projectPath} label={label} onToggleStar={onToggleStar} onRename={onRename} />
+          <BriefingTab sourceAgent={sourceAgent} sessionId={sessionId} card={card} starred={starred} files={files} tasks={tasks} usage={usage} projectPath={projectPath} label={label} onToggleStar={onToggleStar} onRename={onRename} />
         ) : (
           <ProjectTab projectPath={projectPath} />
         )}

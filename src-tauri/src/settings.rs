@@ -22,6 +22,8 @@ pub struct Settings {
     /// Model for `claude -p --model <x>` card generation. `None` (JSON null)
     /// omits the flag entirely; absent key defaults to "sonnet".
     pub card_model: Option<String>,
+    /// Model for Codex briefing cards; absent uses the Codex CLI default.
+    pub codex_card_model: Option<String>,
     /// Extra environment injected into every claude/shell Drydock spawns —
     /// terminal tabs AND card generation. The escape hatch for endpoints
     /// configured only in `.zshrc` (which a non-interactive login shell skips)
@@ -80,6 +82,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             card_model: Some("sonnet".to_string()),
+            codex_card_model: None,
             claude_env: BTreeMap::new(),
             artifacts_enabled: true,
             mcp_disabled: Vec::new(),

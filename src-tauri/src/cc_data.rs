@@ -26,22 +26,47 @@ pub struct TaskView {
 
 #[derive(serde::Serialize)]
 pub struct TasksView {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript_available: Option<bool>,
     pub tasks: Vec<TaskView>,
     /// Newest task-file mtime (ms) — the UI shows the board's age so a stale
     /// "in progress" reads as stale, not live.
     pub updated_at: Option<i64>,
 }
 
-#[tauri::command]
-pub fn session_tasks(session_id: String) -> Result<TasksView, String> {
+/// Shared source detection, resolved from the index rather than a caller's
+/// agent hint. Codex metadata-only threads have no rollout facts to invent.
+pub(crate) fn codex_briefing(db: &AppDb, session_id: &str) -> Result<Option<drydock_core::codex_briefing::Briefing>, String> {
+    let path = {
+        let store = db.0.lock().unwrap();
+        if store.meta_get(&format!("agent:{session_id}")).map_err(|e| e.to_string())?.as_deref() != Some("codex") { return Ok(None); }
+        store.transcript_path(session_id).map_err(|e| e.to_string())?
+    };
+    match path {
+        Some(path) => match drydock_core::codex_briefing::read(std::path::Path::new(&path)) {
+            Ok(facts) => Ok(Some(facts)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Some(Default::default())),
+            Err(e) => Err(e.to_string()),
+        },
+        None => Ok(Some(Default::default())),
+    }
+}
+
+#[tauri::command(async)]
+pub fn session_tasks(db: State<'_, AppDb>, session_id: String) -> Result<TasksView, String> {
     if !is_session_uuid(&session_id) {
         return Err("bad session id".into());
+    }
+    if let Some(facts) = codex_briefing(&db, &session_id)? {
+        return Ok(TasksView { transcript_available: Some(facts.available), tasks: facts.tasks.into_iter().map(|t| TaskView {
+            id: t.id, subject: t.subject, active_form: t.active_form, status: t.status, blocked_by: t.blocked_by,
+        }).collect(), updated_at: facts.updated_at });
     }
     let dir = crate::index::claude_dir().join("tasks").join(&session_id);
     let mut tasks: Vec<(i64, TaskView)> = Vec::new();
     let mut updated_at: Option<i64> = None;
     let Ok(entries) = std::fs::read_dir(&dir) else {
-        return Ok(TasksView { tasks: vec![], updated_at: None }); // no board = empty, not an error
+        return Ok(TasksView { tasks: vec![], updated_at: None, transcript_available: None }); // no board = empty, not an error
     };
     for e in entries.flatten() {
         if tasks.len() >= 500 {
@@ -83,7 +108,7 @@ pub fn session_tasks(session_id: String) -> Result<TasksView, String> {
         ));
     }
     tasks.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.id.cmp(&b.1.id)));
-    Ok(TasksView { tasks: tasks.into_iter().map(|(_, t)| t).collect(), updated_at })
+    Ok(TasksView { transcript_available: None, tasks: tasks.into_iter().map(|(_, t)| t).collect(), updated_at })
 }
 
 // ---- Home recaps digest (Drydock's own index) ------------------------------
@@ -152,9 +177,11 @@ pub struct SessionUsageView {
     pub agent_output: i64, // share of total_output from subagents
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn session_usage(db: State<'_, AppDb>, session_id: String) -> Result<SessionUsageView, String> {
-    let store = db.0.lock().unwrap();
+    let facts = codex_briefing(&db, &session_id)?;
+    let mut store = db.0.lock().unwrap();
+    if let Some(facts) = facts.filter(|f| f.available) { store.replace_usage(&session_id, "main", &facts.usage).map_err(|e| e.to_string())?; }
     let raw = store.session_usage(&session_id).map_err(|e| e.to_string())?;
     let mut total_output = 0i64;
     let mut total_tokens = 0i64;
@@ -414,6 +441,26 @@ fn is_blob_name(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn briefing_routes_only_codex_sessions_and_reports_missing_rollouts() {
+        let mut store = drydock_core::store::Store::open_in_memory().unwrap();
+        let sid = "11111111-1111-1111-1111-111111111111";
+        store.apply_delta(sid, &Default::default(), &[]).unwrap();
+        let db = AppDb(std::sync::Mutex::new(store));
+        assert!(codex_briefing(&db, sid).unwrap().is_none());
+        db.0.lock().unwrap().meta_set(&format!("agent:{sid}"), "codex").unwrap();
+        assert!(!codex_briefing(&db, sid).unwrap().unwrap().available);
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(temp.path(), "{\"type\":\"event_msg\",\"payload\":{\"type\":\"plan_update\",\"plan\":[{\"step\":\"Verify\",\"status\":\"completed\"}]}}\n").unwrap();
+        db.0.lock().unwrap().set_sync_state(temp.path().to_str().unwrap(), sid, 0, 0, None, None).unwrap();
+        let facts = codex_briefing(&db, sid).unwrap().unwrap();
+        assert!(facts.available);
+        assert_eq!(facts.tasks[0].subject, "Verify");
+        std::fs::remove_file(temp.path()).unwrap();
+        assert!(!codex_briefing(&db, sid).unwrap().unwrap().available);
+    }
+
 
     #[test]
     fn blob_name_gate_refuses_paths() {

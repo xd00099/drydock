@@ -4,6 +4,37 @@ Each tagged release's `## vX.Y.Z` section becomes the GitHub release body and
 the in-app updater's release notes (extracted by `scripts/release-notes.py` in
 CI — a tag without its section fails the release).
 
+## v1.0.0 — 2026-11-05
+
+Drydock 1.0 is the first official release: a local macOS workspace for finding,
+resuming, reviewing, and handing off coding-agent sessions.
+
+- **A cohesive workspace.** Refreshed Home, sidebar, tabs, session details,
+  Settings, search, and launch dialogs share consistent typography, spacing,
+  controls, icons, and quieter separators. Home adapts to narrow windows and
+  puts session search and creation within reach. Existing theme palettes carry
+  through the new surfaces.
+- **Richer Codex briefings.** Read the latest successful plan, track successful
+  patches with file and line counts, and see token usage without double-counting
+  repeated usage events. Briefing cards now use the source harness: Claude for
+  Claude sessions, Codex for Codex sessions. Codex's card model can be set with
+  `codex_card_model`; its provider configuration and authentication are retained.
+- **Clear refresh state.** Card refreshes show progress and CLI errors, with a
+  bounded execution time. Threads without readable local rollouts explain which
+  briefing data is unavailable. Claude-only checkpoint controls stay out of
+  Codex sessions.
+- **Cross-agent workflows.** Independent snapshot reviews and editable context
+  handoffs connect Claude Code and Codex, with saved results, source links,
+  cancellation, and stale-review detection.
+- **Clean builds.** The terminal engine has its own bundle, keeping each
+  JavaScript chunk below the existing size warning threshold. Removed obsolete
+  Rust code and build warnings.
+
+Codex file tracking covers recorded patches; arbitrary shell edits cannot be
+attributed from a rollout. Compressed and database-only conversation content
+is not yet imported, and checkpoint history remains Claude-only. macOS builds
+are for Apple Silicon and are not yet Apple Developer ID signed or notarized.
+
 ## v0.9.0 — 2026-11-05
 
 - **Review with another agent.** Open an indexed session's Briefing panel and

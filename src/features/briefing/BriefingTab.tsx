@@ -32,11 +32,13 @@ function Item({ it }: { it: TimelineItem }) {
 
 // Per-file status glyph, git-style: created / modified / gone from disk.
 
-export function BriefingTab({ sessionId, card, starred, files, tasks, usage, projectPath, label, onToggleStar, onRename }: { sessionId: string | null; card: CardView | null; starred: boolean; files: FileTouch[]; tasks: TasksView | null; usage: SessionUsage | null; projectPath?: string; label?: string | null; onToggleStar?: () => void; onRename?: (name: string) => void }) {
+export function BriefingTab({ sourceAgent, sessionId, card, starred, files, tasks, usage, projectPath, label, onToggleStar, onRename }: { sourceAgent: string; sessionId: string | null; card: CardView | null; starred: boolean; files: FileTouch[]; tasks: TasksView | null; usage: SessionUsage | null; projectPath?: string; label?: string | null; onToggleStar?: () => void; onRename?: (name: string) => void }) {
   // editing holds the label CAPTURED when the pencil was clicked (null = not
   // editing): the unchanged-commit guard must compare against what the user
   // saw when they started, not the live prop — a mid-edit refresh changing
   // `label` must neither freeze a stale auto title nor block a real commit.
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshError, setRefreshError] = useState<string | null>(null)
   const [editing, setEditing] = useState<string | null>(null)
   // time machine overlay: false = closed, string = start at this file,
   // null = whole-session checkpoint view
@@ -87,7 +89,7 @@ export function BriefingTab({ sessionId, card, starred, files, tasks, usage, pro
           {onRename && editing === null && (
             <button
               onClick={() => setEditing(label ?? '')}
-              title="Rename session (a Drydock-only name — claude's own session is untouched)"
+              title="Rename session in Drydock"
               style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--dd-dim)', fontSize: 12, padding: 0, lineHeight: 1.3 }}
             >
               ✎
@@ -124,12 +126,20 @@ export function BriefingTab({ sessionId, card, starred, files, tasks, usage, pro
         ) : (
           <div style={S.muted}>no briefing card yet</div>
         )}
+        {sourceAgent === 'codex' && tasks?.transcript_available === false && <p style={S.muted}>This Codex thread has no readable local rollout. Its plan, file changes, and token usage are unavailable.</p>}
         <Button
           style={{ marginTop: 12 }}
-          onClick={() => invoke('refresh_card', { sessionId }).catch(console.error)}
+          disabled={refreshing || (sourceAgent === 'codex' && tasks?.transcript_available === false)}
+          onClick={async () => {
+            setRefreshing(true); setRefreshError(null)
+            try { await invoke('refresh_card', { sessionId }) }
+            catch (e) { setRefreshError(String(e)) }
+            finally { setRefreshing(false) }
+          }}
         >
-          Refresh card
+          {refreshing ? 'Refreshing…' : 'Refresh card'}
         </Button>
+        {refreshError && <p role="alert" style={{ color: 'var(--dd-err)', overflowWrap: 'anywhere' }}>{refreshError}</p>}
       </div>
       <TasksSection view={tasks} />
       <FilesChanged
@@ -137,7 +147,7 @@ export function BriefingTab({ sessionId, card, starred, files, tasks, usage, pro
         projectPath={projectPath}
         sessionId={sessionId}
         squeeze={!!tasks && tasks.tasks.length > 0}
-        onTimeMachine={(p) => setTm(p)}
+        onTimeMachine={sourceAgent === 'claude' ? (p) => setTm(p) : undefined}
       />
       {tm !== false && <TimeMachine sessionId={sessionId} initialPath={tm} onClose={() => setTm(false)} />}
     </div>

@@ -329,13 +329,13 @@ fn drain_pipe(mut pipe: impl Read) -> Vec<u8> {
     }
     kept
 }
-fn execute(mut cmd: Command, input: &Path, cancel: &AtomicBool, timeout: Duration, pid: Option<&AtomicI32>) -> Result<Vec<u8>> {
+pub(crate) fn execute(mut cmd: Command, input: &Path, cancel: &AtomicBool, timeout: Duration, pid: Option<&AtomicI32>) -> Result<Vec<u8>> {
     cmd.stdin(std::fs::File::open(input).map_err(|e| e.to_string())?).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(unix)] {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
-    let mut child = cmd.spawn().map_err(|e| format!("Cannot start reviewer: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| format!("Cannot start agent: {e}"))?;
     if let Some(pid) = pid { pid.store(child.id() as i32, Ordering::SeqCst); }
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
@@ -344,7 +344,7 @@ fn execute(mut cmd: Command, input: &Path, cancel: &AtomicBool, timeout: Duratio
     let start = Instant::now();
     let status = loop {
         if cancel.load(Ordering::SeqCst) || start.elapsed() > timeout {
-            break Err(if cancel.load(Ordering::SeqCst) { "Review cancelled" } else { "Review timed out after five minutes" }.to_string());
+            break Err(if cancel.load(Ordering::SeqCst) { "Review cancelled" } else { "Agent run timed out" }.to_string());
         }
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
@@ -364,8 +364,8 @@ fn execute(mut cmd: Command, input: &Path, cancel: &AtomicBool, timeout: Duratio
     }
     let stderr = if err.is_finished() { err.join().unwrap_or_default() } else { Vec::new() };
     let status = status?;
-    if !status.success() { return Err(format!("Reviewer exited {status}: {}", clipped(&String::from_utf8_lossy(&stderr), 4000))); }
-    if !out.is_finished() { return Err("Reviewer output did not close".into()); }
+    if !status.success() { return Err(format!("Agent exited {status}: {}", clipped(&String::from_utf8_lossy(&stderr), 4000))); }
+    if !out.is_finished() { return Err("Agent output did not close".into()); }
     Ok(out.join().unwrap_or_default())
 }
 fn decode_claude_result(output: &[u8]) -> Result<ReviewResult> {

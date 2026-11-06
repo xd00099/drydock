@@ -129,7 +129,16 @@ pub fn start(app: &AppHandle) {
                                     path: path.clone(), session_id: session.session_id.clone(), size: md.len(),
                                     mtime: md.modified()?.duration_since(std::time::UNIX_EPOCH)?.as_millis() as i64,
                                 };
-                                if matches!(drydock_core::sync::sync_file(&mut store, &sf)?, drydock_core::sync::SyncOutcome::Parsed { .. }) {
+                                let parsed = matches!(drydock_core::sync::sync_file(&mut store, &sf)?, drydock_core::sync::SyncOutcome::Parsed { .. });
+                                if parsed { indexed = true; }
+                                // Backfill older sessions once, then only revisit facts
+                                // when the rollout grows/rewrites. Scanning every archived
+                                // rollout on each poll would churn the bounded cache.
+                                let marker = format!("codex-briefing-v1:{}", session.session_id);
+                                if parsed || store.meta_get(&marker)?.is_none() {
+                                    let facts = drydock_core::codex_briefing::read(path)?;
+                                    store.replace_usage(&session.session_id, "main", &facts.usage)?;
+                                    store.meta_set(&marker, "1")?;
                                     indexed = true;
                                 }
                             } else if store.get_session(&session.session_id)?.is_none() {

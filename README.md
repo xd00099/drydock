@@ -184,6 +184,7 @@ Drydock calls your own `claude` binary, so it inherits whatever backend you've c
 ```json
 {
   "card_model": "sonnet",
+  "codex_card_model": null,
   "claude_env": { "ANTHROPIC_BASE_URL": "http://localhost:4000" },
   "artifacts_enabled": true,
   "mcp_disabled": ["github"],
@@ -194,20 +195,21 @@ Drydock calls your own `claude` binary, so it inherits whatever backend you've c
 }
 ```
 
-- `card_model` — model used for briefing cards (default `sonnet`; set to `null` to use your CLI's default, e.g. on Bedrock/LiteLLM where the alias may not resolve).
+- `codex_card_model` — model used for Codex briefing cards (default `null`, using the Codex CLI configuration).
+- `card_model` — model used for Claude briefing cards (default `sonnet`; set to `null` to use your CLI's default, e.g. on Bedrock/LiteLLM where the alias may not resolve).
 - `claude_env` — environment variables injected into every process Drydock spawns. Handy when your endpoint is configured only in `~/.zshrc`, which non-interactive shells don't source. It's also the way to trade Claude's fullscreen TUI for the classic inline renderer, if you'd rather have real terminal scrollback in a claude tab: `"CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"`.
 - `artifacts_enabled` — inject the artifact-preview MCP server into sessions Drydock launches (default `true`).
 - `mcp_disabled` — your MCP servers to hide from Drydock-launched sessions; also toggleable per server in the Project tab.
 - `editor_cmd` — CLI used by "open in editor" in the files-changed list (e.g. `code`; default: the system opener).
 - `agents_enabled` / `agents_commands` / `agents_custom` — the Settings → Agents page, in file form.
 
-`card_model` and `claude_env` changes reach the next briefing card immediately; terminal tabs pick up `claude_env` on the next Drydock restart.
+`card_model`, `codex_card_model`, and `claude_env` changes reach the next briefing card immediately; terminal tabs pick up `claude_env` on the next Drydock restart.
 
 ## Data & privacy
 
-Everything stays local. Drydock reads `~/.claude` and `~/.codex` and never writes into them — with one explicit exception: right-click → *Delete permanently* removes that session's transcript, at your request. Its own index lives under `~/Library/Application Support/com.drydock.app/`, and embeddings run on-device. Briefing cards send transcript excerpts automatically via your own `claude` CLI to the backend you've configured. When you explicitly start a cross-agent review, the selected CLI receives captured source code and review instructions. Handoffs pass the context packet you preview and edit to the selected agent, whose configured backend may receive that content. Everything else on the wire is content-free: a twice-daily GitHub Releases version check, a one-time download of the ~110 MB embedding model on first launch, the MCP health check (your own `claude mcp list`, which contacts the servers you configured), and the libraries a rendered HTML artifact pulls from a fixed list of CDNs (jsDelivr, unpkg, cdnjs, Tailwind, Plotly, D3, Google Fonts). Past that list an artifact can't fetch, open a WebSocket, or load an image, video, font or stylesheet, so the ordinary ways of beaconing out what it renders are shut. One gap is left, named rather than glossed: WebRTC sits outside what a content policy can restrict in WebKit, so a deliberately hostile artifact could still use it. The visible trade-off: a remote `<img src="https://…">` inside an artifact won't load; ask the session to inline it instead. When Claude Code deletes a transcript under its retention policy, the session leaves Drydock too.
+Everything stays local. Drydock reads `~/.claude` and `~/.codex` and never writes into them — with one explicit exception: right-click → *Delete permanently* removes that session's transcript, at your request. Its own index lives under `~/Library/Application Support/com.drydock.app/`, and embeddings run on-device. Briefing cards send transcript excerpts automatically through the source session’s CLI (`claude` or `codex`) to its configured backend. When you explicitly start a cross-agent review, the selected CLI receives captured source code and review instructions. Handoffs pass the context packet you preview and edit to the selected agent, whose configured backend may receive that content. Everything else on the wire is content-free: a twice-daily GitHub Releases version check, a one-time download of the ~110 MB embedding model on first launch, the MCP health check (your own `claude mcp list`, which contacts the servers you configured), and the libraries a rendered HTML artifact pulls from a fixed list of CDNs (jsDelivr, unpkg, cdnjs, Tailwind, Plotly, D3, Google Fonts). Past that list an artifact can't fetch, open a WebSocket, or load an image, video, font or stylesheet, so the ordinary ways of beaconing out what it renders are shut. One gap is left, named rather than glossed: WebRTC sits outside what a content policy can restrict in WebKit, so a deliberately hostile artifact could still use it. The visible trade-off: a remote `<img src="https://…">` inside an artifact won't load; ask the session to inline it instead. When Claude Code deletes a transcript under its retention policy, the session leaves Drydock too.
 
-Codex plain JSONL rollouts now use the shared transcript view, keyword/semantic index, stars, and briefing cards (generated through your configured Claude CLI). Database-only threads remain discoverable and searchable by title; compressed and database-only conversation content is not yet imported.
+Codex plain JSONL rollouts use the shared transcript view, keyword/semantic index, stars, and briefing cards generated through Codex. The Briefing tab also reads the latest successful plan, successful patch file changes and line counts, and cumulative token usage without counting repeated usage events twice. File changes cover recorded patches; arbitrary shell edits cannot be attributed from a rollout. Claude’s file-history checkpoints remain specific to Claude sessions. Database-only threads remain discoverable and searchable by title; compressed and database-only conversation content is not yet imported.
 
 Search shows keyword matches immediately, then enriches them using an on-demand local model. The model unloads after two minutes of inactivity. New document embeddings are still generated at startup and twice daily.
 

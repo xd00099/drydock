@@ -127,9 +127,9 @@ export type FileTouch = {
 export type TimelineItem = { text: string; detail: string[]; in_progress: boolean }
 export type CardView = { summary: string; timeline: TimelineItem[]; generated_at: number }
 
-// Live task board from ~/.claude/tasks/<sid>/ (backend cc_data::session_tasks)
+// Native task board or Codex rollout plan (backend cc_data::session_tasks)
 export type TaskView = { id: string; subject: string; active_form: string | null; status: string; blocked_by: string[] }
-export type TasksView = { tasks: TaskView[]; updated_at: number | null }
+export type TasksView = { tasks: TaskView[]; updated_at: number | null; transcript_available?: boolean }
 
 // Indexed token usage for one session (backend cc_data::session_usage)
 export type ModelUsage = { model: string; scope: string; input: number; output: number; cache_read: number; cache_creation: number }

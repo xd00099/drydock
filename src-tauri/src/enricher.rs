@@ -1,7 +1,6 @@
 use drydock_core::store::Store;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use tauri::{AppHandle, Emitter};
 
 /// One milestone in a session timeline. `detail` holds optional sub-bullets;
@@ -42,6 +41,7 @@ fn tail_chars(s: &str, max_chars: usize) -> &str {
 fn build_prompt(title: &str, recap: Option<&str>, tail: &str) -> String {
     format!(
         "You summarize a coding agent session so its owner can tell at a glance what it was and resume instantly.\n\
+         Use only the supplied transcript. Do not call tools or inspect files.\n\
          Session title: {title}\n\
          Latest recap: {}\n\
          Transcript tail (role-tagged):\n{tail}\n\n\
@@ -83,7 +83,7 @@ pub(crate) fn sh_single_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
-/// One generation attempt. Runs claude via a login shell (GUI apps lack PATH).
+/// One generation attempt through the source harness (GUI apps lack PATH).
 pub fn generate_card(db_path: &Path, session_id: &str) -> Result<(), String> {
     let store = Store::open(db_path).map_err(|e| e.to_string())?;
     let row = store
@@ -91,6 +91,10 @@ pub fn generate_card(db_path: &Path, session_id: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .ok_or("session gone")?;
     let chunks = store.get_chunks(session_id).map_err(|e| e.to_string())?;
+    let codex = store.meta_get(&format!("agent:{session_id}")).map_err(|e| e.to_string())?.as_deref() == Some("codex");
+    if codex && store.transcript_path(session_id).map_err(|e| e.to_string())?.is_none() {
+        return Err("This Codex thread has no readable local rollout to summarize.".into());
+    }
     drop(store);
 
     let joined: String = chunks
@@ -106,38 +110,33 @@ pub fn generate_card(db_path: &Path, session_id: &str) -> Result<(), String> {
     // Settings live next to the db (app data dir); reloaded each call so edits
     // to card_model / claude_env take effect without restarting Drydock.
     let cfg = crate::settings::Settings::load(db_path.parent().unwrap_or_else(|| Path::new(".")));
-    let model_arg = match cfg.card_model.as_deref() {
-        Some(m) if !m.is_empty() => format!("--model {} ", sh_single_quote(m)),
-        _ => String::new(), // null/empty → the CLI's own default model
-    };
-    let cmd_str = format!("claude -p {model_arg}--output-format json --no-session-persistence");
-
+    let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let prompt_path = scratch.path().join("prompt.txt");
+    let answer_path = scratch.path().join("answer.json");
+    let schema_path = scratch.path().join("schema.json");
+    std::fs::write(&prompt_path, prompt).map_err(|e| e.to_string())?;
+    std::fs::write(&schema_path, card_schema().to_string()).map_err(|e| e.to_string())?;
+    let cmd_str = card_command(codex, &cfg, &schema_path, &answer_path);
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
     let mut command = Command::new(shell);
-    command.args(["-l", "-c", &cmd_str]);
-    for (k, v) in cfg.env_pairs() {
-        command.env(k, v); // ANTHROPIC_BASE_URL etc. for custom endpoints
-    }
-    let mut child = command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    child
-        .stdin
-        .as_mut()
-        .ok_or("no stdin")?
-        .write_all(prompt.as_bytes())
-        .map_err(|e| e.to_string())?;
-    let out = child.wait_with_output().map_err(|e| e.to_string())?;
-    if !out.status.success() {
-        return Err(format!("claude -p failed: {}", String::from_utf8_lossy(&out.stderr)));
-    }
-    // -p --output-format json → {"result": "<text>", ...}
-    let envelope: serde_json::Value =
-        serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())?;
-    let result_text = envelope.get("result").and_then(|v| v.as_str()).ok_or("no result field")?;
+    command.args(["-l", "-c", &cmd_str]).current_dir(scratch.path());
+    for (k, v) in cfg.env_pairs() { command.env(k, v); }
+    // Drain both pipes, bound retained output, and reap the whole process group
+    // on timeout, as with independent review jobs.
+    let out = crate::collaboration::execute(command, &prompt_path,
+        &std::sync::atomic::AtomicBool::new(false), std::time::Duration::from_secs(120), None)?;
+    let result = if codex {
+        let file = std::fs::File::open(&answer_path).map_err(|e| format!("Codex card output: {e}"))?;
+        use std::io::Read;
+        let mut text = String::new();
+        file.take(128 * 1024).read_to_string(&mut text).map_err(|e| e.to_string())?;
+        text
+    } else {
+        let envelope: serde_json::Value = serde_json::from_slice(&out).map_err(|e| e.to_string())?;
+        if envelope["is_error"].as_bool() == Some(true) { return Err(format!("Claude card generation failed: {}", envelope["result"])); }
+        envelope["result"].as_str().ok_or("no result field")?.to_string()
+    };
+    let result_text = &result;
     let card = extract_card_json(result_text).ok_or("result not card JSON")?;
     let timeline_json = serde_json::to_string(&card.timeline).map_err(|e| e.to_string())?;
     let search_text = card_search_text(&card.summary, &card.timeline);
@@ -147,6 +146,24 @@ pub fn generate_card(db_path: &Path, session_id: &str) -> Result<(), String> {
         .put_card(session_id, &card.summary, &timeline_json, &search_text, row.message_count)
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+fn card_schema() -> serde_json::Value {
+    serde_json::json!({"type":"object","additionalProperties":false,"properties":{
+        "summary":{"type":"string"},"timeline":{"type":"array","items":{"type":"object","additionalProperties":false,
+            "properties":{"text":{"type":"string"},"detail":{"type":"array","items":{"type":"string"}},"in_progress":{"type":"boolean"}},
+            "required":["text","detail","in_progress"]}}},"required":["summary","timeline"]})
+}
+
+fn card_command(codex: bool, cfg: &crate::settings::Settings, schema: &Path, answer: &Path) -> String {
+    let model = if codex { &cfg.codex_card_model } else { &cfg.card_model };
+    let model_arg = model.as_deref().filter(|m| !m.is_empty()).map(|m| format!(" --model {}", sh_single_quote(m))).unwrap_or_default();
+    if codex {
+        format!("codex exec --ignore-rules --sandbox read-only --ephemeral --skip-git-repo-check --json -c 'approval_policy=\"never\"' --output-schema {} --output-last-message {}{model_arg} -",
+            sh_single_quote(&schema.to_string_lossy()), sh_single_quote(&answer.to_string_lossy()))
+    } else {
+        format!("claude -p{model_arg} --output-format json --no-session-persistence")
+    }
 }
 
 /// Per-session failure bookkeeping: (attempts so far, earliest next retry).
@@ -225,16 +242,12 @@ pub fn get_card(db: tauri::State<'_, crate::index::AppDb>, session_id: String) -
     }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn refresh_card(app: AppHandle, session_id: String) -> Result<(), String> {
     use tauri::Manager;
     let db = app.path().app_data_dir().map_err(|e| e.to_string())?.join("drydock.db");
-    std::thread::spawn(move || match generate_card(&db, &session_id) {
-        Ok(()) => {
-            let _ = app.emit("index-updated", ());
-        }
-        Err(e) => eprintln!("refresh_card failed for {session_id}: {e}"),
-    });
+    generate_card(&db, &session_id)?;
+    let _ = app.emit("index-updated", ());
     Ok(())
 }
 
@@ -253,6 +266,27 @@ pub fn check_claude() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn card_commands_select_source_harness_and_keep_models_separate() {
+        let mut cfg = crate::settings::Settings::default();
+        let schema = Path::new("/tmp/card's schema.json");
+        let answer = Path::new("/tmp/answer.json");
+        let codex = card_command(true, &cfg, schema, answer);
+        assert!(codex.starts_with("codex exec "));
+        for flag in ["--sandbox read-only", "--ephemeral", "--output-schema", "--output-last-message", "approval_policy"] { assert!(codex.contains(flag)); }
+        assert!(!codex.contains("sonnet"));
+        assert!(!codex.contains("--ignore-user-config"), "retain the user's provider configuration");
+        assert!(codex.contains(&sh_single_quote(&schema.to_string_lossy())));
+        cfg.codex_card_model = Some("a'b".into());
+        assert!(card_command(true, &cfg, schema, answer).contains("--model 'a'\\''b'"));
+        let claude = card_command(false, &cfg, schema, answer);
+        assert!(claude.starts_with("claude -p --model 'sonnet'"));
+        assert!(!claude.contains("--ephemeral"));
+        let schema = card_schema();
+        assert_eq!(schema["additionalProperties"], false);
+        assert!(serde_json::from_value::<CardJson>(serde_json::json!({"summary":"Build reader","timeline":[{"text":"Wired Codex","detail":[],"in_progress":false}]})).is_ok());
+    }
 
     #[test]
     fn extracts_plain_fenced_and_wrapped_json() {

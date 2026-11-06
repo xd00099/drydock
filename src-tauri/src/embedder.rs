@@ -77,11 +77,6 @@ pub mod pace {
         /// At least one embedding was STORED -- the only outcome that earns
         /// another immediate iteration.
         Progress,
-        /// Nothing pending. Under the scheduled lifecycle the drain RETURNS
-        /// here instead of idling, so this arm's backoff only matters to the
-        /// tests that pin it -- kept because Pacer is a pure schedule and
-        /// "what does idling cost" should stay provable.
-        Drained,
         /// Rows were pending and none of them landed (model error, failed
         /// write, poison row). Must never be retried at full speed.
         Stalled,
@@ -91,40 +86,27 @@ pub mod pace {
     ///
     /// The loop does not sleep after useful work -- a fresh index has ~25k
     /// chunks to get through and pauses there are pure latency. That is only
-    /// safe because every OTHER outcome sleeps: previously a chunk that
-    /// embedded but failed to store re-entered the loop instantly, pinning a
-    /// core with a table scan plus an ONNX inference, indefinitely.
+    /// safe because stalled work sleeps and an empty queue returns. Previously
+    /// a chunk that embedded but failed to store re-entered the loop instantly,
+    /// pinning a core with a table scan plus an ONNX inference, indefinitely.
     #[derive(Debug, Default)]
     pub struct Pacer {
-        drained: u32,
         stalled: u32,
     }
 
     impl Pacer {
-        /// First idle poll, doubling to `IDLE_MAX` so an untouched machine
-        /// stops waking 28,800 times a day. New chunks are keyword-searchable
-        /// the moment they are written, so the cap only delays the newest turn
-        /// joining the SEMANTIC index.
-        const IDLE_BASE: Duration = Duration::from_secs(3);
-        const IDLE_MAX: Duration = Duration::from_secs(30);
-        /// A stall is abnormal, so it backs off much harder than an idle poll.
+        /// Failed work backs off before another attempt. An empty queue
+        /// returns from the scheduled drain instead of polling.
         const STALL_BASE: Duration = Duration::from_secs(5);
         const STALL_MAX: Duration = Duration::from_secs(120);
 
         pub fn next_delay(&mut self, step: Step) -> Duration {
             match step {
                 Step::Progress => {
-                    self.drained = 0;
                     self.stalled = 0;
                     Duration::ZERO
                 }
-                Step::Drained => {
-                    self.stalled = 0;
-                    self.drained += 1;
-                    Self::backoff(Self::IDLE_BASE, Self::IDLE_MAX, self.drained)
-                }
                 Step::Stalled => {
-                    self.drained = 0;
                     self.stalled += 1;
                     Self::backoff(Self::STALL_BASE, Self::STALL_MAX, self.stalled)
                 }
@@ -195,21 +177,6 @@ pub mod pace {
                 last = d;
             }
             assert_eq!(last, Duration::from_secs(120), "and it stops at the cap");
-        }
-
-        #[test]
-        fn idle_backs_off_and_work_resets_it() {
-            let mut p = Pacer::default();
-            assert_eq!(p.next_delay(Step::Drained), Duration::from_secs(3));
-            assert_eq!(p.next_delay(Step::Drained), Duration::from_secs(6));
-            assert_eq!(p.next_delay(Step::Drained), Duration::from_secs(12));
-            assert_eq!(p.next_delay(Step::Drained), Duration::from_secs(24));
-            for _ in 0..100 {
-                assert_eq!(p.next_delay(Step::Drained), Duration::from_secs(30));
-            }
-            // a new chunk arrives: back to a fast poll, not a 30s wait
-            assert_eq!(p.next_delay(Step::Progress), Duration::ZERO);
-            assert_eq!(p.next_delay(Step::Drained), Duration::from_secs(3));
         }
 
         #[test]
