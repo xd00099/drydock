@@ -133,6 +133,7 @@
   background: var(--dd-tint-hover);
 }
 .menuItem:disabled { cursor: default; }
+.menuScope { max-width: 240px; padding: 4px 10px 6px; color: var(--dd-text3); font-size: var(--dd-text-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .deleteError { margin: 0 16px 12px; color: var(--dd-err-bright); font-size: var(--dd-text-sm); overflow-wrap: anywhere; }
 
 .nameInput {

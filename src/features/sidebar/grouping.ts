@@ -19,6 +19,15 @@ export type Workspace = {
 export const workspaceKey = (path: string) => `workspace:${path}`
 export const projectKey = (path: string) => `project:${path}`
 
+/** Use all conversations in the scope, including ones outside the current
+ *  preview (hidden, starred or filed). Match directory boundaries exactly. */
+export function sessionsInDirectory(sessions: SessionView[], path: string, recursive: boolean): SessionView[] {
+  const root = path.replace(/\/+$/, '') || (path.startsWith('/') ? '/' : '')
+  return [...new Map(sessions.filter((s) => !s.hidden && (
+    s.project_path === root || (recursive && root !== '' && s.project_path.startsWith(root === '/' ? '/' : `${root}/`))
+  )).map((s) => [s.session_id, s])).values()]
+}
+
 const cleanPath = (path: string) => path.replace(/\/+$/, '') || (path.startsWith('/') ? '/' : '')
 const parentPath = (path: string) => path.slice(0, path.lastIndexOf('/')) || '/'
 const inside = (path: string, root: string) => path === root || path.startsWith(`${root}/`)

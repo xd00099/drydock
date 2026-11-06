@@ -13,9 +13,10 @@ import LiveIndicator from '@/features/session/LiveIndicator'
 import { BUILTIN_AGENTS } from '@/lib/agents'
 import AgentLogo from '@/components/AgentLogo'
 import VersionFooter from '@/features/session/VersionFooter'
+import DeleteSessionsDialog from './DeleteSessionsDialog'
 import { useChord } from '@/lib/keymap'
 import { armWindowDrag } from '@/lib/windowDrag'
-import { STARRED_KEY, branchOpen, byRecency, capGroup, folderKey, groupSessions, groupWorkspaces, isVisible, loadSet, loadTreeChoices, projectKey, triage, workspaceKey } from './grouping'
+import { STARRED_KEY, branchOpen, byRecency, capGroup, folderKey, groupSessions, groupWorkspaces, isVisible, loadSet, loadTreeChoices, projectKey, sessionsInDirectory, triage, workspaceKey } from './grouping'
 
 type Props = {
   onHome: () => void // show the Home view (recap log + usage) in the center
@@ -122,6 +123,8 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
   const [showHidden, setShowHidden] = useState(false)
   const [menu, setMenu] = useState<{ x: number; y: number; s: SessionView; view: 'main' | 'folders' } | null>(null)
   const [folderMenu, setFolderMenu] = useState<{ x: number; y: number; f: FolderView; index: number } | null>(null)
+  const [directoryMenu, setDirectoryMenu] = useState<{ x: number; y: number; path: string; label: string; recursive: boolean } | null>(null)
+  const [deleteGroup, setDeleteGroup] = useState<{ label: string; sessions: SessionView[]; folderId?: string } | null>(null)
   const [confirmDel, setConfirmDel] = useState<SessionView | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
@@ -169,8 +172,8 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
   }
 
   useEffect(() => {
-    if (!menu && !folderMenu) return
-    const close = () => { setMenu(null); setFolderMenu(null) }
+    if (!menu && !folderMenu && !directoryMenu) return
+    const close = () => { setMenu(null); setFolderMenu(null); setDirectoryMenu(null) }
     const onEsc = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
     window.addEventListener('keydown', onEsc)
     window.addEventListener('resize', close)
@@ -182,7 +185,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
       window.removeEventListener('resize', close)
       window.removeEventListener('scroll', close, true)
     }
-  }, [menu, folderMenu])
+  }, [menu, folderMenu, directoryMenu])
 
   // Edge auto-scroll while a drag is live (pointermove stops firing when the
   // pointer parks at the edge, so this needs its own clock). Only while the
@@ -342,6 +345,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
   }
   filed.forEach((list) => list.sort(byRecency))
   const groups = groupSessions(rest, hiddenSet, showHidden, folderIds)
+  const directoryMembers = directoryMenu ? sessionsInDirectory(sessions, directoryMenu.path, directoryMenu.recursive) : []
   const workspaces = groupWorkspaces(groups, home)
   const selectedProject = sessions.find((s) => s.session_id === activeSessionId)?.project_path
   const defaultProject = selectedProject ?? groups[0]?.path
@@ -672,6 +676,11 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
                   aria-label={`${workspace.label} workspace`}
                   title={`${workspace.path || 'Sessions without a project directory'} · ${workspace.projects.length} projects · ${workspace.count} sessions`}
                   onClick={() => toggleBranch(key, isOpen)}
+                  onContextMenu={(e) => {
+                    e.preventDefault()
+                    if (dragRef.current) return
+                    setDirectoryMenu({ x: e.clientX, y: e.clientY, path: workspace.path, label: workspace.label, recursive: true })
+                  }}
                 >
                   <Icon name="right" size={12} className={isOpen ? cls.openChevron : cls.treeChevron} />
                   <Icon name="folder" size={14} />
@@ -693,6 +702,11 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
                               aria-label={`${g.label} project`}
                               title={g.path || 'No project directory'}
                               onClick={() => toggleBranch(key, isOpen)}
+                              onContextMenu={(e) => {
+                                e.preventDefault()
+                                if (dragRef.current) return
+                                setDirectoryMenu({ x: e.clientX, y: e.clientY, path: g.path, label: g.label, recursive: false })
+                              }}
                             >
                               <Icon name="right" size={11} className={isOpen ? cls.openChevron : cls.treeChevron} />
                               <span className={cls.projectDot} style={{ background: projectColor(g.path) }} />
@@ -845,6 +859,24 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
         </>
       )}
 
+      {directoryMenu && (
+        <>
+          <div style={{ position: 'fixed', inset: 0, zIndex: 59 }} onClick={() => setDirectoryMenu(null)} onContextMenu={(e) => { e.preventDefault(); setDirectoryMenu(null) }} />
+          <div className={cls.menu} style={{ left: Math.min(directoryMenu.x, window.innerWidth - 260), top: Math.min(directoryMenu.y, window.innerHeight - 100) }}>
+            <div className={cls.menuScope} title={directoryMenu.path}>{directoryMenu.path || 'Other sessions'}</div>
+            <button
+              className={cls.menuItem}
+              style={{ color: 'var(--dd-err-bright)' }}
+              disabled={directoryMembers.length === 0}
+              onClick={() => {
+                setDeleteGroup({ label: directoryMenu.label, sessions: directoryMembers })
+                setDirectoryMenu(null)
+              }}
+            >Delete all sessions…</button>
+          </div>
+        </>
+      )}
+
       {folderMenu && (
         <>
           <div style={{ position: 'fixed', inset: 0, zIndex: 59 }} onClick={() => setFolderMenu(null)} onContextMenu={(e) => { e.preventDefault(); setFolderMenu(null) }} />
@@ -890,8 +922,14 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
                 setFolderMenu(null)
               }}
             >
-              Delete folder…
+              Remove folder only…
             </button>
+            {sessions.some((s) => s.folder_id === folderMenu.f.id && !s.hidden) && (
+              <button className={cls.menuItem} style={{ color: 'var(--dd-err-bright)' }} onClick={() => {
+                setDeleteGroup({ label: folderMenu.f.name, sessions: sessions.filter((s) => s.folder_id === folderMenu.f.id && !s.hidden), folderId: folderMenu.f.id })
+                setFolderMenu(null)
+              }}>Delete folder and sessions…</button>
+            )}
           </div>
         </>
       )}
@@ -928,15 +966,28 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
 
       {confirmDelFolder && (
         <Modal z={70} width={380}>
-          <ModalTitle>Delete folder “{clip(confirmDelFolder.f.name, 32)}”?</ModalTitle>
+          <ModalTitle>Remove folder “{clip(confirmDelFolder.f.name, 32)}”?</ModalTitle>
           <ModalBody>
             Its {confirmDelFolder.count} session{confirmDelFolder.count === 1 ? '' : 's'} return to their project groups. No sessions are deleted.
           </ModalBody>
           <ModalActions>
             <Button variant="ghost" onClick={() => setConfirmDelFolder(null)}>Cancel</Button>
-            <Button variant="danger" onClick={() => { deleteFolder(confirmDelFolder.f); setConfirmDelFolder(null) }}>Delete folder</Button>
+            <Button variant="danger" onClick={() => { deleteFolder(confirmDelFolder.f); setConfirmDelFolder(null) }}>Remove folder</Button>
           </ModalActions>
         </Modal>
+      )}
+
+      {deleteGroup && (
+        <DeleteSessionsDialog
+          label={deleteGroup.label}
+          sessions={deleteGroup.sessions}
+          onDelete={onDelete}
+          onClose={() => setDeleteGroup(null)}
+          onComplete={deleteGroup.folderId ? async () => {
+            await invoke('delete_folder', { folderId: deleteGroup.folderId })
+            onRefresh()
+          } : undefined}
+        />
       )}
 
       {/* drag ghost: follows the pointer, never intercepts it */}

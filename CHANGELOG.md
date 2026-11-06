@@ -4,6 +4,20 @@ Each tagged release's `## vX.Y.Z` section becomes the GitHub release body and
 the in-app updater's release notes (extracted by `scripts/release-notes.py` in
 CI — a tag without its section fails the release).
 
+## v1.1.2 — 2026-11-06
+
+- **Delete conversations by folder.** Right-click a workspace or project and
+  choose **Delete all sessions…**. Custom folders also offer **Delete folder
+  and sessions…**, alongside **Remove folder only…**. The confirmation includes
+  hidden, starred, and older conversations beyond the sidebar preview. Project
+  files and directories are kept.
+- **Clear progress and retries.** Folder deletion processes the confirmed
+  selection in order, stops on failure, and retries only remaining conversations.
+  Custom folders are removed after their conversations have been deleted.
+  Conversations arriving after confirmation are not added to the deletion.
+
+Includes v1.1.1's native Codex permanent deletion and Hidden-count fixes.
+
 ## v1.1.1 — 2026-11-06
 
 - **Permanently delete Codex conversations.** Delete now uses Codex's native

@@ -5,7 +5,7 @@
 // grows past what the eye can separate. Each is invisible in review and obvious
 // on screen — which is exactly the kind of thing that belongs here.
 import { describe, expect, it } from 'vitest'
-import { branchOpen, capGroup, groupSessions, groupWorkspaces, loadTreeChoices, projectKey, triage, workspaceKey } from '@/features/sidebar/grouping'
+import { branchOpen, capGroup, groupSessions, groupWorkspaces, loadTreeChoices, projectKey, sessionsInDirectory, triage, workspaceKey } from '@/features/sidebar/grouping'
 import { ageTone, projectColor } from '@/lib/types'
 import type { SessionView } from '@/lib/types'
 
@@ -206,5 +206,21 @@ describe('workspace hierarchy', () => {
       expect(loadTreeChoices()).toEqual({})
     }
     localStorage.removeItem('dd.sidebarTree')
+  })
+})
+
+describe('directory deletion selection', () => {
+  it('includes hidden/starred/filed conversations, respects boundaries, and distinguishes workspace from project scope', () => {
+    const all = [
+      session({ session_id: 'root', project_path: '/work', starred: true }),
+      session({ session_id: 'child', project_path: '/work/app', folder_id: 'f' }),
+      session({ session_id: 'sibling', project_path: '/work-other/app' }),
+      session({ session_id: 'ghost', project_path: '/work', hidden: true }),
+    ]
+    expect(sessionsInDirectory(all, '/work/', true).map((s) => s.session_id)).toEqual(['root', 'child'])
+    expect(sessionsInDirectory(all, '/work', false).map((s) => s.session_id)).toEqual(['root'])
+    expect(sessionsInDirectory([...all, all[0]], '/work', true)).toHaveLength(2)
+    expect(sessionsInDirectory(all, '/', true)).toHaveLength(3)
+    expect(sessionsInDirectory(all, '', true)).toHaveLength(0)
   })
 })

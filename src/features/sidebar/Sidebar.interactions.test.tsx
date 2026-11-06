@@ -1,6 +1,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { invoke } from '@tauri-apps/api/core'
 import type { ComponentProps } from 'react'
 import type { SessionView } from '@/lib/types'
 import Sidebar from './Sidebar'
@@ -47,6 +48,9 @@ const click = (element: HTMLElement) => act(async () => element.click())
 const textButton = (text: string) => [...host.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent === text)!
 const openSessionMenu = () => act(async () => {
   rows()[0].dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 10, clientY: 10 }))
+})
+const contextMenu = (element: HTMLElement) => act(async () => {
+  element.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 10, clientY: 10 }))
 })
 
 it('opens the current project, previews three including the selection, and shows all on demand', async () => {
@@ -154,4 +158,89 @@ it('waits for deletion, prevents repeat submits, shows failures and allows retry
   expect(props.onDelete).toHaveBeenCalledTimes(2)
   expect(host.textContent).not.toContain('Delete permanently?')
   expect(host.querySelector('[role="alert"]')).toBeNull()
+})
+
+it('deletes every project conversation beyond the preview, including hidden, starred and filed sessions', async () => {
+  props.sessions.push(
+    session('Starred', 'local/drydock', { starred: true }),
+    session('Hidden', 'local/drydock'),
+    session('Filed', 'local/drydock', { folder_id: 'work' }),
+    session('Another project', 'local/other'),
+  )
+  props.hidden = ['Hidden']
+  props.folders = [{ id: 'work', name: 'Work' }]
+  await render()
+  await contextMenu(button('drydock project'))
+  await click(textButton('Delete all sessions…'))
+  expect(host.textContent).toContain('Project files and directories will be kept.')
+  await click(textButton('Delete 8 sessions'))
+  expect(vi.mocked(props.onDelete).mock.calls.map(([id]) => id)).toEqual([
+    'Session 1', 'Session 2', 'Session 3', 'Session 4', 'Session 5', 'Starred', 'Hidden', 'Filed',
+  ])
+  expect(host.textContent).not.toContain('Delete sessions in “drydock”?')
+})
+
+it('limits workspace deletion to its directory and supports cancelling before any delete', async () => {
+  props.sessions.push(session('Shop', 'local/shop'), session('Other workspace', 'local-other/shop'))
+  await render()
+  await contextMenu(button('~/local workspace'))
+  await click(textButton('Delete all sessions…'))
+  expect(textButton('Delete 6 sessions')).toBeTruthy()
+  await click(textButton('Cancel'))
+  expect(props.onDelete).not.toHaveBeenCalled()
+  await contextMenu(button('~/local workspace'))
+  await click(textButton('Delete all sessions…'))
+  await click(textButton('Delete 6 sessions'))
+  expect(vi.mocked(props.onDelete).mock.calls.map(([id]) => id)).not.toContain('Other workspace')
+})
+
+it('preserves a custom folder on partial failure and retries only remaining conversations', async () => {
+  props.folders = [{ id: 'work', name: 'Work' }]
+  for (const s of props.sessions.slice(0, 3)) s.folder_id = 'work'
+  props.sessions[0].starred = true
+  props.hidden = ['Session 2']
+  vi.mocked(props.onDelete).mockResolvedValueOnce().mockRejectedValueOnce(new Error('session is running'))
+  await render()
+  await contextMenu(host.querySelector<HTMLElement>('[data-fhead]')!)
+  expect(textButton('Remove folder only…')).toBeTruthy()
+  await click(textButton('Delete folder and sessions…'))
+  await click(textButton('Delete 3 sessions'))
+  expect(host.querySelector('[role="status"]')?.textContent).toContain('1 of 3')
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain('session is running')
+  expect(invoke).not.toHaveBeenCalledWith('delete_folder', expect.anything())
+  vi.mocked(props.onDelete).mockResolvedValue(undefined)
+  await click(textButton('Delete 2 sessions'))
+  expect(vi.mocked(props.onDelete).mock.calls.map(([id]) => id)).toEqual(['Session 1', 'Session 2', 'Session 2', 'Session 3'])
+  expect(invoke).toHaveBeenCalledWith('delete_folder', { folderId: 'work' })
+  expect(props.onRefresh).toHaveBeenCalled()
+})
+
+it('keeps the confirmed selection fixed when a new conversation arrives during deletion', async () => {
+  let finish!: () => void
+  vi.mocked(props.onDelete).mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve }))
+  await render()
+  await contextMenu(button('drydock project'))
+  await click(textButton('Delete all sessions…'))
+  await click(textButton('Delete 5 sessions'))
+  expect(textButton('Deleting…').disabled).toBe(true)
+  props = { ...props, sessions: [...props.sessions, session('Arrived later', 'local/drydock')] }
+  await render()
+  await act(async () => finish())
+  expect(props.onDelete).toHaveBeenCalledTimes(5)
+  expect(vi.mocked(props.onDelete).mock.calls.map(([id]) => id)).not.toContain('Arrived later')
+})
+
+it('retries a failed folder removal without deleting conversations a second time', async () => {
+  props.folders = [{ id: 'work', name: 'Work' }]
+  props.sessions[0].folder_id = 'work'
+  vi.mocked(invoke).mockRejectedValueOnce(new Error('folder is locked'))
+  await render()
+  await contextMenu(host.querySelector<HTMLElement>('[data-fhead]')!)
+  await click(textButton('Delete folder and sessions…'))
+  await click(textButton('Delete 1 session'))
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain('folder is locked')
+  expect(host.textContent).toContain('The conversations have been deleted.')
+  await click(textButton('Remove folder'))
+  expect(props.onDelete).toHaveBeenCalledTimes(1)
+  expect(invoke).toHaveBeenCalledTimes(2)
 })

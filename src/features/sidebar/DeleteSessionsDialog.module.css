@@ -1,0 +1,4 @@
+.files { margin: 10px 0 0; color: var(--dd-text1); }
+.progress, .error { margin: 0 16px 12px; font-size: var(--dd-text-sm); overflow-wrap: anywhere; }
+.progress { color: var(--dd-text2); }
+.error { color: var(--dd-err-bright); }
