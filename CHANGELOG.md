@@ -4,6 +4,34 @@ Each tagged release's `## vX.Y.Z` section becomes the GitHub release body and
 the in-app updater's release notes (extracted by `scripts/release-notes.py` in
 CI — a tag without its section fails the release).
 
+## v0.9.0 — 2026-11-05
+
+- **Review with another agent.** Open an indexed session's Briefing panel and
+  choose **Review with…** to ask Claude Code or Codex for an independent code
+  review. The reviewer receives a captured source snapshot, the diff and your
+  acceptance criteria, without the builder's conversation. Findings include
+  severity, file/line locations, explanations and suggested reproductions.
+  Inspect the captured source, copy selected findings back to your original
+  agent, or prepare a fixes handoff. Changed files mark the review stale.
+- **Continue work across harnesses.** **Handoff…** creates an editable packet
+  containing the goal, source identity, working directory, recent conversation,
+  briefing and current diff. Choose the destination and open a new interactive
+  agent session with that context. Source/destination links are retained;
+  Codex pairing uses a unique handoff marker to avoid linking another session
+  that happens to be running in the same directory.
+- **Saved, bounded review jobs.** Results and errors survive restarts. Reviews
+  can be cancelled, time out after five minutes and run at most two at once.
+  Interrupted reviews are not automatically restarted. Reviewers use read-only
+  controls and do not execute tests or apply fixes automatically.
+- **Explicit agent selection.** Both flows show enabled Claude Code/Codex
+  profiles. Claude Code is enabled by default; enable Codex in Settings →
+  Agents to add it. The dialog now explains this when only one is enabled.
+
+Review jobs use the installed CLI binaries. Codex review jobs use the standard
+provider/login without custom user configuration; interactive handoffs use
+profile startup commands. Handoffs share the source working files, so pause
+other agents editing them. Separate task workspaces are a future feature.
+
 ## v0.8.4 — 2026-11-05
 
 - **Semantic search wakes when you search.** Keyword matches appear immediately,

@@ -12,6 +12,7 @@ import AgentPicker from '@/features/session/AgentPicker'
 import SettingsOverlay from '@/features/settings/SettingsOverlay'
 import BriefingPanel from '@/features/briefing/BriefingPanel'
 import HomeView from '@/features/home/HomeView'
+import { shellQuote, type HandoffLaunch } from '@/features/collaboration/types'
 import FindBar from '@/features/search/FindBar'
 import { useSessions } from '@/hooks/useSessions'
 import ConfirmCloseDialog from './dialogs/ConfirmCloseDialog'
@@ -353,16 +354,17 @@ export default function App() {
   // "claude"). Pin the id ourselves via `--session-id` and set it on the tab, so
   // a new session behaves exactly like a resumed one. The label then resolves
   // live from the index once the session is picked up (see TabBar).
-  const newClaudeSession = (projectPath: string, cmd = claudeCommand(agentsRef.current)) => {
+  const newClaudeSession = (projectPath: string, cmd = claudeCommand(agentsRef.current), handoff?: HandoffLaunch) => {
     const sessionId = uuidv4()
     addTab({
       title: 'claude',
       kind: 'pty',
       program: null,
-      args: ['-l', '-c', shellLine(`${cmd} --session-id '${sessionId}'`)],
+      args: ['-l', '-c', shellLine(`${cmd} --session-id '${sessionId}'${handoff ? ` ${shellQuote(handoff.prompt)}` : ''}`)],
       cwd: projectPath,
       sessionId,
     })
+    if (handoff) invoke('collaboration_bind', { id: handoff.id, sessionId }).catch(console.error)
   }
 
   // A launch-tier agent tab: the profile's command in a login shell, identified
@@ -371,12 +373,12 @@ export default function App() {
   // it: a BOUNDED poll (8 × 2s, stops early on close/exit/success) matches the
   // newest rollout rooted at this cwd. Once paired, the tab links to its
   // sidebar row, resumes across update restarts, and receives its badges.
-  const newAgentTab = (a: ResolvedAgent, cwd: string | null) => {
+  const newAgentTab = (a: ResolvedAgent, cwd: string | null, handoff?: HandoffLaunch) => {
     const id = addTab({
       title: cwd ? `${a.name} · ${baseName(cwd)}` : a.name,
       kind: 'pty',
       program: null,
-      args: agentArgs(a.command),
+      args: agentArgs(a.command + (handoff ? ` ${shellQuote(handoff.prompt)}` : '')),
       cwd,
       agent: a.id,
     })
@@ -386,11 +388,12 @@ export default function App() {
     const tick = () => {
       const t = tabsRef.current.find((x) => x.id === id)
       if (!t || t.exited || t.sessionId) return // closed, died, or already paired
-      invoke<string | null>('codex_latest_session', { cwd, afterMs })
+      invoke<string | null>('codex_latest_session', { cwd, afterMs, promptContains: handoff?.id ?? null })
         .then((sid) => {
           if (sid && !sid.includes("'")) {
             setTabs((p) => p.map((x) => (x.id === id ? { ...x, sessionId: sid } : x)))
-          } else if (++tries < 8) {
+            if (handoff) invoke('collaboration_bind', { id: handoff.id, sessionId: sid }).catch(console.error)
+          } else if (++tries < (handoff ? 120 : 8)) {
             window.setTimeout(tick, 2000)
           }
         })
@@ -1401,6 +1404,15 @@ export default function App() {
           <BriefingPanel
             key={activeTab.id}
             sessionId={activeTab.sessionId ?? null}
+            sourceAgent={s?.agent ?? activeTab.agent ?? 'claude'}
+            agents={agents}
+            onHandoff={(handoff) => {
+              const profile = agentsRef.current.find((a) => a.id === handoff.agent)
+              if (!profile) return
+              if (profile.id === 'claude') newClaudeSession(handoff.project_path, profile.command, handoff)
+              else newAgentTab(profile, handoff.project_path, handoff)
+            }}
+            onOpenSession={(id) => focusSessionRef.current(id)}
             projectPath={s?.project_path ?? activeTab.cwd ?? undefined}
             starred={!!s?.starred}
             label={s ? sessionLabel(s) : null}

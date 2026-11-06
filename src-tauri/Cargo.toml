@@ -1,6 +1,6 @@
 [package]
 name = "drydock-app"
-version = "0.8.4"
+version = "0.9.0"
 edition = "2021"
 
 [build-dependencies]
@@ -19,6 +19,7 @@ anyhow = "1"
 chrono = "0.4"
 libc = "0.2"
 getrandom = "0.3"
+sha2 = "0.10"
 fastembed = { version = "4", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]

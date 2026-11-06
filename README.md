@@ -22,7 +22,7 @@ and resume any session right where you left off — with an AI briefing of what 
 
 Claude Code writes every session to disk — but once you have dozens of them scattered across projects and terminal windows, they're easy to lose track of. Drydock indexes all of them into one native window: a **session radar** for what's live right now, **full-history search** for everything that came before, and a **real terminal** to pick any of it back up. And since your Claude sessions rarely live alone, it launches your other agents too — codex sessions get the same sidebar, resume, and turn-finished badges.
 
-It never wraps an agent binary and — save an explicit right-click *Delete permanently* — never writes into `~/.claude` or `~/.codex`. It reads your transcripts, hosts real terminals, and keeps a local index; the only thing that ever sends transcript content anywhere is the briefing card, made through your own `claude` CLI.
+It never wraps an agent binary and — save an explicit right-click *Delete permanently* — never writes into `~/.claude` or `~/.codex`. It reads your transcripts, hosts real terminals, and keeps a local index; briefing cards run through your own `claude` CLI, while explicit review and handoff actions share captured code or context through your selected installed agent.
 
 ## Highlights
 
@@ -150,6 +150,31 @@ The bundle lands in `target/release/bundle/macos/Drydock.app`. For development, 
 
 Click a session in the sidebar to preview it (a single preview tab until you engage — typing in it keeps it). Drag a session onto a folder — or onto empty space in the folder band — to organize; right-click for the same moves plus rename, hide, delete, and transcript. Resuming an ended session reopens it in its original directory; a session live elsewhere opens read-only — or right-click → **Take over here** to stop the terminal that owns it and resume it in Drydock (it asks first). Quitting only asks when it would interrupt a turn actually in flight — idle sessions quit silently and come back on relaunch.
 
+## Cross-agent review and handoff
+
+Open an indexed session and expand its Briefing panel:
+
+- **Review with…** captures working changes (or the last commit in a clean
+  checkout) and asks Claude Code or Codex for an independent, read-only review.
+  Supply acceptance criteria, inspect findings against captured source, and
+  copy selected findings back to your builder or prepare a fixes handoff.
+  Reviewers suggest reproductions; they do not run tests or apply edits.
+- **Handoff…** prepares an editable context packet and opens a new interactive
+  agent session in the source working directory. The packet includes the goal,
+  recent conversation, briefing and working diff. The source session remains
+  available, with links between the sessions after destination pairing.
+
+Only enabled Claude Code/Codex profiles appear; enable Codex in **Settings →
+Agents** if you only see Claude Code. Reviews use installed CLI binaries and
+consume their account usage. Codex review jobs exclude custom user config and
+use the standard provider/login; interactive handoffs honor startup commands.
+
+Reviews persist under Drydock's app data, have a five-minute timeout, support
+cancellation and allow two concurrent jobs. Interrupted reviews are not retried
+automatically. Source changes mark results stale. Snapshot exclusions (binary,
+large or symlinked files and harness configuration) are listed in the dialog.
+Handoffs use the same working files; pause other agents editing them first.
+
 ## Configuration
 
 **Agents** live in Settings → Agents: toggle on the ones you use, edit any launch command (Claude Code's included — `claude --your-flags` flows through new sessions, resumes, and post-update restores), add custom agents, and switch the window tint. Nothing is enabled by default except Claude Code, and enabling an agent never touches that agent's own config files. Agent names and marks belong to their respective vendors; Drydock isn't affiliated with or endorsed by any of them.
@@ -180,7 +205,7 @@ Drydock calls your own `claude` binary, so it inherits whatever backend you've c
 
 ## Data & privacy
 
-Everything stays local. Drydock reads `~/.claude` and `~/.codex` and never writes into them — with one explicit exception: right-click → *Delete permanently* removes that session's transcript, at your request. Its own index lives under `~/Library/Application Support/com.drydock.app/`, and embeddings run on-device. Transcript content only ever leaves through briefing cards, generated automatically via your own `claude` CLI to whatever backend you've configured. Everything else on the wire is content-free: a twice-daily GitHub Releases version check, a one-time download of the ~110 MB embedding model on first launch, the MCP health check (your own `claude mcp list`, which contacts the servers you configured), and the libraries a rendered HTML artifact pulls from a fixed list of CDNs (jsDelivr, unpkg, cdnjs, Tailwind, Plotly, D3, Google Fonts). Past that list an artifact can't fetch, open a WebSocket, or load an image, video, font or stylesheet, so the ordinary ways of beaconing out what it renders are shut. One gap is left, named rather than glossed: WebRTC sits outside what a content policy can restrict in WebKit, so a deliberately hostile artifact could still use it. The visible trade-off: a remote `<img src="https://…">` inside an artifact won't load; ask the session to inline it instead. When Claude Code deletes a transcript under its retention policy, the session leaves Drydock too.
+Everything stays local. Drydock reads `~/.claude` and `~/.codex` and never writes into them — with one explicit exception: right-click → *Delete permanently* removes that session's transcript, at your request. Its own index lives under `~/Library/Application Support/com.drydock.app/`, and embeddings run on-device. Briefing cards send transcript excerpts automatically via your own `claude` CLI to the backend you've configured. When you explicitly start a cross-agent review, the selected CLI receives captured source code and review instructions. Handoffs pass the context packet you preview and edit to the selected agent, whose configured backend may receive that content. Everything else on the wire is content-free: a twice-daily GitHub Releases version check, a one-time download of the ~110 MB embedding model on first launch, the MCP health check (your own `claude mcp list`, which contacts the servers you configured), and the libraries a rendered HTML artifact pulls from a fixed list of CDNs (jsDelivr, unpkg, cdnjs, Tailwind, Plotly, D3, Google Fonts). Past that list an artifact can't fetch, open a WebSocket, or load an image, video, font or stylesheet, so the ordinary ways of beaconing out what it renders are shut. One gap is left, named rather than glossed: WebRTC sits outside what a content policy can restrict in WebKit, so a deliberately hostile artifact could still use it. The visible trade-off: a remote `<img src="https://…">` inside an artifact won't load; ask the session to inline it instead. When Claude Code deletes a transcript under its retention policy, the session leaves Drydock too.
 
 Codex plain JSONL rollouts now use the shared transcript view, keyword/semantic index, stars, and briefing cards (generated through your configured Claude CLI). Database-only threads remain discoverable and searchable by title; compressed and database-only conversation content is not yet imported.
 

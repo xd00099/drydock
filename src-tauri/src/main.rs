@@ -5,6 +5,7 @@ mod agents;
 mod attention;
 mod capabilities;
 mod cc_data;
+mod collaboration;
 mod embedder;
 mod enricher;
 mod files;
@@ -733,6 +734,7 @@ fn main() {
             // every PTY (terminal tabs) and, in the enricher, into card calls.
             let cfg = settings::Settings::load(&data);
             app.manage(PtyManager::with_env(cfg.env_pairs()));
+            app.manage(collaboration::Collaboration::new(data.join("collaboration"))?);
             // Overnight-sleep display recovery: emit `system-woke` so the
             // frontend can rebuild layers + terminals (wake.rs / lib/wake.ts).
             wake::watch(app.handle().clone());
@@ -803,6 +805,14 @@ fn main() {
             index::set_session_folder,
             index::delete_session_permanently,
             index::session_chunks,
+            collaboration::collaboration_prepare,
+            collaboration::collaboration_list,
+            collaboration::collaboration_review,
+            collaboration::collaboration_cancel,
+            collaboration::collaboration_stale,
+            collaboration::collaboration_handoff,
+            collaboration::collaboration_bind,
+            collaboration::collaboration_file,
             files::session_transcript,
             files::export_transcript,
             files::session_files,
@@ -842,6 +852,7 @@ fn main() {
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
                 use tauri::Manager;
+                app.state::<collaboration::Collaboration>().cancel_all();
                 app.state::<PtyManager>().kill_all();
             }
         });

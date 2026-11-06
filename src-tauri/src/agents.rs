@@ -171,11 +171,14 @@ pub fn codex_latest_session(
     codex: State<'_, CodexState>,
     cwd: String,
     after_ms: i64,
+    prompt_contains: Option<String>,
 ) -> Option<String> {
     codex
         .snapshot()
         .into_iter()
         .filter(|s| s.cwd == cwd && s.mtime_ms >= after_ms)
+        .filter(|s| prompt_contains.as_ref().is_none_or(|marker|
+            s.title.as_ref().is_some_and(|t| t.contains(marker)) || s.recap.as_ref().is_some_and(|t| t.contains(marker))))
         .max_by_key(|s| s.mtime_ms)
         .map(|s| s.session_id)
 }

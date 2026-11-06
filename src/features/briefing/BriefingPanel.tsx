@@ -8,10 +8,17 @@ import { BriefingTab } from './BriefingTab'
 import { ProjectTab } from './ProjectTab'
 import { PreviewTab } from './PreviewTab'
 import { S } from './styles'
+import CollaborationPanel from '@/features/collaboration/CollaborationPanel'
+import type { HandoffLaunch } from '@/features/collaboration/types'
+import type { ResolvedAgent } from '@/lib/agents'
 
 type RightTab = 'briefing' | 'project' | 'preview'
 
 type Props = {
+  sourceAgent: string
+  agents: ResolvedAgent[]
+  onHandoff: (launch: HandoffLaunch) => void
+  onOpenSession: (id: string) => void
   sessionId: string | null // null for a brand-new claude tab with no session id yet
   projectPath?: string // active session's project, for per-project MCP lookup
   starred: boolean
@@ -58,7 +65,7 @@ function loadRightTab(): RightTab {
   return saved === 'briefing' || saved === 'project' || saved === 'preview' ? saved : 'briefing'
 }
 
-export default function BriefingPanel({ sessionId, projectPath, starred, artifacts, label, onToggleStar, onRename, initialUnread, review, reviewAccent, onReviewQueue, onReviewDiscard, onReviewSend, collapsed, onSetCollapsed, panelJump }: Props) {
+export default function BriefingPanel({ sourceAgent, agents, onHandoff, onOpenSession, sessionId, projectPath, starred, artifacts, label, onToggleStar, onRename, initialUnread, review, reviewAccent, onReviewQueue, onReviewDiscard, onReviewSend, collapsed, onSetCollapsed, panelJump }: Props) {
   const panelChord = useChord('briefing.toggle')
   const tabChords: Record<RightTab, string> = {
     briefing: useChord('briefing.tab.briefing'),
@@ -186,6 +193,7 @@ export default function BriefingPanel({ sessionId, projectPath, starred, artifac
 
         {/* Every tab manages its own layout: Preview edge-to-edge, Briefing and
             Project as scrolling-top / pinned-bottom section stacks. */}
+        {sessionId && <CollaborationPanel sessionId={sessionId} sourceAgent={sourceAgent} agents={agents} onHandoff={onHandoff} onOpenSession={onOpenSession} />}
         {tab === 'preview' ? (
           <PreviewTab
             artifacts={artifacts}
