@@ -11,8 +11,8 @@
   overflow-y: auto;
   background: var(--dd-bg0);
   color: var(--dd-text1);
-  font-family: system-ui;
-  font-size: 12px;
+  font-family: var(--dd-font-ui);
+  font-size: var(--dd-text-sm);
   border-right: 1px solid var(--dd-hairline);
   user-select: none;
   -webkit-user-select: none;
@@ -38,9 +38,9 @@
 .bar {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   min-height: var(--dd-titlebar);
-  padding: 8px 8px 6px;
+  padding: 10px 8px;
   padding-left: var(--dd-lights-inset);
 }
 
@@ -48,8 +48,9 @@
 .head {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 6px 8px 4px;
+  gap: 6px;
+  padding: 18px 12px 6px;
+  font-size: var(--dd-text-xs);
   color: var(--dd-text3);
   font-weight: 600;
 }
@@ -65,15 +66,15 @@
   display: block;
   width: calc(100% - 14px);
   box-sizing: border-box;
-  margin: 1px 7px;
-  padding: 5px 9px;
+  margin: 2px 7px;
+  padding: 8px 10px;
   text-align: left;
   background: none;
   border: 0;
   border-radius: var(--dd-r-md);
   color: var(--dd-text1);
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--dd-text-sm);
   transition:
     background var(--dd-t) var(--dd-ease),
     color var(--dd-t) var(--dd-ease),
@@ -87,7 +88,7 @@
   padding: 0;
   cursor: pointer;
   color: var(--dd-text3);
-  font-size: 12px;
+  font-size: var(--dd-text-sm);
   transition: color var(--dd-t) var(--dd-ease);
 }
 .btn:hover {
@@ -110,8 +111,8 @@
   border: 1px solid var(--dd-hairline-strong);
   border-radius: var(--dd-r-lg);
   box-shadow: var(--dd-shadow-3);
-  font-family: system-ui;
-  font-size: 12px;
+  font-family: var(--dd-font-ui);
+  font-size: var(--dd-text-sm);
 }
 
 .menuItem {
@@ -124,7 +125,7 @@
   border-radius: var(--dd-r-sm);
   color: var(--dd-text1);
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--dd-text-sm);
   transition: background var(--dd-t) var(--dd-ease);
 }
 /* The whole reason this file exists — no JS hover handlers. */
@@ -140,7 +141,12 @@
   border: 1px solid var(--dd-accent-strong);
   border-radius: var(--dd-r-sm);
   color: var(--dd-text);
-  font-size: 12px;
-  font-family: system-ui;
+  font-size: var(--dd-text-sm);
+  font-family: var(--dd-font-ui);
   outline: none;
 }
+
+.frame { display: flex; flex-direction: column; height: 100%; background: var(--dd-chrome); }
+.brand { flex: 1; text-align: left; background: none; border: 0; color: var(--dd-text); font-size: 14px; font-weight: 650; letter-spacing: -0.025em; padding: 0; cursor: pointer; }
+.age { flex-shrink: 0; margin-left: 4px; color: var(--dd-text3); font-size: var(--dd-text-xs); font-variant-numeric: tabular-nums; }
+.preview { color: var(--dd-text3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 4px; padding-left: 22px; font-size: var(--dd-text-xs); }

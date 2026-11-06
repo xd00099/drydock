@@ -288,8 +288,8 @@ function McpSection({ projectPath }: { projectPath?: string }) {
   // Pinned-section layout, same recipe as FILES CHANGED: seam on top, darker
   // ground, own scroll, bounded height — skills can never bury a dead server.
   return (
-    <div style={{ flex: secOpen ? '0 1 auto' : 'none', maxHeight: secOpen ? '55%' : undefined, display: 'flex', flexDirection: 'column', borderTop: '1px solid var(--dd-hover)', background: 'var(--dd-well)' }}>
-      <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 7, padding: '8px 12px 6px' }}>
+    <div style={{ flex: secOpen ? '0 1 auto' : 'none', maxHeight: secOpen ? '55%' : undefined, display: 'flex', flexDirection: 'column', borderTop: '1px solid var(--dd-hairline)', background: 'var(--dd-panel)' }}>
+      <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 7, padding: '12px 16px' }}>
         {/* label and age SHRINK (ellipsize) at narrow widths; the dot, the
             count, and ↻ are flex:none so the signal + the cure never clip */}
         <button onClick={toggleOpen} title={secOpen ? 'Collapse' : 'Expand'} style={{ ...S.groupBtn, width: 'auto', flex: '0 1 auto', minWidth: 0, gap: 5, padding: 0 }}>
@@ -303,7 +303,7 @@ function McpSection({ projectPath }: { projectPath?: string }) {
           />
         )}
         {servers !== null && servers.length > 0 && (
-          <span style={{ flex: 'none', color: 'var(--dd-dim)', fontSize: 10, whiteSpace: 'nowrap' }}>
+          <span style={{ flex: 'none', color: 'var(--dd-dim)', fontSize: 11, whiteSpace: 'nowrap' }}>
             {servers.length}{failed > 0 ? ` · ${failed} failed` : ''}
           </span>
         )}
@@ -317,7 +317,7 @@ function McpSection({ projectPath }: { projectPath?: string }) {
               ? `${checkErr}\nlast good check: ${checkedAt ? ageText(checkedAt) : 'never'}`
               : checkedAt ? `health checked ${ageText(checkedAt)}` : undefined
           }
-          style={{ color: checkErr ? 'var(--dd-err)' : 'var(--dd-dim)', fontSize: 10, whiteSpace: 'nowrap', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}
+          style={{ color: checkErr ? 'var(--dd-err)' : 'var(--dd-dim)', fontSize: 11, whiteSpace: 'nowrap', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}
         >
           {checking ? 'checking…' : checkErr ? 'check failed' : hasExternal && checkedAt ? relAge(checkedAt) : ''}
         </span>
@@ -326,20 +326,20 @@ function McpSection({ projectPath }: { projectPath?: string }) {
             onClick={() => runCheck(true)}
             disabled={checking}
             title="Re-check server health now"
-            style={{ ...S.iconBtn, flex: 'none', fontSize: 10, padding: '1px 5px', opacity: checking ? 0.4 : 1, cursor: checking ? 'default' : 'pointer' }}
+            style={{ ...S.iconBtn, flex: 'none', fontSize: 11, padding: '1px 5px', opacity: checking ? 0.4 : 1, cursor: checking ? 'default' : 'pointer' }}
           >
             ↻
           </button>
         )}
       </div>
       {secOpen && (
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 12px 10px' }}>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 16px 16px' }}>
       {checkErr && (
-        <div title={checkErr} style={{ color: 'var(--dd-err)', fontSize: 10, marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <div title={checkErr} style={{ color: 'var(--dd-err)', fontSize: 11, marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {checkErr}
         </div>
       )}
-      <div style={{ color: 'var(--dd-dim)', fontSize: 10, marginBottom: 8, lineHeight: 1.4 }}>toggling applies to new sessions · secrets hidden</div>
+      <div style={{ color: 'var(--dd-dim)', fontSize: 11, marginBottom: 8, lineHeight: 1.4 }}>toggling applies to new sessions · secrets hidden</div>
       {servers === null ? (
         <div style={S.muted}>loading…</div>
       ) : servers.length === 0 ? (
@@ -371,7 +371,7 @@ function McpSection({ projectPath }: { projectPath?: string }) {
                 />
               </div>
               {s.detail && (
-                <div style={{ color: 'var(--dd-text3)', wordBreak: 'break-all', fontFamily: 'Menlo, monospace', fontSize: 11, marginTop: 1, paddingLeft: 16 }}>{s.detail}</div>
+                <div style={{ color: 'var(--dd-text3)', wordBreak: 'break-all', fontFamily: 'var(--dd-font-mono)', fontSize: 11, marginTop: 1, paddingLeft: 16 }}>{s.detail}</div>
               )}
               {open &&
                 s.tools.map((t) => (

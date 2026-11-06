@@ -157,7 +157,7 @@ export default function TimeMachine({ sessionId, initialPath, onClose }: Props) 
     return folded
   }, [sel, prev, blobs])
 
-  const mono = { fontFamily: 'Menlo, monospace', fontSize: 11 } as const
+  const mono = { fontFamily: 'var(--dd-font-mono)', fontSize: 11 } as const
 
   return (
     <div
@@ -170,7 +170,7 @@ export default function TimeMachine({ sessionId, initialPath, onClose }: Props) 
           onClose()
         }
       }}
-      style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'var(--dd-bg0)', display: 'flex', flexDirection: 'column', transform: 'translateZ(0)', outline: 'none', fontFamily: 'system-ui', fontSize: 12, color: 'var(--dd-text1)' }}
+      style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'var(--dd-bg0)', display: 'flex', flexDirection: 'column', transform: 'translateZ(0)', outline: 'none', fontFamily: 'var(--dd-font-ui)', fontSize: 12, color: 'var(--dd-text1)' }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid var(--dd-hairline)' }}>
         <span style={{ flex: 1, color: 'var(--dd-text)', fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

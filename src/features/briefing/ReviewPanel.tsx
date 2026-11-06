@@ -33,7 +33,7 @@ export function ReviewPanel({
       ? 'Claude is waiting for your feedback'
       : 'Feedback queues here until Claude checks for it'
   return (
-    <div style={{ flex: 'none', maxHeight: '45%', display: 'flex', flexDirection: 'column', borderTop: `2px solid ${accent}`, background: 'var(--dd-well)', fontFamily: 'system-ui' }}>
+    <div style={{ flex: 'none', maxHeight: '45%', display: 'flex', flexDirection: 'column', borderTop: `2px solid ${accent}`, background: 'var(--dd-well)', fontFamily: 'var(--dd-font-ui)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 10px 0', fontSize: 10, color: 'var(--dd-text3)', flex: 'none' }}>
         <span style={{ width: 7, height: 7, borderRadius: '50%', background: busy ? 'var(--dd-warn-bright)' : review.presence === 'listening' ? 'var(--dd-ok-bright)' : 'var(--dd-dim)', flex: 'none' }} />
         <span style={{ flex: 1 }}>{presenceLine}</span>
@@ -75,7 +75,7 @@ export function ReviewPanel({
           placeholder={busy ? 'Claude is applying your feedback…' : 'Message Claude about this artifact…'}
           disabled={busy}
           rows={2}
-          style={{ flex: 1, resize: 'none', background: 'var(--dd-bg1)', color: 'var(--dd-text)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', padding: '6px 8px', fontSize: 11, fontFamily: 'system-ui' }}
+          style={{ flex: 1, resize: 'none', background: 'var(--dd-bg1)', color: 'var(--dd-text)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', padding: '6px 8px', fontSize: 11, fontFamily: 'var(--dd-font-ui)' }}
         />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <button

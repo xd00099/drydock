@@ -5,15 +5,15 @@
   background: var(--dd-bg0);
   /* was a hard 1px --dd-border rule — the strip now separates by tone */
   border-bottom: 1px solid var(--dd-hairline);
-  font-family: system-ui;
+  font-family: var(--dd-font-ui);
   font-size: 12px;
 }
 
 .lane {
   display: flex;
   align-items: center;
-  gap: 3px;
-  padding: 4px 8px;
+  gap: 4px;
+  padding: 8px 12px;
   overflow-x: auto;
   white-space: nowrap;
   /* the strip is chrome: no visible scrollbar even when a lane overflows */
@@ -31,10 +31,10 @@
    its text so the width goes back to the tabs. */
 .laneLabel {
   flex: none;
-  font-size: 9px;
-  font-weight: 650;
-  letter-spacing: 0.1em;
-  color: var(--dd-dim2);
+  font-size: var(--dd-text-xs);
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--dd-text3);
   margin-right: 4px;
   user-select: none;
 }
@@ -47,7 +47,7 @@
   align-items: center;
   gap: 6px;
   max-width: 240px;
-  padding: 5px 9px;
+  padding: 8px 12px;
   border-radius: var(--dd-r-md);
   cursor: pointer;
   user-select: none;
@@ -77,9 +77,9 @@
 
 .ordinal {
   flex: none;
-  font-size: 9px;
+  font-size: var(--dd-text-xs);
   color: var(--dd-dim);
-  font-family: ui-monospace, monospace;
+  font-family: var(--dd-font-mono);
   line-height: 1;
 }
 
@@ -105,7 +105,7 @@
   background: var(--dd-accent-muted);
   color: var(--dd-bg0);
   border-radius: var(--dd-r-pill);
-  font-size: 9px;
+  font-size: var(--dd-text-xs);
   font-weight: 700;
   padding: 0 5px;
   line-height: 14px;
@@ -142,8 +142,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 28px;
+  height: 28px;
   background: none;
   border: 0;
   border-radius: var(--dd-r-sm);

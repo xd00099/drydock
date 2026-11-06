@@ -5,6 +5,7 @@ import AgentLogo from '@/components/AgentLogo'
 import { useChord } from '@/lib/keymap'
 import { cx } from '@/components/ui'
 import s from './TabBar.module.css'
+import Icon from '@/components/ui/Icon'
 
 type Props = {
   tabs: Tab[]
@@ -56,29 +57,12 @@ function chipTint(
   proj: string | null | undefined,
   agTint?: string
 ): React.CSSProperties {
-  // tint the chip in its PROJECT's color: a faint wash when inactive, stronger
-  // when active; the solid strip stays at left. Kept even though sidebar rows
-  // dropped their wash — a handful of chips is not a list you scan, so the
-  // heterogeneity that made the wash costly there doesn't arise. Agent tabs
-  // have no project (nothing indexes them) — their BRAND tint plays the same
-  // role at the same strengths.
-  const background = t.sessionId
-    ? projectColor(proj, isActive ? 0.3 : staged ? 0.18 : 0.1)
-    : agTint
-      ? `color-mix(in srgb, ${agTint} ${isActive ? 24 : staged ? 14 : 8}%, transparent)`
-      : isActive
-        ? 'var(--dd-tint-active)'
-        : staged
-          ? 'var(--dd-tint)'
-          : 'transparent'
-  // "on stage" mark: a split can show several tabs at once — every visible one
-  // wears it; the focused one also gets the strong wash.
-  const stageMark = staged
-    ? `inset 0 -2px 0 ${t.sessionId ? projectColor(proj) : agTint ?? 'var(--dd-accent-muted)'}`
-    : null
-  const accentMark = accent ? `inset 3px 0 0 ${accent}` : null
-  const shadow = [accentMark, stageMark].filter(Boolean).join(', ')
-  return { background, boxShadow: shadow || undefined }
+  // Project color is a small orientation mark; surfaces share one neutral scale.
+  const mark = accent ?? (t.sessionId ? projectColor(proj) : agTint ?? 'var(--dd-accent)')
+  return {
+    background: isActive ? 'var(--dd-canvas)' : staged ? 'var(--dd-tint)' : undefined,
+    boxShadow: staged ? `inset 0 -2px 0 ${mark}` : undefined,
+  }
 }
 
 
@@ -198,7 +182,7 @@ export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs,
     <div data-tabbar="1" data-tauri-drag-region className={s.bar} style={barTint}>
       {sessionTabs.length > 0 && (
         <div data-lane="s" data-tauri-drag-region className={s.lane}>
-          <span data-tauri-drag-region className={s.laneLabel}>SESSIONS</span>
+          <span data-tauri-drag-region className={s.laneLabel}>Sessions</span>
           {laneChips(
             sessionTabs.map((t) => {
               const s = t.sessionId ? sessions.find((x) => x.session_id === t.sessionId) : undefined
@@ -210,13 +194,13 @@ export default function TabBar({ tabs, sessions, activeId, stagedIds, shellDirs,
           )}
           {/* browser new-tab metaphor: ＋ opens Home (the launchpad), where a
               session is picked or started — spawning one blind needs a project */}
-          <button onClick={onHome} title={`Home — pick or start a session (${homeChord})`} className={s.plus}>＋</button>
+          <button onClick={onHome} title={`Home — pick or start a session (${homeChord})`} className={s.plus}><Icon name="plus" size={15} /></button>
         </div>
       )}
       <div data-lane="t" data-tauri-drag-region className={cx(s.lane, sessionTabs.length > 0 && s.laneDivided)}>
-        <span data-tauri-drag-region className={s.laneLabel}>TERMINALS</span>
+        <span data-tauri-drag-region className={s.laneLabel}>Shells</span>
         {laneChips(termTabs.map((t) => ({ t, el: chip(t, termNames[t.id], undefined, shellDirs[t.id] ?? 'shell') })), true)}
-        <button onClick={onNewShell} title={`New shell tab (${shellChord})`} className={s.plus}>＋</button>
+        <button onClick={onNewShell} title={`New shell tab (${shellChord})`} className={s.plus}><Icon name="plus" size={15} /></button>
       </div>
     </div>
   )

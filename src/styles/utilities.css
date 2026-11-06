@@ -12,7 +12,7 @@
 .md h2 { font-size: 14px; }
 .md h3, .md h4 { font-size: 13px; }
 .md a { color: var(--dd-accent); }
-.md code { font-family: Menlo, Monaco, monospace; font-size: 11px; background: var(--dd-row); border-radius: 3px; padding: 1px 4px; }
+.md code { font-family: var(--dd-font-mono); font-size: 11px; background: var(--dd-row); border-radius: 3px; padding: 1px 4px; }
 .md pre { background: var(--dd-bg0); border: 1px solid var(--dd-border); border-radius: 6px; padding: 8px 10px; overflow-x: auto; }
 .md pre code { background: none; padding: 0; }
 .md ul, .md ol { padding-left: 20px; }

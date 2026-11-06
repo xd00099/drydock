@@ -99,7 +99,7 @@ const chipBtn: React.CSSProperties = {
   border: 'none',
   cursor: 'pointer',
   color: 'var(--dd-text3)',
-  fontFamily: 'Menlo, monospace',
+  fontFamily: 'var(--dd-font-mono)',
   fontSize: 11,
   padding: '1px 0',
   textAlign: 'left',
@@ -417,7 +417,7 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
               )}
             </button>
             {open && (
-              <div style={{ margin: '2px 0 8px 16px', padding: '6px 8px', background: 'var(--dd-bg0)', border: '1px solid var(--dd-hairline)', borderRadius: 'var(--dd-r-sm)', fontSize: 11, fontFamily: 'Menlo, monospace', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', maxHeight: 260, overflowY: 'auto' }}>
+              <div style={{ margin: '2px 0 8px 16px', padding: '6px 8px', background: 'var(--dd-bg0)', border: '1px solid var(--dd-hairline)', borderRadius: 'var(--dd-r-sm)', fontSize: 11, fontFamily: 'var(--dd-font-mono)', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', maxHeight: 260, overflowY: 'auto' }}>
                 <div style={{ color: 'var(--dd-text2)' }}>{e.text || '(no input summary)'}</div>
                 {r.result && (
                   <div style={{ marginTop: 6, color: r.result.error ? 'var(--dd-err)' : 'var(--dd-text3)' }}>{r.result.text || '(no output)'}</div>
@@ -489,7 +489,7 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
       }}
       // opaque: a split pane's session tint stays in the pane's thin mat —
       // never washing the reading surface (or shifting it with focus)
-      style={{ position: 'relative', height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--dd-bg1)', color: 'var(--dd-text1)', fontFamily: 'system-ui', fontSize: 13 }}
+      style={{ position: 'relative', height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--dd-bg1)', color: 'var(--dd-text1)', fontFamily: 'var(--dd-font-ui)', fontSize: 13 }}
     >
       <div style={{ padding: '6px 10px', background: 'var(--dd-surface2)', display: 'flex', alignItems: 'center', gap: 10 }}>
         <span style={{ flexShrink: 0 }}>
@@ -553,7 +553,7 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
           const el = scrollerRef.current
           if (el) pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
         }}
-        style={{ flex: 1, overflowY: 'auto', padding: 12, fontFamily: 'Menlo, monospace', fontSize: 12 }}
+        style={{ flex: 1, overflowY: 'auto', padding: 12, fontFamily: 'var(--dd-font-mono)', fontSize: 12 }}
       >
         {shownStart > 0 && (
           <button
@@ -667,7 +667,7 @@ function AgentPane({ sessionId, agent, onClose }: { sessionId: string; agent: Ag
           subagent · {agent.agent_type ?? agent.agent_id}{agent.description ? ` — ${agent.description}` : ''}
         </span>
       </div>
-      <div style={{ flex: 1, overflowY: 'auto', padding: 12, fontFamily: 'Menlo, monospace', fontSize: 12, color: 'var(--dd-text1)' }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: 12, fontFamily: 'var(--dd-font-mono)', fontSize: 12, color: 'var(--dd-text1)' }}>
         {err && <div style={{ color: 'var(--dd-err)' }}>{err}</div>}
         {entries === null && !err && <div style={{ color: 'var(--dd-dim)' }}>loading…</div>}
         {entries?.map(row)}

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { ResolvedAgent } from '@/lib/agents'
 import { shortPath } from '@/lib/types'
 import AgentLogo from '@/components/AgentLogo'
+import css from '@/components/ui/Palette.module.css'
 
 // The new-session agent step: pops from ⌘N / Home / sidebar ＋ whenever the
 // user has ENABLED 2+ agents in Settings (with one, sessions launch directly
@@ -9,16 +10,6 @@ import AgentLogo from '@/components/AgentLogo'
 // (pinned session id, hooks); everything else launches its command as a
 // plain agent tab. Deliberately tiny: a list, arrows, Enter.
 
-const S = {
-  scrim: { position: 'fixed', inset: 0, zIndex: 80, background: 'rgba(4,6,10,0.55)', display: 'flex', justifyContent: 'center', paddingTop: '18vh' } as React.CSSProperties,
-  box: { width: 420, maxHeight: '50vh', alignSelf: 'flex-start', background: 'var(--dd-surface)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 10, boxShadow: '0 18px 50px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui', outline: 'none' } as React.CSSProperties,
-  cap: { padding: '10px 14px 6px', fontSize: 10, color: 'var(--dd-dim)', textTransform: 'uppercase' as const, letterSpacing: 0.5 },
-  list: { overflowY: 'auto', padding: '0 0 6px' } as React.CSSProperties,
-  row: (sel: boolean) => ({ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 14px', cursor: 'pointer', background: sel ? 'var(--dd-row)' : 'none' }) as React.CSSProperties,
-  name: { fontSize: 13, color: 'var(--dd-text)' } as React.CSSProperties,
-  cmd: { fontSize: 11, color: 'var(--dd-dim)', fontFamily: 'ui-monospace, monospace', marginLeft: 'auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 150 } as React.CSSProperties,
-  hint: { padding: '6px 14px 10px', fontSize: 11, color: 'var(--dd-dim)', borderTop: '1px solid var(--dd-hairline)' } as React.CSSProperties,
-}
 
 export default function AgentPicker({ open, agents, cwd, onPick, onClose }: {
   open: boolean
@@ -49,19 +40,19 @@ export default function AgentPicker({ open, agents, cwd, onPick, onClose }: {
   }
 
   return (
-    <div style={S.scrim} onClick={onClose}>
-      <div style={S.box} onClick={(e) => e.stopPropagation()} onKeyDown={onKey} tabIndex={-1} ref={(el) => el?.focus()}>
-        <div style={S.cap}>new session — which agent?</div>
-        <div style={S.list}>
+    <div className={css.scrim} onClick={onClose}>
+      <div className={css.box} role="dialog" aria-modal="true" aria-label="Choose an agent" onClick={(e) => e.stopPropagation()} onKeyDown={onKey} tabIndex={-1} ref={(el) => el?.focus()}>
+        <div className={css.header}><h2 className={css.title}>Choose an agent</h2><kbd>esc</kbd></div>
+        <div className={css.list}>
           {list.map((a, i) => (
-            <div key={a.id} style={S.row(i === sel)} onMouseEnter={() => setSel(i)} onClick={() => pick(a)}>
+            <div key={a.id} className={css.row} data-selected={i === sel} onMouseEnter={() => setSel(i)} onClick={() => pick(a)}>
               <AgentLogo id={a.id} name={a.name} tint={a.tint} size={22} />
-              <span style={S.name}>{a.name}</span>
-              <span style={S.cmd}>{a.command}</span>
+              <span className={css.agentName}>{a.name}</span>
+              <span className={css.agentCommand}>{a.command}</span>
             </div>
           ))}
         </div>
-        <div style={S.hint} title={cwd ?? undefined}>opens in {cwd ? shortPath(cwd) : '~'} — configure agents in Settings</div>
+        <div className={css.footer} title={cwd ?? undefined}>opens in {cwd ? shortPath(cwd) : '~'} — configure agents in Settings</div>
       </div>
     </div>
   )

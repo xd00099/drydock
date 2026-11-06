@@ -7,6 +7,7 @@ import { IconButton } from '@/components/ui'
 import { Button } from '@/components/ui'
 import Modal, { ModalActions, ModalBody, ModalTitle } from '@/app/dialogs/Modal'
 import cls from './Sidebar.module.css'
+import Icon from '@/components/ui/Icon'
 import LiveIndicator from '@/features/session/LiveIndicator'
 import { BUILTIN_AGENTS } from '@/lib/agents'
 import AgentLogo from '@/components/AgentLogo'
@@ -314,7 +315,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
     // almost no draggable surface at all
     return (
       <div className={cls.rail} onPointerDown={armWindowDrag}>
-        <button className={cls.btn} style={{ fontSize: 15 }} title={`Expand sidebar (${sidebarChord})`} onClick={() => onSetCollapsed(false)}>»</button>
+        <button className={cls.btn} style={{ fontSize: 15 }} title={`Expand sidebar (${sidebarChord})`} onClick={() => onSetCollapsed(false)}><Icon name="right" size={14} /></button>
       </div>
     )
   }
@@ -352,7 +353,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
       return (
         <div
           key={s.session_id}
-          className={cls.row} style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'default', boxShadow: `inset 3px 0 0 ${projectColor(s.project_path)}`, background: 'var(--dd-tint-active)' }}
+          className={cls.row} style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'default', background: 'var(--dd-tint-active)' }}
         >
           <LiveIndicator status={s.live_status} />
           {nameEditor('Session name — empty clears')}
@@ -377,7 +378,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
         // it cost the whole background of the list and told you nothing. The
         // selected row gets a neutral fill instead, which is a distinction you
         // can actually see.
-        style={{ opacity: isDragging ? 0.4 : isHidden ? 0.45 : 1, boxShadow: `inset 3px 0 0 ${projectColor(s.project_path)}`, background: isActive ? 'var(--dd-tint-active)' : 'transparent' }}
+        style={{ opacity: isDragging ? 0.4 : isHidden ? 0.45 : 1, background: isActive ? 'var(--dd-selected)' : undefined }}
         onClick={dragSafe(() => onResume(s))}
         onPointerDown={(e) => beginPress(e, { kind: 'session', sid: s.session_id, label: sessionLabel(s), fromFolder: s.folder_id })}
         // every agent gets the menu — rename/folder/hide/delete are id-keyed
@@ -409,10 +410,10 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
               ≣
             </span>
           )}
-          <span style={{ flexShrink: 0, marginLeft: 2, color: 'var(--dd-dim)' }}>{relAge(s.last_message_at)}</span>
+          <span className={cls.age}>{relAge(s.last_message_at)}</span>
         </div>
         {sub && (
-          <div style={{ color: 'var(--dd-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 1 }}>
+          <div className={cls.preview}>
             {sub}
           </div>
         )}
@@ -527,27 +528,16 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
   const showFolderBand = folders.length > 0 || naming?.kind === 'create' || drag?.kind === 'session'
   return (
     <div style={{ display: 'flex', height: '100%' }}>
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', width, minWidth: width, background: 'var(--dd-bg0)' }}>
+    <div className={cls.frame} style={{ width, minWidth: width }}>
     <div ref={scrollerRef} className={cls.side} style={{ width: '100%', minWidth: 0, height: 'auto', flex: 1, borderRight: 'none' }}>
       {/* the whole header is a window-drag handle (arm-on-move, so the Home
           label and buttons still click) — the top-left corner is where a hand
           reaches for a title bar. data-tauri-drag-region couldn't do this: it
           matches only the exact target, and the children cover the strip. */}
       <div className={cls.bar} onPointerDown={armWindowDrag}>
-        <span
-          onClick={onHome}
-          title={`Home — recap log & usage (${homeChord})`}
-          style={{
-            flex: 1,
-            fontWeight: 700,
-            fontSize: 11,
-            letterSpacing: '0.09em',
-            color: 'var(--dd-text2)',
-            cursor: 'pointer',
-          }}
-        >
-          DRYDOCK
-        </span>
+        <button className={cls.brand} onClick={onHome} title={`Home — recap log & usage (${homeChord})`}>
+          Drydock
+        </button>
         <IconButton
           label="New folder"
           title={'New folder…\nOrganize sessions into working groups — drag them in,\nor right-click a session → Move to folder'}
@@ -566,7 +556,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
           title={`Collapse sidebar (${sidebarChord})`}
           onClick={() => onSetCollapsed(true)}
         >
-          «
+          <Icon name="left" size={14} />
         </IconButton>
       </div>
 
@@ -576,7 +566,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
       {needs.length > 0 && (
         <div>
           <div className={cls.head} style={{ color: 'var(--dd-warn)' }} title="Blocked on you — a permission prompt or a question">
-            <span style={{ flex: 1, letterSpacing: 0.3 }}>NEEDS YOU</span>
+            <span style={{ flex: 1, letterSpacing: 0.3 }}>Needs you</span>
             <span style={{ color: 'var(--dd-warn)' }}>{needs.length}</span>
           </div>
           {needs.map((s) => sessionRow(s, true))}
@@ -873,7 +863,7 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
       {/* drag ghost: follows the pointer, never intercepts it */}
       {drag && (
         <div
-          style={{ position: 'fixed', left: dragXY.x + 10, top: dragXY.y + 8, zIndex: 80, pointerEvents: 'none', background: 'var(--dd-row)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', padding: '3px 8px', fontSize: 11, fontFamily: 'system-ui', color: 'var(--dd-text1)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', boxShadow: '0 4px 14px rgba(0,0,0,.4)' }}
+          style={{ position: 'fixed', left: dragXY.x + 10, top: dragXY.y + 8, zIndex: 80, pointerEvents: 'none', background: 'var(--dd-row)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', padding: '3px 8px', fontSize: 11, fontFamily: 'var(--dd-font-ui)', color: 'var(--dd-text1)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', boxShadow: '0 4px 14px rgba(0,0,0,.4)' }}
         >
           {drag.kind === 'session' ? drag.label : drag.name}
         </div>

@@ -20,27 +20,27 @@ export function TasksSection({ view }: { view: TasksView | null }) {
           ? ['⊘', 'var(--dd-warn-muted)', `waiting on: ${t.blocked_by.map((b) => subjects.get(b) ?? `#${b}`).join(', ')}`]
           : ['○', 'var(--dd-text3)', 'pending']
   return (
-    <div style={{ flex: open ? '0 1 auto' : 'none', maxHeight: open ? '40%' : undefined, display: 'flex', flexDirection: 'column', borderTop: '1px solid var(--dd-hover)', background: 'var(--dd-well)' }}>
-      <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 7, padding: '8px 12px 6px' }}>
+    <div style={{ flex: open ? '0 1 auto' : 'none', maxHeight: open ? '40%' : undefined, display: 'flex', flexDirection: 'column', borderTop: '1px solid var(--dd-hairline)', background: 'var(--dd-panel)' }}>
+      <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 7, padding: '12px 16px' }}>
         <button onClick={toggleOpen} title={open ? 'Collapse' : 'Expand'} style={{ ...S.groupBtn, width: 'auto', flex: 'none', gap: 5, padding: 0 }}>
           <span style={{ width: 9, flex: 'none', color: 'var(--dd-dim2)' }}>{open ? '▾' : '▸'}</span>
           <span style={S.secHead}>TASKS</span>
         </button>
-        <span style={{ flex: 'none', color: 'var(--dd-dim)', fontSize: 10, whiteSpace: 'nowrap' }}>
+        <span style={{ flex: 'none', color: 'var(--dd-dim)', fontSize: 11, whiteSpace: 'nowrap' }}>
           {done}/{total}{blocked.length > 0 ? ` · ${blocked.length} blocked` : ''}
         </span>
         <span style={{ flex: 1 }} />
         {view.updated_at != null && (
-          <span title={'the board\u2019s last change — a stale \u201cin progress\u201d is old news, not live'} style={{ color: 'var(--dd-dim)', fontSize: 10, whiteSpace: 'nowrap' }}>
+          <span title={'the board\u2019s last change — a stale \u201cin progress\u201d is old news, not live'} style={{ color: 'var(--dd-dim)', fontSize: 11, whiteSpace: 'nowrap' }}>
             {relAge(view.updated_at)}
           </span>
         )}
       </div>
       {open && (
-        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 12px 10px' }}>
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 16px 16px' }}>
           {active?.active_form && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-              <span style={{ color: 'var(--dd-ok-bright)', fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>◐ now: {active.active_form}</span>
+              <span style={{ color: 'var(--dd-ok-bright)', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>◐ now: {active.active_form}</span>
               <span style={{ flex: 1, minWidth: 24, height: 3, borderRadius: 2, background: 'var(--dd-row)', overflow: 'hidden' }}>
                 <span style={{ display: 'block', height: '100%', width: `${Math.round((done / total) * 100)}%`, background: 'var(--dd-ok)' }} />
               </span>
@@ -49,7 +49,7 @@ export function TasksSection({ view }: { view: TasksView | null }) {
           {view.tasks.map((t) => {
             const [g, color, tip] = glyph(t)
             return (
-              <div key={t.id} title={tip} style={{ display: 'flex', gap: 7, alignItems: 'baseline', padding: '2px 0', fontSize: 11.5 }}>
+              <div key={t.id} title={tip} style={{ display: 'flex', gap: 7, alignItems: 'baseline', padding: '2px 0', fontSize: 12 }}>
                 <span style={{ width: 12, flex: 'none', textAlign: 'center', color }}>{g}</span>
                 <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: t.status === 'completed' ? 'var(--dd-dim)' : t.status === 'in_progress' ? 'var(--dd-text)' : 'var(--dd-text2)' }}>
                   {t.subject}

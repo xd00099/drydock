@@ -20,9 +20,9 @@ export default class ErrorBoundary extends Component<Props, State> {
   render() {
     if (!this.state.error) return this.props.children
     return (
-      <div style={{ width: '100vw', height: '100vh', background: 'var(--dd-bg1)', color: 'var(--dd-text)', fontFamily: 'system-ui', fontSize: 13, padding: 28, boxSizing: 'border-box', overflow: 'auto' }}>
+      <div style={{ width: '100vw', height: '100vh', background: 'var(--dd-bg1)', color: 'var(--dd-text)', fontFamily: 'var(--dd-font-ui)', fontSize: 13, padding: 28, boxSizing: 'border-box', overflow: 'auto' }}>
         <div style={{ fontWeight: 700, marginBottom: 10 }}>Something went wrong.</div>
-        <div style={{ color: 'var(--dd-err-bright)', whiteSpace: 'pre-wrap', marginBottom: 16, fontFamily: 'Menlo, monospace', fontSize: 12 }}>
+        <div style={{ color: 'var(--dd-err-bright)', whiteSpace: 'pre-wrap', marginBottom: 16, fontFamily: 'var(--dd-font-mono)', fontSize: 12 }}>
           {this.state.error.message}
         </div>
         <button onClick={() => location.reload()} style={{ background: 'var(--dd-border)', color: 'var(--dd-text)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', padding: '6px 14px', cursor: 'pointer' }}>

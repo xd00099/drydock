@@ -1,76 +1,29 @@
-/* Borderless soft-pill button. Replaces the bordered grey rectangle that read
-   as classic desktop chrome: separation comes from a tint fill, and press is
-   confirmed by a scale nudge rather than a border flip. */
 .btn {
+  box-sizing: border-box;
   display: inline-flex;
   align-items: center;
-  gap: var(--dd-gap-2);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 550;
-  line-height: 1;
-  white-space: nowrap;
-  padding: 7px 14px;
-  border: 0;
-  border-radius: var(--dd-r-pill);
-  background: var(--dd-tint);
-  color: var(--dd-text);
-  cursor: pointer;
-  transition:
-    background var(--dd-t) var(--dd-ease),
-    color var(--dd-t) var(--dd-ease),
-    transform var(--dd-t-fast) var(--dd-ease),
-    box-shadow var(--dd-t) var(--dd-ease);
-}
-.btn:hover:not(:disabled) {
-  background: var(--dd-tint-hover);
-}
-.btn:active:not(:disabled) {
-  transform: scale(0.97);
-}
-.btn:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px var(--dd-accent-border);
-}
-.btn:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-
-/* Quiet variant: no resting fill, for toolbar-adjacent actions. */
-.ghost {
-  background: transparent;
-  color: var(--dd-text2);
-}
-.ghost:hover:not(:disabled) {
-  background: var(--dd-tint);
-  color: var(--dd-text);
-}
-
-/* Filled variants keep white text — their tokens stay saturated in both
-   schemes (see the --dd-btn-* note in themes.css). */
-.primary {
-  background: var(--dd-btn-primary);
-  color: var(--dd-white);
-  box-shadow: var(--dd-shadow-1);
-}
-.primary:hover:not(:disabled) {
-  background: var(--dd-accent-strong);
-}
-.danger {
-  background: var(--dd-btn-danger);
-  color: var(--dd-white);
-  box-shadow: var(--dd-shadow-1);
-}
-.danger:hover:not(:disabled) {
-  background: var(--dd-err);
-}
-
-.sm {
-  font-size: 11px;
-  padding: 5px 11px;
-}
-.block {
-  width: 100%;
   justify-content: center;
+  gap: var(--dd-gap-2);
+  min-height: var(--dd-control);
+  padding: 0 var(--dd-gap-3);
+  border: 1px solid var(--dd-hairline-strong);
+  border-radius: var(--dd-r-sm);
+  background: var(--dd-tint);
+  color: var(--dd-text1);
+  font: 500 var(--dd-text-sm)/1.4 var(--dd-font-ui);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--dd-t) var(--dd-ease), border-color var(--dd-t) var(--dd-ease), color var(--dd-t) var(--dd-ease);
 }
+.btn:hover:not(:disabled) { background: var(--dd-tint-hover); border-color: var(--dd-border3); color: var(--dd-text); }
+.btn:active:not(:disabled) { background: var(--dd-tint-active); }
+.btn:focus-visible { outline: 2px solid var(--dd-accent); outline-offset: 2px; }
+.btn:disabled { opacity: 0.45; cursor: default; }
+.ghost { background: transparent; border-color: transparent; color: var(--dd-text2); }
+.ghost:hover:not(:disabled) { background: var(--dd-tint); border-color: transparent; }
+.primary { background: var(--dd-btn-primary); border-color: transparent; color: var(--dd-white); }
+.primary:hover:not(:disabled) { background: var(--dd-accent-strong); border-color: transparent; color: var(--dd-white); }
+.danger { background: var(--dd-btn-danger); border-color: transparent; color: var(--dd-white); }
+.danger:hover:not(:disabled) { background: var(--dd-err); border-color: transparent; color: var(--dd-white); }
+.sm { min-height: var(--dd-control-sm); padding: 0 10px; font-size: var(--dd-text-sm); }
+.block { width: 100%; }

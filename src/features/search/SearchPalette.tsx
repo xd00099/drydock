@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { SessionView } from '@/lib/types'
 import { clip, relAge, sessionLabel, shortPath } from '@/lib/types'
 import LiveIndicator from '@/features/session/LiveIndicator'
+import Icon from '@/components/ui/Icon'
+import css from '@/components/ui/Palette.module.css'
 
 type SearchResult = { session: SessionView; snippet: string }
 type SearchResponse = { results: SearchResult[]; semantic: string }
@@ -16,6 +18,7 @@ type Props = {
 }
 
 export default function SearchPalette({ open, onClose, onPick, onOverlay }: Props) {
+  const listId = useId()
   const [q, setQ] = useState('')
   const [resp, setResp] = useState<SearchResponse>({ results: [], semantic: 'unavailable' })
   const [sel, setSel] = useState(0)
@@ -58,8 +61,9 @@ export default function SearchPalette({ open, onClose, onPick, onOverlay }: Prop
   if (!open) return null
   const results = resp.results
   return (
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', display: 'flex', justifyContent: 'center', paddingTop: 80, zIndex: 95 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ width: 640, maxHeight: '70vh', background: 'var(--dd-surface2)', borderRadius: 10, overflow: 'hidden', display: 'flex', flexDirection: 'column', fontFamily: 'system-ui', fontSize: 13, color: 'var(--dd-text1)' }}>
+    <div onClick={onClose} className={css.scrim} style={{ zIndex: 95 }}>
+      <div onClick={(e) => e.stopPropagation()} className={css.box} role="dialog" aria-modal="true" aria-labelledby={`${listId}-title`}>
+        <div className={css.header}><h2 className={css.title} id={`${listId}-title`}>Find a session</h2><kbd>esc</kbd></div>
         <input
           ref={inputRef}
           value={q}
@@ -83,11 +87,12 @@ export default function SearchPalette({ open, onClose, onPick, onOverlay }: Prop
             }
             if (e.key === 'Enter' && results[sel]) { onPick(results[sel].session, e.metaKey); onClose() }
           }}
-          placeholder="search all sessions…  (proj:x  starred:  live:  ·  Enter resume · ⌘Enter transcript)"
-          style={{ padding: '12px 14px', background: 'var(--dd-bg0)', border: 'none', outline: 'none', color: 'var(--dd-text)', fontSize: 14 }}
+          placeholder="Search projects, conversations, and code…"
+          role="combobox" aria-label="Search sessions" aria-autocomplete="list" aria-expanded={results.length > 0} aria-controls={listId} aria-activedescendant={results[sel] ? `${listId}-${sel}` : undefined}
+          className={css.input}
         />
         {resp.semantic !== 'ready' && q && (
-          <div style={{ padding: '4px 14px', color: 'var(--dd-dim)', fontSize: 11 }}>
+          <div className={css.hint}>
             {resp.semantic === 'indexing' ? 'semantic index catching up — keyword results' : 'keyword search'}
           </div>
         )}
@@ -97,38 +102,40 @@ export default function SearchPalette({ open, onClose, onPick, onOverlay }: Prop
         {onOverlay && (q === '' || /^(usage|recaps?|log|timeline|home)/i.test(q.trim())) && (
           <button
             onClick={onOverlay}
-            style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid var(--dd-hairline)', color: 'var(--dd-text2)', cursor: 'pointer', padding: '7px 14px', fontSize: 12, fontFamily: 'system-ui' }}
+            className={css.command}
           >
-            <span style={{ color: 'var(--dd-accent-muted)' }}>◱</span>
+            <Icon name="terminal" />
             <span style={{ flex: 1 }}>Usage &amp; recap log</span>
             <span style={{ color: 'var(--dd-dim2)', fontSize: 10 }}>overlay · ⌘0 for Home</span>
           </button>
         )}
-        <div ref={listRef} style={{ overflowY: 'auto' }}>
+        <div ref={listRef} className={css.list} id={listId} role="listbox" aria-label="Sessions">
           {results.map((r, i) => (
             <div
               key={r.session.session_id}
               onClick={() => { onPick(r.session, false); onClose() }}
               onMouseEnter={() => setSel(i)}
-              style={{ padding: '8px 14px', background: i === sel ? 'var(--dd-border)' : 'transparent', cursor: 'pointer' }}
+              className={css.result} data-selected={i === sel} id={`${listId}-${i}`} role="option" aria-selected={i === sel}
             >
               {/* flex, not float: a float that doesn't fit drops BELOW the title
                   line; here the title ellipsizes and the metadata stays put */}
-              <div style={{ display: 'flex', alignItems: 'center' }}>
+              <div className={css.resultHead}>
                 {r.session.live_status !== 'ended' && (
                   <span style={{ marginRight: 6, flexShrink: 0 }}>
                     <LiveIndicator status={r.session.live_status} />
                   </span>
                 )}
-                <span style={{ color: 'var(--dd-text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{clip(sessionLabel(r.session), 52)}</span>
+                <span className={css.resultLabel}>{clip(sessionLabel(r.session), 52)}</span>
                 {r.session.starred && <span style={{ color: 'var(--dd-warn-bright)', flexShrink: 0 }}> ★</span>}
-                <span style={{ marginLeft: 'auto', paddingLeft: 8, flexShrink: 0, whiteSpace: 'nowrap', color: 'var(--dd-dim)' }}>{clip(shortPath(r.session.project_path), 40)} · {relAge(r.session.last_message_at)}</span>
+
               </div>
-              {r.snippet && <div style={{ color: 'var(--dd-text3)', fontSize: 12, marginTop: 2 }}>{clip(r.snippet, 90)}</div>}
+              <div className={css.resultMeta}>{clip(shortPath(r.session.project_path), 60)} · {relAge(r.session.last_message_at)}</div>
+              {r.snippet && <div className={css.snippet}>{clip(r.snippet, 90)}</div>}
             </div>
           ))}
-          {q && results.length === 0 && <div style={{ padding: 14, color: 'var(--dd-dim)' }}>no matches</div>}
+          {q && results.length === 0 && <div className={css.empty}>No matching sessions</div>}
         </div>
+        <div className={css.footer}><span><kbd>↑↓</kbd> Navigate · <kbd>↵</kbd> Resume · <kbd>⌘↵</kbd> Transcript</span><span className={css.shortcut}>proj: · starred: · live:</span></div>
       </div>
     </div>
   )

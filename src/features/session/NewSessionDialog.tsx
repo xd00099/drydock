@@ -1,6 +1,9 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { getSetting } from '@/lib/settings'
+import { Button } from '@/components/ui'
+import Icon from '@/components/ui/Icon'
+import css from '@/components/ui/Palette.module.css'
 
 // ⌘N — start a claude session in ANY folder, existing or not, without the
 // mouse. Type a path (~ expands; a bare name resolves against the
@@ -26,15 +29,6 @@ export function splitPath(resolved: string): { dir: string; partial: string } {
   return { dir: resolved.slice(0, i + 1), partial: resolved.slice(i + 1) }
 }
 
-const S = {
-  scrim: { position: 'fixed', inset: 0, zIndex: 80, background: 'rgba(4,6,10,0.55)', display: 'flex', justifyContent: 'center', paddingTop: '18vh' } as React.CSSProperties,
-  box: { width: 560, maxHeight: '50vh', alignSelf: 'flex-start', background: 'var(--dd-surface)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 10, boxShadow: '0 18px 50px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui' } as React.CSSProperties,
-  input: { background: 'none', border: 'none', outline: 'none', color: 'var(--dd-text)', fontSize: 14, padding: '13px 14px', fontFamily: 'ui-monospace, monospace' } as React.CSSProperties,
-  hint: { padding: '0 14px 9px', fontSize: 11, fontFamily: 'ui-monospace, monospace' } as React.CSSProperties,
-  list: { overflowY: 'auto', borderTop: '1px solid var(--dd-hairline)', padding: '4px 0' } as React.CSSProperties,
-  row: (sel: boolean) => ({ padding: '5px 14px', fontSize: 12, fontFamily: 'ui-monospace, monospace', cursor: 'pointer', color: sel ? 'var(--dd-text)' : 'var(--dd-text2)', background: sel ? 'var(--dd-row)' : 'none', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }) as React.CSSProperties,
-  cap: { padding: '6px 14px 2px', fontSize: 10, color: 'var(--dd-dim)', textTransform: 'uppercase' as const, letterSpacing: 0.5 },
-}
 
 export default function NewSessionDialog({ open, recents, onLaunch, onClose }: {
   open: boolean
@@ -138,13 +132,14 @@ export default function NewSessionDialog({ open, recents, onLaunch, onClose }: {
         : <span style={{ color: 'var(--dd-ok-bright)' }}>will create {resolved}</span>
 
   return (
-    <div style={S.scrim} onClick={onClose}>
-      <div style={S.box} onClick={(e) => e.stopPropagation()}>
+    <div className={css.scrim} onClick={onClose}>
+      <div className={css.box} role="dialog" aria-modal="true" aria-labelledby={`${listId}-title`} onClick={(e) => e.stopPropagation()}>
+        <div className={css.header}><h2 className={css.title} id={`${listId}-title`}>New session</h2><kbd>⌘N</kbd></div>
         <input
           ref={(el) => { inputRef.current = el; el?.focus() }}
-          style={S.input}
+          className={css.pathInput}
           value={value}
-          placeholder="~/path/to/project — created if missing"
+          placeholder="~/path/to/project"
           onChange={(e) => { setValue(e.target.value); setErr(null) }}
           onKeyDown={onKey}
           spellCheck={false}
@@ -155,24 +150,25 @@ export default function NewSessionDialog({ open, recents, onLaunch, onClose }: {
           aria-controls={listId}
           aria-activedescendant={sel >= 0 && rows[sel] ? `${listId}-${sel}` : undefined}
         />
-        <div style={S.hint}>{hint}</div>
-        <div style={{ ...S.hint, color: 'var(--dd-dim)' }}>
-          {sel >= 0 ? 'Tab / → / Enter fills path — Enter again starts session' : '↑↓ choose a folder · Tab fills path · Enter starts session'}
-        </div>
+        <div className={css.hint}>{hint}</div>
         {rows.length > 0 && (
-          <div ref={listRef} style={S.list}>
-            <div style={S.cap}>{showRecents ? 'recent projects' : 'folders'}</div>
+          <div ref={listRef} className={css.list}>
+            <div className={css.cap}>{showRecents ? 'Recent projects' : 'Folders'}</div>
             <div id={listId} role="listbox" aria-label={showRecents ? 'Recent projects' : 'Folders'}>
             {rows.map((r, i) => (
-              <div key={r} id={`${listId}-${i}`} data-index={i} role="option" aria-selected={i === sel} style={S.row(i === sel)}
+              <div key={r} id={`${listId}-${i}`} data-index={i} role="option" aria-selected={i === sel} className={css.row} data-selected={i === sel}
                 onMouseEnter={() => setSel(i)}
                 onClick={() => complete(i)}>
-                {r}{showRecents ? '' : '/'}
+                <Icon name="folder" size={16} /><span className={css.path}>{r}{showRecents ? '' : '/'}</span>{i === sel && <kbd>Tab</kbd>}
               </div>
             ))}
             </div>
           </div>
         )}
+        <div className={css.footer}>
+          <span>{sel >= 0 ? 'Tab / → / Enter fills path — Enter again starts session' : '↑↓ choose a folder · Tab fills path · Enter starts session'}</span>
+          <div className={css.buttons}><Button small variant="ghost" onClick={onClose}>Cancel</Button><Button small variant="primary" disabled={busy || !resolved || ['~', '/'].includes(resolved.replace(/\/+$/, '') || '/')} onClick={() => launch(resolved)}>{busy ? 'Starting…' : 'Continue'}</Button></div>
+        </div>
       </div>
     </div>
   )

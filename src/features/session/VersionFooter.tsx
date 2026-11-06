@@ -1,3 +1,5 @@
+import Icon from '@/components/ui/Icon'
+import { IconButton } from '@/components/ui'
 import { useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -106,11 +108,11 @@ export default function VersionFooter({ busyCount, onRestartForUpdate, onOpenSet
     display: 'flex',
     alignItems: 'center',
     gap: 6,
-    height: 26,
-    padding: '0 10px',
+    minHeight: 40,
+    padding: '0 12px',
     borderTop: '1px solid var(--dd-border-faint)',
     background: 'var(--dd-bg0)',
-    fontFamily: 'system-ui',
+    fontFamily: 'var(--dd-font-ui)',
     fontSize: 11,
     color: 'var(--dd-dim)',
   }
@@ -191,13 +193,7 @@ export default function VersionFooter({ busyCount, onRestartForUpdate, onOpenSet
         {label}
       </span>
       {/* right-aligned, mirroring the DRYDOCK bar's controls above */}
-      <button
-        onClick={onOpenSettings}
-        title={`Settings (${settingsChord})`}
-        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--dd-text3)', fontSize: 16, padding: 0, lineHeight: 1 }}
-      >
-        ⚙︎
-      </button>
+      <IconButton label="Settings" onClick={onOpenSettings} title={`Settings (${settingsChord})`}><Icon name="settings" size={16} /></IconButton>
     </div>
   )
 }

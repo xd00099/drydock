@@ -11,15 +11,32 @@
  * bottom of this file — still one place, not nineteen.
  */
 :root {
-  /* ---- radius scale ----
-     The old UI only had 3/4/6px, which is what made it read as classic
-     desktop chrome. Cards and popovers now sit at lg/xl; controls at md. */
+  /* One type scale for app chrome; monospace is reserved for code and paths. */
+  --dd-font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --dd-font-mono: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  --dd-text-xs: 11px;
+  --dd-text-sm: 12px;
+  --dd-text-base: 13px;
+  --dd-text-lg: 16px;
+  --dd-text-title: 26px;
+  --dd-leading: 1.5;
+  --dd-control: 32px;
+  --dd-control-sm: 28px;
+
+  /* Controls, panels, overlays. Pills are reserved for status badges. */
   --dd-r-xs: 4px;
   --dd-r-sm: 6px;
   --dd-r-md: 8px;
-  --dd-r-lg: 10px;
-  --dd-r-xl: 13px;
+  --dd-r-lg: 12px;
+  --dd-r-xl: 16px;
   --dd-r-pill: 999px;
+
+  /* Derived surfaces follow every installed palette. */
+  --dd-chrome: var(--dd-bg0);
+  --dd-canvas: var(--dd-bg1);
+  --dd-panel: color-mix(in srgb, var(--dd-bg1) 65%, var(--dd-bg0));
+  --dd-selected: color-mix(in srgb, var(--dd-accent) 10%, var(--dd-bg1));
+  --dd-scrim: color-mix(in srgb, var(--dd-bg0) 65%, transparent);
 
   /* ---- motion ----
      There were zero transitions before this. --dd-t is the default for any
@@ -33,10 +50,10 @@
   /* ---- rhythm ----
      A 4px-based scale so padding stops being ad-hoc per component. */
   --dd-gap-1: 4px;
-  --dd-gap-2: 7px;
-  --dd-gap-3: 11px;
-  --dd-gap-4: 15px;
-  --dd-gap-5: 22px;
+  --dd-gap-2: 8px;
+  --dd-gap-3: 12px;
+  --dd-gap-4: 16px;
+  --dd-gap-5: 24px;
 
   /* ---- window chrome ----
      Height of the draggable strip that replaces the native titlebar. Traffic

@@ -6,10 +6,11 @@ import TimeMachine from '@/features/timemachine/TimeMachine'
 import { FilesChanged } from './FilesChanged'
 import { TasksSection } from './TasksSection'
 import { S } from './styles'
+import css from './Briefing.module.css'
 
 function Item({ it }: { it: TimelineItem }) {
   return (
-    <li style={{ marginBottom: 6 }}>
+    <li className={css.timelineItem}>
       <span style={{ color: it.in_progress ? 'var(--dd-ok-bright)' : 'var(--dd-text1)' }}>
         {it.in_progress ? '◐ ' : ''}
         {it.text}
@@ -50,11 +51,11 @@ export function BriefingTab({ sessionId, card, starred, files, tasks, usage, pro
     onRename?.(name)
   }
   if (!sessionId)
-    return <div style={{ ...S.muted, padding: 12 }}>No indexed session yet — once this conversation is saved, its briefing card appears here.</div>
+    return <div className={css.empty}>No indexed session yet — once this conversation is saved, its briefing card appears here.</div>
   return (
     <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-      <div style={{ flex: '1 1 auto', minHeight: 0, overflowY: 'auto', padding: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 12 }}>
+      <div className={css.content}>
+        <div className={css.sessionHeading}>
           <button
             onClick={onToggleStar}
             disabled={!onToggleStar}
@@ -69,7 +70,7 @@ export function BriefingTab({ sessionId, card, starred, files, tasks, usage, pro
               defaultValue={editing}
               maxLength={60}
               placeholder="Session name — empty clears"
-              style={{ flex: 1, minWidth: 0, background: 'var(--dd-bg1)', border: '1px solid var(--dd-accent-strong)', borderRadius: 'var(--dd-r-sm)', color: 'var(--dd-text)', fontSize: 13, fontWeight: 600, fontFamily: 'system-ui', padding: '2px 6px', outline: 'none' }}
+              style={{ flex: 1, minWidth: 0, background: 'var(--dd-bg1)', border: '1px solid var(--dd-accent-strong)', borderRadius: 'var(--dd-r-sm)', color: 'var(--dd-text)', fontSize: 13, fontWeight: 600, fontFamily: 'var(--dd-font-ui)', padding: '2px 6px', outline: 'none' }}
               onFocus={(e) => e.currentTarget.select()}
               onKeyDown={(e) => {
                 // an Enter/Esc confirming an IME composition (pinyin) is part

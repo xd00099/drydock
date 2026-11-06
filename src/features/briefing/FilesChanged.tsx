@@ -17,7 +17,7 @@ function FileBadge({ f }: { f: FileTouch }) {
   return (
     <span
       title={label}
-      style={{ flex: 'none', width: 13, height: 13, borderRadius: 3, border: `1px solid ${color}`, color, fontSize: 10, lineHeight: '12px', textAlign: 'center', fontFamily: 'Menlo, monospace' }}
+      style={{ flex: 'none', width: 13, height: 13, borderRadius: 3, border: `1px solid ${color}`, color, fontSize: 11, lineHeight: '12px', textAlign: 'center', fontFamily: 'var(--dd-font-mono)' }}
     >
       {glyph}
     </span>
@@ -28,9 +28,9 @@ function FileBadge({ f }: { f: FileTouch }) {
 /// carried no measurable diff at all.
 function DiffStat({ f }: { f: FileTouch }) {
   if (f.adds === 0 && f.dels === 0)
-    return <span style={{ flex: 'none', color: 'var(--dd-dim2)', fontSize: 10, fontFamily: 'Menlo, monospace' }}>×{f.edits + f.writes}</span>
+    return <span style={{ flex: 'none', color: 'var(--dd-dim2)', fontSize: 11, fontFamily: 'var(--dd-font-mono)' }}>×{f.edits + f.writes}</span>
   return (
-    <span style={{ flex: 'none', display: 'flex', gap: 6, fontFamily: 'Menlo, monospace', fontSize: 10 }}>
+    <span style={{ flex: 'none', display: 'flex', gap: 6, fontFamily: 'var(--dd-font-mono)', fontSize: 10 }}>
       {f.adds > 0 && <span style={{ color: 'var(--dd-ok)' }}>+{f.adds.toLocaleString('en-US')}</span>}
       {f.dels > 0 && <span style={{ color: 'var(--dd-err)' }}>−{f.dels.toLocaleString('en-US')}</span>}
     </span>
@@ -95,17 +95,17 @@ export function FilesChanged({ files, projectPath, sessionId, squeeze, onTimeMac
     })
 
   return (
-    <div style={{ flex: secOpen ? '0 1 auto' : 'none', maxHeight: secOpen ? (squeeze ? '40%' : '55%') : undefined, display: 'flex', flexDirection: 'column', borderTop: '1px solid var(--dd-hover)', background: 'var(--dd-well)' }}>
-      <div style={{ flex: 'none', display: 'flex', alignItems: 'baseline', gap: 8, padding: '8px 12px 6px' }}>
+    <div style={{ flex: secOpen ? '0 1 auto' : 'none', maxHeight: secOpen ? (squeeze ? '40%' : '55%') : undefined, display: 'flex', flexDirection: 'column', borderTop: '1px solid var(--dd-hairline)', background: 'var(--dd-panel)' }}>
+      <div style={{ flex: 'none', display: 'flex', alignItems: 'baseline', gap: 8, padding: '12px 16px' }}>
         <button onClick={toggleOpen} title={secOpen ? 'Collapse' : 'Expand'} style={{ ...S.groupBtn, width: 'auto', flex: 'none', gap: 5, padding: 0 }}>
           <span style={{ width: 9, flex: 'none', color: 'var(--dd-dim2)' }}>{secOpen ? '▾' : '▸'}</span>
           <span style={S.secHead}>FILES CHANGED</span>
         </button>
-        <span style={{ display: 'flex', gap: 6, fontFamily: 'Menlo, monospace', fontSize: 11 }}>
+        <span style={{ display: 'flex', gap: 6, fontFamily: 'var(--dd-font-mono)', fontSize: 11 }}>
           <span style={{ color: 'var(--dd-ok)' }}>+{totAdds.toLocaleString('en-US')}</span>
           <span style={{ color: 'var(--dd-err)' }}>−{totDels.toLocaleString('en-US')}</span>
         </span>
-        <span style={{ color: 'var(--dd-dim)', fontSize: 10, whiteSpace: 'nowrap' }}>
+        <span style={{ color: 'var(--dd-dim)', fontSize: 11, whiteSpace: 'nowrap' }}>
           · {files.length} file{files.length === 1 ? '' : 's'}{gone > 0 ? ` · ${gone} gone` : ''}
         </span>
         <span style={{ flex: 1 }} />
@@ -113,7 +113,7 @@ export function FilesChanged({ files, projectPath, sessionId, squeeze, onTimeMac
           <button
             onClick={() => onTimeMachine(null)}
             title="File time machine — checkpoint history of everything this session edited"
-            style={{ ...S.iconBtn, flex: 'none', fontSize: 10, padding: '1px 5px' }}
+            style={{ ...S.iconBtn, flex: 'none', fontSize: 11, padding: '1px 5px' }}
           >
             ⏱
           </button>
@@ -128,7 +128,7 @@ export function FilesChanged({ files, projectPath, sessionId, squeeze, onTimeMac
               <button
                 onClick={() => toggle(g.dir)}
                 title={g.dir || 'project root'}
-                style={{ ...S.groupBtn, gap: 5, color: 'var(--dd-dim)', fontSize: 9.5, letterSpacing: 0.5, padding: '4px 0 2px', textTransform: 'uppercase', fontFamily: 'Menlo, monospace' }}
+                style={{ ...S.groupBtn, gap: 5, color: 'var(--dd-dim)', fontSize: 9.5, letterSpacing: 0.5, padding: '4px 0 2px', textTransform: 'uppercase', fontFamily: 'var(--dd-font-mono)' }}
               >
                 <span style={{ width: 9, flex: 'none', color: 'var(--dd-dim2)' }}>{isOpen ? '▾' : '▸'}</span>
                 <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl' }}>
@@ -162,7 +162,7 @@ export function FilesChanged({ files, projectPath, sessionId, squeeze, onTimeMac
                           cursor: f.resolved ? 'pointer' : 'default',
                           color: f.resolved ? 'var(--dd-text1)' : 'var(--dd-dim)',
                           textDecoration: f.resolved ? 'none' : 'line-through',
-                          fontFamily: 'Menlo, monospace',
+                          fontFamily: 'var(--dd-font-mono)',
                           fontSize: 11,
                           padding: '1px 0',
                         }}
@@ -173,7 +173,7 @@ export function FilesChanged({ files, projectPath, sessionId, squeeze, onTimeMac
                       {onTimeMachine && (
                         <button
                           className="dd-reveal"
-                          style={{ ...S.iconBtn, border: 'none', fontSize: 10, padding: '1px 3px' }}
+                          style={{ ...S.iconBtn, border: 'none', fontSize: 11, padding: '1px 3px' }}
                           title="History of this file (time machine)"
                           onClick={() => onTimeMachine(f.path)}
                         >
@@ -183,7 +183,7 @@ export function FilesChanged({ files, projectPath, sessionId, squeeze, onTimeMac
                       {f.resolved && (
                         <button
                           className="dd-reveal"
-                          style={{ ...S.iconBtn, border: 'none', fontSize: 10, padding: '1px 3px' }}
+                          style={{ ...S.iconBtn, border: 'none', fontSize: 11, padding: '1px 3px' }}
                           title="Reveal in Finder"
                           onClick={() => open(f, true)}
                         >
@@ -199,7 +199,7 @@ export function FilesChanged({ files, projectPath, sessionId, squeeze, onTimeMac
         })}
       </div>
       )}
-      {secOpen && err && <div style={{ flex: 'none', color: 'var(--dd-err)', fontSize: 10, padding: '4px 12px 8px' }}>{err}</div>}
+      {secOpen && err && <div style={{ flex: 'none', color: 'var(--dd-err)', fontSize: 11, padding: '4px 12px 8px' }}>{err}</div>}
     </div>
   )
 }

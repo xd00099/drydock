@@ -10,6 +10,9 @@ import {
   loadOverrides, saveOverride, serializeChord, useChord, validateChord,
 } from '@/lib/keymap'
 import type { ActionId, Category } from '@/lib/keymap'
+import { Button, IconButton } from '@/components/ui'
+import Icon from '@/components/ui/Icon'
+import css from './Settings.module.css'
 
 // ⌘, — full-window settings overlay (same overlay pattern as Home/usage:
 // fixed inset-0, z 85, below the takeover dialog's 100 and quit guard's 110).
@@ -17,35 +20,9 @@ import type { ActionId, Category } from '@/lib/keymap'
 
 type Section = 'shortcuts' | 'general' | 'agents' | 'appearance'
 
-const S = {
-  wrap: { position: 'fixed', inset: 0, zIndex: 85, background: 'var(--dd-bg0)', display: 'flex', flexDirection: 'column', transform: 'translateZ(0)', outline: 'none', fontFamily: 'system-ui' } as React.CSSProperties,
-  head: { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid var(--dd-hairline)' } as React.CSSProperties,
-  title: { flex: 1, color: 'var(--dd-text)', fontWeight: 600, fontSize: 13 } as React.CSSProperties,
-  close: { background: 'none', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-sm)', cursor: 'pointer', color: 'var(--dd-text2)', fontSize: 12, lineHeight: 1, padding: '2px 6px' } as React.CSSProperties,
-  body: { flex: 1, minHeight: 0, display: 'flex' } as React.CSSProperties,
-  rail: { width: 160, borderRight: '1px solid var(--dd-hairline)', padding: '10px 0', display: 'flex', flexDirection: 'column', gap: 2, flexShrink: 0 } as React.CSSProperties,
-  railBtn: (on: boolean) => ({ textAlign: 'left', background: on ? 'var(--dd-btn)' : 'none', border: 'none', borderLeft: on ? '2px solid var(--dd-accent-text)' : '2px solid transparent', color: on ? 'var(--dd-text)' : 'var(--dd-text3)', fontSize: 12, padding: '7px 14px', cursor: 'pointer' }) as React.CSSProperties,
-  panel: { flex: 1, overflowY: 'auto', padding: '18px 24px', maxWidth: 640 } as React.CSSProperties,
-  row: { display: 'flex', alignItems: 'flex-start', gap: 14, padding: '12px 0', borderBottom: '1px solid var(--dd-btn)' } as React.CSSProperties,
-  rowText: { flex: 1 } as React.CSSProperties,
-  rowLabel: { color: 'var(--dd-text)', fontSize: 13, marginBottom: 3 } as React.CSSProperties,
-  rowDesc: { color: 'var(--dd-dim)', fontSize: 11, lineHeight: 1.5 } as React.CSSProperties,
-  themeGroup: {
-    color: 'var(--dd-text3)', fontSize: 10, letterSpacing: 0.8, textTransform: 'uppercase',
-    padding: '14px 0 6px',
-  } as React.CSSProperties,
-  stub: { color: 'var(--dd-dim)', fontSize: 12, padding: '30px 0', textAlign: 'center' as const },
-  shortcutRow: { display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0', borderBottom: '1px solid var(--dd-border-faint)' } as React.CSSProperties,
-  catHead: { color: 'var(--dd-dim)', fontSize: 10, textTransform: 'uppercase' as const, letterSpacing: 0.5, padding: '14px 0 4px' },
-}
 
-function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <button onClick={() => onChange(!on)} aria-pressed={on}
-      style={{ width: 34, height: 19, borderRadius: 10, border: '1px solid ' + (on ? 'var(--dd-accent-border)' : 'var(--dd-border2)'), background: on ? 'var(--dd-accent-bg)' : 'var(--dd-btn)', position: 'relative', cursor: 'pointer', flexShrink: 0, marginTop: 2 }}>
-      <span style={{ position: 'absolute', top: 2, left: on ? 17 : 2, width: 13, height: 13, borderRadius: '50%', background: on ? 'var(--dd-accent-text)' : 'var(--dd-dim)', transition: 'left 120ms' }} />
-    </button>
-  )
+function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label: string }) {
+  return <button className={css.toggle} onClick={() => onChange(!on)} role="switch" aria-checked={on} aria-label={label}><span /></button>
 }
 
 function GeneralPanel() {
@@ -55,27 +32,27 @@ function GeneralPanel() {
   const newChord = useChord('session.new')
   return (
     <div>
-      <div style={S.row}>
-        <div style={S.rowText}>
-          <div style={S.rowLabel}>Notifications</div>
-          <div style={S.rowDesc}>macOS notifications when a session needs input or finishes a turn.</div>
+      <div className={css.row}>
+        <div className={css.rowText}>
+          <div className={css.rowLabel}>Notifications</div>
+          <div className={css.rowDesc}>macOS notifications when a session needs input or finishes a turn.</div>
         </div>
-        <Toggle on={notify !== '0'} onChange={(v) => setNotify(v ? '1' : '0')} />
+        <Toggle label="Notifications" on={notify !== '0'} onChange={(v) => setNotify(v ? '1' : '0')} />
       </div>
-      <div style={S.row}>
-        <div style={S.rowText}>
-          <div style={S.rowLabel}>Default parent folder</div>
-          <div style={S.rowDesc}>Where bare names in the “New session” dialog ({newChord}) land: “newthing” becomes {parent.replace(/\/+$/, '')}/newthing.</div>
+      <div className={css.row}>
+        <div className={css.rowText}>
+          <div className={css.rowLabel}>Default parent folder</div>
+          <div className={css.rowDesc}>Where bare names in the “New session” dialog ({newChord}) land: “newthing” becomes {parent.replace(/\/+$/, '')}/newthing.</div>
         </div>
         <input value={parent} onChange={(e) => setParent(e.target.value)} spellCheck={false}
-          style={{ background: 'var(--dd-btn)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', color: 'var(--dd-text)', fontSize: 12, fontFamily: 'ui-monospace, monospace', padding: '4px 8px', width: 200 }} />
+          className={css.input} style={{ width: 200 }} aria-label="Default parent folder" />
       </div>
-      <div style={S.row}>
-        <div style={S.rowText}>
-          <div style={S.rowLabel}>Confirm closing live sessions</div>
-          <div style={S.rowDesc}>Ask before ⌘W or ✕ closes a tab with a running claude session.</div>
+      <div className={css.row}>
+        <div className={css.rowText}>
+          <div className={css.rowLabel}>Confirm closing live sessions</div>
+          <div className={css.rowDesc}>Ask before ⌘W or ✕ closes a tab with a running Claude session.</div>
         </div>
-        <Toggle on={guard !== '0'} onChange={(v) => setGuard(v ? '1' : '0')} />
+        <Toggle label="Confirm closing live sessions" on={guard !== '0'} onChange={(v) => setGuard(v ? '1' : '0')} />
       </div>
     </div>
   )
@@ -117,7 +94,7 @@ function AgentsPanel() {
     return () => { window.clearTimeout(timerRef.current); persist() }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-  if (!cfg) return <div style={S.stub}>loading…</div>
+  if (!cfg) return <div className={css.stub}>loading…</div>
 
   const save = (next: AgentsConfig) => {
     setCfg(next)
@@ -132,24 +109,24 @@ function AgentsPanel() {
   const mono = (id: string, name: string, tint: string) => (
     <AgentLogo id={id} name={name} tint={tint} size={20} />
   )
-  const input = (w: number): React.CSSProperties => ({ background: 'var(--dd-btn)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', color: 'var(--dd-text)', fontSize: 12, fontFamily: 'ui-monospace, monospace', padding: '4px 8px', width: w })
+
 
   return (
     <div>
-      <div style={{ ...S.rowDesc, padding: '4px 0 10px' }}>
+      <div className={css.rowDesc}>
         Enable the agents you use. With one enabled, new sessions (⌘N, Home, sidebar ＋) launch it
         directly; with more than one, every new session asks which agent to start. Claude Code keeps
         the full integration (badges, search, resume); other agents open as plain terminal tabs for now.
       </div>
-      <div style={S.row}>
-        <div style={S.rowText}>
-          <div style={S.rowLabel}>Window tint</div>
-          <div style={S.rowDesc}>Tint the tab strip in the active agent’s color — claude’s clay, codex’s green — so the window always reads as its agent. Shell tabs stay neutral.</div>
+      <div className={css.row}>
+        <div className={css.rowText}>
+          <div className={css.rowLabel}>Window tint</div>
+          <div className={css.rowDesc}>Tint the tab strip in the active agent’s color — claude’s clay, codex’s green — so the window always reads as its agent. Shell tabs stay neutral.</div>
         </div>
-        <Toggle on={windowTint !== '0'} onChange={(v) => setWindowTint(v ? '1' : '0')} />
+        <Toggle label="Window tint" on={windowTint !== '0'} onChange={(v) => setWindowTint(v ? '1' : '0')} />
       </div>
 
-      <div style={S.catHead}>built-in agents — enable what you use, and set each one’s startup command</div>
+      <div className={css.catHead}>built-in agents — enable what you use, and set each one’s startup command</div>
       {BUILTIN_AGENTS.map((a) => {
         const on = cfg.enabled.includes(a.id)
         const cmd = cfg.commands?.[a.id] ?? ''
@@ -159,15 +136,15 @@ function AgentsPanel() {
         // always have something to launch
         const locked = on && enabledCount === 1
         return (
-          <div key={a.id} style={S.shortcutRow}>
+          <div key={a.id} className={css.shortcutRow}>
             {mono(a.id, a.name, a.tint)}
-            <span style={{ color: 'var(--dd-text1)', fontSize: 12, width: 110, flex: 'none' }}>{a.name}</span>
+            <span style={{ color: 'var(--dd-text1)', fontSize: 13, width: 110, flex: 'none' }}>{a.name}</span>
             <input
               value={cmd}
               placeholder={a.command}
               title={`startup command — e.g. ${a.command} --some-option, or export FOO=1 && ${a.command} (empty = default)`}
               spellCheck={false}
-              style={{ ...input(0), flex: 1, opacity: on ? 1 : 0.5 }}
+              className={css.input} style={{ flex: 1, opacity: on ? 1 : 0.5 }}
               onChange={(e) => {
                 const commands = { ...cfg.commands }
                 if (e.target.value.trim()) commands[a.id] = e.target.value
@@ -177,12 +154,12 @@ function AgentsPanel() {
             />
             {a.id !== 'claude' && (
               <span title={found ? 'found in your login shell' : 'not found in your login shell'}
-                style={{ fontSize: 10, flex: 'none', color: found ? 'var(--dd-ok-bright)' : 'var(--dd-dim)' }}>
+                style={{ fontSize: 11, flex: 'none', color: found ? 'var(--dd-ok-bright)' : 'var(--dd-dim)' }}>
                 {found ? '● installed' : '○ not found'}
               </span>
             )}
             <span title={locked ? 'at least one agent must stay enabled' : undefined}>
-              <Toggle on={on} onChange={(v) => {
+              <Toggle label={`Enable ${a.name}`} on={on} onChange={(v) => {
                 if (locked) return
                 save({ ...cfg, enabled: v ? [...cfg.enabled, a.id] : cfg.enabled.filter((x) => x !== a.id) })
               }} />
@@ -191,13 +168,13 @@ function AgentsPanel() {
         )
       })}
 
-      <div style={S.catHead}>custom agents — always offered once they have a command; delete to remove</div>
+      <div className={css.catHead}>custom agents — always offered once they have a command; delete to remove</div>
       {cfg.custom.map((c, i) => (
-        <div key={c.id} style={S.shortcutRow}>
+        <div key={c.id} className={css.shortcutRow}>
           {mono(c.id, c.name || c.command, c.tint || 'var(--dd-accent-muted)')}
-          <input value={c.name} placeholder="name" spellCheck={false} style={input(100)}
+          <input value={c.name} placeholder="name" spellCheck={false} className={css.input} style={{ width: 100 }}
             onChange={(e) => setCustom(i, { name: e.target.value })} />
-          <input value={c.command} placeholder="command — e.g. codex --profile work, or export FOO=1 && codex" spellCheck={false} style={{ ...input(0), flex: 1 }}
+          <input value={c.command} placeholder="command — e.g. codex --profile work, or export FOO=1 && codex" spellCheck={false} className={css.input} style={{ flex: 1 }}
             onChange={(e) => setCustom(i, { command: e.target.value })} />
           <input type="color" value={/^#[0-9a-fA-F]{6}$/.test(c.tint) ? c.tint : '#8a63d2'} title="tint"
             style={{ width: 26, height: 24, padding: 0, border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-sm)', background: 'none', cursor: 'pointer' }}
@@ -206,11 +183,11 @@ function AgentsPanel() {
             title="remove" style={{ background: 'none', border: 'none', color: 'var(--dd-dim)', cursor: 'pointer', fontSize: 12 }}>✕</button>
         </div>
       ))}
-      <button
+      <Button
         onClick={() => save({ ...cfg, custom: [...cfg.custom, { id: `c${Date.now().toString(36)}`, name: '', command: '', tint: '#8a63d2' }] })}
-        style={{ marginTop: 10, background: 'var(--dd-btn)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', color: 'var(--dd-text2)', fontSize: 12, padding: '5px 10px', cursor: 'pointer' }}
-      >＋ add custom agent</button>
-      <div style={{ ...S.rowDesc, paddingTop: 14 }}>
+        style={{ marginTop: 16 }}
+      ><Icon name="plus" /> Add custom agent</Button>
+      <div className={css.rowDesc} style={{ paddingTop: 16 }}>
         Commands run in your login shell — the tab ends when the command exits. Env setups like
         “export FOO=1 &amp;&amp; codex” work; in a compound command, keep the agent last.
         Agent names belong to their vendors; Drydock isn’t affiliated with or endorsed by any of them.
@@ -270,13 +247,13 @@ function ShortcutsPanel() {
     <div>
       {cats.map((c) => (
         <div key={c}>
-          <div style={S.catHead}>{c}</div>
+          <div className={css.catHead}>{c}</div>
           {ACTIONS.filter((a) => a.category === c).map((a) => {
             const chord = chordFor(a.id)
             const customized = a.id in overrides
             const rec = recording === a.id
             return (
-              <div key={a.id} style={S.shortcutRow}>
+              <div key={a.id} className={css.shortcutRow}>
                 <span style={{ flex: 1, color: 'var(--dd-text1)', fontSize: 12 }}>{a.label}</span>
                 {customized && !rec && (
                   <button
@@ -297,7 +274,7 @@ function ShortcutsPanel() {
                 )}
                 <button
                   onClick={() => { setRecording(rec ? null : a.id); setSteal(null); setNotice(null) }}
-                  style={{ minWidth: 84, textAlign: 'center', background: rec ? 'var(--dd-accent-bg)' : 'var(--dd-btn)', border: '1px solid ' + (rec ? 'var(--dd-accent-border)' : 'var(--dd-border2)'), borderRadius: 'var(--dd-r-md)', color: rec ? 'var(--dd-accent-text)' : chord ? 'var(--dd-text1)' : 'var(--dd-dim)', fontSize: 11, padding: '3px 8px', cursor: 'pointer', fontFamily: 'system-ui' }}>
+                  style={{ minWidth: 84, textAlign: 'center', background: rec ? 'var(--dd-accent-bg)' : 'var(--dd-btn)', border: '1px solid ' + (rec ? 'var(--dd-accent-border)' : 'var(--dd-border2)'), borderRadius: 'var(--dd-r-md)', color: rec ? 'var(--dd-accent-text)' : chord ? 'var(--dd-text1)' : 'var(--dd-dim)', fontSize: 11, padding: '3px 8px', cursor: 'pointer', fontFamily: 'var(--dd-font-ui)' }}>
                   {rec ? 'press keys…' : chord ? displayChord(chord) : 'unbound'}
                 </button>
               </div>
@@ -305,20 +282,20 @@ function ShortcutsPanel() {
           })}
         </div>
       ))}
-      <div style={S.shortcutRow}>
+      <div className={css.shortcutRow}>
         <span style={{ flex: 1, color: 'var(--dd-text1)', fontSize: 12 }}>Switch to tab 1–9</span>
         <span title="Fixed — not rebindable" style={{ minWidth: 84, textAlign: 'center', color: 'var(--dd-dim)', fontSize: 11, border: '1px solid var(--dd-hairline)', borderRadius: 'var(--dd-r-md)', padding: '3px 8px' }}>⌘1–9 🔒</span>
       </div>
       {notice && <div style={{ color: 'var(--dd-warn-muted)', fontSize: 11, padding: '10px 0' }}>{notice}</div>}
-      <button onClick={() => {
+      <Button onClick={() => {
         // also abandon any in-flight recording/steal: a stale pending steal
         // confirmed AFTER the wipe would re-unbind a just-restored action
         setRecording(null); setSteal(null); setNotice(null)
         localStorage.removeItem('dd.keymap'); window.dispatchEvent(new CustomEvent(KEYMAP_EVENT))
       }}
-        style={{ marginTop: 16, background: 'var(--dd-btn)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', color: 'var(--dd-text2)', fontSize: 11, padding: '4px 10px', cursor: 'pointer' }}>
+        style={{ marginTop: 16 }}>
         Restore all defaults
-      </button>
+      </Button>
     </div>
   )
 }
@@ -339,12 +316,6 @@ function Swatch({ p }: { p: { bg: string; text: string; dots: [string, string, s
 
 function AppearancePanel() {
   const [theme, setTheme] = useSetting('theme', 'dark')
-  const card = (on: boolean): React.CSSProperties => ({
-    display: 'flex', alignItems: 'center', gap: 10, width: '100%', textAlign: 'left',
-    background: on ? 'var(--dd-btn)' : 'none',
-    border: '1px solid ' + (on ? 'var(--dd-accent-border)' : 'var(--dd-border)'),
-    borderRadius: 8, padding: '9px 12px', cursor: 'pointer',
-  })
   const radio = (on: boolean): React.CSSProperties => ({
     width: 13, height: 13, borderRadius: '50%', flexShrink: 0,
     border: '1px solid ' + (on ? 'var(--dd-accent)' : 'var(--dd-border3)'),
@@ -360,10 +331,10 @@ function AppearancePanel() {
   const sysOn = theme === 'system'
   return (
     <div>
-      <div style={{ ...S.rowDesc, padding: '4px 0 10px' }}>
+      <div className={css.rowDesc}>
         Applies instantly — terminals recolor in place.
       </div>
-      <button onClick={() => setTheme('system')} style={{ ...card(sysOn), marginBottom: 8 }}>
+      <button onClick={() => setTheme('system')} className={css.themeCard} aria-pressed={sysOn} style={{ marginBottom: 8 }}>
         <span style={radio(sysOn)} />
         {text('System', 'Follow the macOS appearance (Dark / Light).')}
         <span style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'linear-gradient(90deg, #10141a 50%, #ffffff 50%)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', padding: '5px 7px', flexShrink: 0 }}>
@@ -375,12 +346,12 @@ function AppearancePanel() {
           whole thing to find the light themes. */}
       {([true, false] as const).map((dark) => (
         <div key={String(dark)}>
-          <div style={S.themeGroup}>{dark ? 'Dark' : 'Light'}</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+          <div className={css.themeGroup}>{dark ? 'Dark' : 'Light'}</div>
+          <div className={css.themeGrid}>
             {THEMES.filter((t) => t.dark === dark).map((t) => {
               const on = theme === t.id
               return (
-                <button key={t.id} onClick={() => setTheme(t.id)} style={card(on)}>
+                <button key={t.id} onClick={() => setTheme(t.id)} className={css.themeCard} aria-pressed={on}>
                   <span style={radio(on)} />
                   {text(t.label, t.desc)}
                   <Swatch p={t.preview} />
@@ -398,24 +369,28 @@ export default function SettingsOverlay({ open, onClose }: { open: boolean; onCl
   const [section, setSection] = useState<Section>('shortcuts')
   if (!open) return null
   return (
-    <div style={S.wrap} ref={(el) => { if (el && !el.dataset.focused) { el.dataset.focused = '1'; el.focus() } }} tabIndex={-1}>
-      <div style={S.head}>
-        <span style={S.title}>Settings</span>
-        <button onClick={onClose} title="Close (Esc)" style={S.close}>✕</button>
+    <div className={css.wrap} ref={(el) => { if (el && !el.dataset.focused) { el.dataset.focused = '1'; el.focus() } }} tabIndex={-1}>
+      <div className={css.head} data-tauri-drag-region>
+        <span className={css.title}>Settings</span>
+        <IconButton label="Close settings" title="Close (Esc)" onClick={onClose}><Icon name="close" /></IconButton>
       </div>
-      <div style={S.body}>
-        <div style={S.rail}>
+      <div className={css.body}>
+        <div className={css.rail}>
           {(['shortcuts', 'general', 'agents', 'appearance'] as Section[]).map((s) => (
-            <button key={s} style={S.railBtn(section === s)} onClick={() => setSection(s)}>
+            <button key={s} className={css.railBtn} aria-current={section === s ? 'page' : undefined} onClick={() => setSection(s)}>
               {s === 'shortcuts' ? 'Shortcuts' : s === 'general' ? 'General' : s === 'agents' ? 'Agents' : 'Appearance'}
             </button>
           ))}
         </div>
-        <div style={S.panel}>
+        <div className={css.panel}>
+          <div className={css.panelContent}>
+          <h1 className={css.sectionTitle}>{{ general: 'General', shortcuts: 'Keyboard shortcuts', agents: 'Agents', appearance: 'Appearance' }[section]}</h1>
+          <p className={css.sectionDesc}>{{ general: 'Make Drydock fit the way you work.', shortcuts: 'Move through your workspace without leaving the keyboard.', agents: 'Choose your tools and how they start.', appearance: 'A workspace that feels like yours.' }[section]}</p>
           {section === 'general' && <GeneralPanel />}
           {section === 'shortcuts' && <ShortcutsPanel />}
           {section === 'agents' && <AgentsPanel />}
           {section === 'appearance' && <AppearancePanel />}
+          </div>
         </div>
       </div>
     </div>

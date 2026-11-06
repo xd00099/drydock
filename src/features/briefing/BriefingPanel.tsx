@@ -7,7 +7,9 @@ import { useChord } from '@/lib/keymap'
 import { BriefingTab } from './BriefingTab'
 import { ProjectTab } from './ProjectTab'
 import { PreviewTab } from './PreviewTab'
-import { S } from './styles'
+import { IconButton } from '@/components/ui'
+import Icon from '@/components/ui/Icon'
+import css from './Briefing.module.css'
 import CollaborationPanel from '@/features/collaboration/CollaborationPanel'
 import type { HandoffLaunch } from '@/features/collaboration/types'
 import type { ResolvedAgent } from '@/lib/agents'
@@ -78,7 +80,7 @@ export default function BriefingPanel({ sourceAgent, agents, onHandoff, onOpenSe
   const [usage, setUsage] = useState<SessionUsage | null>(null)
   // clamp on load AND on window resize: a width persisted (or auto-widened) on a
   // big monitor must not overflow a smaller window later
-  const [width, setWidth] = useState(() => clampPanelWidth(loadNum('dd.briefingWidth', 252)))
+  const [width, setWidth] = useState(() => clampPanelWidth(loadNum('dd.briefingWidth', 300)))
   const [tab, setTab] = useState<RightTab>(() => (initialUnread ? 'preview' : loadRightTab()))
   const widthRef = useRef(width)
   widthRef.current = width
@@ -161,35 +163,30 @@ export default function BriefingPanel({ sourceAgent, agents, onHandoff, onOpenSe
   // collapsed: a thin rail with an expand button, mirroring the left sidebar
   if (collapsed) {
     return (
-      <div style={{ width: 30, minWidth: 30, height: '100%', background: 'var(--dd-bg0)', borderLeft: '1px solid var(--dd-border)', display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 8 }}>
-        <button onClick={() => onSetCollapsed(false)} title={`Expand panel (${panelChord})`} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--dd-text3)', fontSize: 15, padding: 0 }}>«</button>
+      <div className={css.rail}>
+        <IconButton label="Expand panel" title={`Expand panel (${panelChord})`} onClick={() => onSetCollapsed(false)}><Icon name="left" size={14} /></IconButton>
       </div>
     )
   }
 
   return (
-    <div style={{ display: 'flex', height: '100%' }}>
+    <div className={css.frame}>
       <ResizeHandle
         onDelta={(dx) => setWidth((w) => clampPanelWidth(w - dx))}
         onEnd={() => localStorage.setItem('dd.briefingWidth', String(widthRef.current))}
       />
-      <div style={{ width, minWidth: width, boxSizing: 'border-box', background: 'var(--dd-bg0)', fontFamily: 'system-ui', fontSize: 12, display: 'flex', flexDirection: 'column', height: '100%' }}>
-        <div style={{ display: 'flex', alignItems: 'stretch', gap: 6, padding: '12px 12px 0', flex: 'none' }}>
-          <button onClick={() => onSetCollapsed(true)} title={`Collapse panel (${panelChord})`} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--dd-text3)', fontSize: 15, padding: 0, lineHeight: 1, alignSelf: 'flex-end', marginBottom: 4 }}>»</button>
-          <div style={{ display: 'flex', flex: 1, gap: 2, minWidth: 0 }}>
-            {TABS.map((t) => (
-              <button key={t.id} onClick={() => selectTab(t.id)} title={`${t.label} (${tabChords[t.id]})`} style={S.tabBtn(t.id === tab)}>
-                {t.label}
-                {t.id === 'preview' && artifacts.length > 0 ? ` (${artifacts.length})` : ''}
-                {/* chord hint only when the panel is wide enough to keep the
-                    three labels on one uncramped row */}
-                {width >= 330 && (
-                  <span style={{ marginLeft: 4, fontSize: 9, color: 'var(--dd-dim)' }}>{tabChords[t.id]}</span>
-                )}
-              </button>
-            ))}
-          </div>
+      <div className={css.panel} style={{ width, minWidth: width }}>
+        <div className={css.header}>
+          <span className={css.headerLabel}>Session details</span>
+          <IconButton label="Collapse panel" title={`Collapse panel (${panelChord})`} onClick={() => onSetCollapsed(true)}><Icon name="right" size={14} /></IconButton>
         </div>
+        <nav className={css.tabs} aria-label="Session details">
+          {TABS.map((t) => (
+            <button key={t.id} className={css.tab} aria-current={t.id === tab ? 'page' : undefined} onClick={() => selectTab(t.id)} title={`${t.label} (${tabChords[t.id]})`}>
+              {t.label}{t.id === 'preview' && artifacts.length > 0 ? ` (${artifacts.length})` : ''}
+            </button>
+          ))}
+        </nav>
 
         {/* Every tab manages its own layout: Preview edge-to-edge, Briefing and
             Project as scrolling-top / pinned-bottom section stacks. */}

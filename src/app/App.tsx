@@ -1194,7 +1194,7 @@ export default function App() {
         {/* In-flow (not fixed at a guessed sidebar offset): it always spans
             exactly the main column at any sidebar width or collapse state. */}
         {claudeVersion === null && (
-          <div style={{ background: 'var(--dd-err-bg-strong)', color: 'var(--dd-err-text)', padding: '4px 12px', fontFamily: 'system-ui', fontSize: 12 }}>
+          <div style={{ background: 'var(--dd-err-bg-strong)', color: 'var(--dd-err-text)', padding: '4px 12px', fontFamily: 'var(--dd-font-ui)', fontSize: 12 }}>
             claude CLI not found in your login shell — resume/new sessions won't start. Install Claude Code or fix your PATH, then restart Drydock. Shell tabs still work.
           </div>
         )}
@@ -1380,7 +1380,7 @@ export default function App() {
             />
           )}
           {activeId === null && (
-            <HomeView sessions={sessions} sessionsReady={sessionsReady} onFocusSession={(sid) => focusSessionRef.current(sid)} />
+            <HomeView sessions={sessions} sessionsReady={sessionsReady} onFocusSession={(sid) => focusSessionRef.current(sid)} onNewSession={() => setNewDialog(true)} onSearch={() => setPaletteOpen(true)} />
           )}
           {findOpen && (
             <FindBar
@@ -1462,7 +1462,7 @@ export default function App() {
           tabIndex={-1}
           style={{ position: 'fixed', inset: 0, zIndex: 85, background: 'var(--dd-bg0)', display: 'flex', flexDirection: 'column', transform: 'translateZ(0)', outline: 'none' }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid var(--dd-hairline)', fontFamily: 'system-ui' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid var(--dd-hairline)', fontFamily: 'var(--dd-font-ui)' }}>
             <span style={{ flex: 1, color: 'var(--dd-text)', fontWeight: 600, fontSize: 13 }}>Usage & recap log</span>
             <button
               onClick={() => setHomeOverlay(false)}
@@ -1477,6 +1477,8 @@ export default function App() {
               sessions={sessions}
               sessionsReady={sessionsReady}
               onFocusSession={(sid) => { setHomeOverlay(false); focusSessionRef.current(sid) }}
+              onNewSession={() => { setHomeOverlay(false); setNewDialog(true) }}
+              onSearch={() => { setHomeOverlay(false); setPaletteOpen(true) }}
             />
           </div>
         </div>
@@ -1515,7 +1517,7 @@ export default function App() {
           style={{
             position: 'fixed', left: dragXY.x + 10, top: dragXY.y + 12, zIndex: 95, pointerEvents: 'none',
             background: 'var(--dd-border)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', padding: '3px 8px',
-            color: 'var(--dd-text1)', fontFamily: 'system-ui', fontSize: 12, whiteSpace: 'nowrap',
+            color: 'var(--dd-text1)', fontFamily: 'var(--dd-font-ui)', fontSize: 12, whiteSpace: 'nowrap',
           }}
         >
           {clip(chipDrag.label, 30)}
@@ -1575,7 +1577,7 @@ export default function App() {
             style={{
               position: 'fixed', left: chipMenu.x, top: chipMenu.y, zIndex: 95,
               background: 'var(--dd-surface2)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', padding: 4,
-              fontFamily: 'system-ui', boxShadow: '0 6px 20px rgba(0,0,0,.45)',
+              fontFamily: 'var(--dd-font-ui)', boxShadow: '0 6px 20px rgba(0,0,0,.45)',
             }}
           >
             {item(splitLabel('right'), usable('right'), () => splitFromMenu(partnerId!, 'right'), splitTip)}

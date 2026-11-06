@@ -42,7 +42,7 @@ export default function FindBar({ query, onQuery, matches, focusNonce, onNext, o
       style={{
         position: 'absolute', top: 8, right: 16, zIndex: 50, display: 'flex', alignItems: 'center', gap: 4,
         background: 'var(--dd-row)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', padding: '4px 6px',
-        boxShadow: '0 6px 20px rgba(0,0,0,.4)', fontFamily: 'system-ui', fontSize: 12,
+        boxShadow: '0 6px 20px rgba(0,0,0,.4)', fontFamily: 'var(--dd-font-ui)', fontSize: 12,
       }}
     >
       <input

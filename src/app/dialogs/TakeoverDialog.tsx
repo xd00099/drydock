@@ -29,7 +29,7 @@ export default function TakeoverDialog({
       ) : info ? (
         <ModalBody>
           <div style={{ color: 'var(--dd-text)' }}>
-            Stops <span style={{ fontFamily: 'Menlo, monospace', fontSize: 12 }}>claude</span> (pid{' '}
+            Stops <span style={{ fontFamily: 'var(--dd-font-mono)', fontSize: 12 }}>claude</span> (pid{' '}
             {info.pid}) in <b>{info.app ?? 'another terminal'}</b>
             {info.tty ? <span> · {info.tty}</span> : null}
             {info.cwd ? <span> — {clip(info.cwd, 44)}</span> : null}, then resumes the session here.

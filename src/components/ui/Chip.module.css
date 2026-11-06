@@ -9,9 +9,9 @@
   border-radius: var(--dd-r-pill);
   background: var(--dd-tint);
   color: var(--dd-text2);
-  font-size: 10px;
+  font-size: var(--dd-text-xs);
   line-height: 1;
-  font-family: Menlo, Monaco, monospace;
+  font-family: var(--dd-font-ui);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -36,5 +36,5 @@
   background: transparent;
   color: var(--dd-dim);
   padding: 0 0 0 2px;
-  font-size: 9.5px;
+  font-size: var(--dd-text-xs);
 }

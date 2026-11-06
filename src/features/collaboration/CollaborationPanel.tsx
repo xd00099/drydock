@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { Button } from '@/components/ui'
+import Icon from '@/components/ui/Icon'
 import type { ResolvedAgent } from '@/lib/agents'
 import { findingsPacket, type CollaborationRecord, type HandoffLaunch } from './types'
 import s from './Collaboration.module.css'
@@ -122,8 +123,8 @@ export default function CollaborationPanel({ sessionId, sourceAgent, agents, onH
   const latest = history[0]
   return <>
     <div className={s.actions}>
-      <Button small onClick={() => prepare('review')}>Review with…</Button>
-      <Button small onClick={() => prepare('handoff')}>Handoff…</Button>
+      <Button small onClick={() => prepare('review')}><Icon name="review" size={14} />Review with…</Button>
+      <Button small onClick={() => prepare('handoff')}><Icon name="arrow" size={14} />Handoff…</Button>
       {latest && <button className={s.latest} onClick={() => view(latest)}>{latest.status === 'handoff' ? 'Handoff' : 'Review'} · {latest.target_agent} · {latest.status}</button>}
     </div>
     {open && <div className={s.scrim} onClick={(e) => { if (e.target === e.currentTarget && !busy) close() }}>

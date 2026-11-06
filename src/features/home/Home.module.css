@@ -1,0 +1,40 @@
+.viewport { height: 100%; overflow-y: auto; container-type: inline-size; background: var(--dd-canvas); }
+.page { box-sizing: border-box; max-width: 1200px; margin: 0 auto; padding: 40px 40px 56px; }
+.header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding-bottom: 32px; }
+.eyebrow { color: var(--dd-text3); font-size: var(--dd-text-xs); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 12px; }
+.title { font-size: var(--dd-text-title); line-height: 1.25; letter-spacing: -0.035em; font-weight: 600; color: var(--dd-text); margin: 0; }
+.intro { margin: 10px 0 0; color: var(--dd-text3); font-size: var(--dd-text-base); }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; padding-top: 4px; }
+.columns { display: grid; grid-template-columns: minmax(0, 1fr); gap: 32px; }
+.columns[data-usage='true'] { grid-template-columns: minmax(0, 1fr) 264px; }
+.insights { min-width: 0; padding: 0 0 0 24px; border-left: 1px solid var(--dd-hairline); }
+.statSection { padding: 20px 0; }
+.statSection:first-child { padding-top: 0; }
+.statSection + .statSection { border-top: 1px solid var(--dd-hairline); }
+.sectionHeading { display: flex; align-items: center; gap: 8px; margin: 0 0 16px; font-size: var(--dd-text-sm); font-weight: 600; color: var(--dd-text); }
+.period { margin-left: auto; font-size: var(--dd-text-xs); font-weight: 400; color: var(--dd-text3); }
+.total { font-size: 28px; font-weight: 550; letter-spacing: -0.04em; font-variant-numeric: tabular-nums; color: var(--dd-text); margin-bottom: 20px; line-height: 1; }
+.total > span { color: var(--dd-text3); font-size: var(--dd-text-sm); font-weight: 400; letter-spacing: 0; margin-left: 8px; }
+.chart { height: 56px; display: flex; gap: 5px; align-items: flex-end; }
+.chart > span { flex: 1; background: color-mix(in srgb, var(--dd-accent) 45%, var(--dd-panel)); border-radius: 3px 3px 0 0; }
+.caption { color: var(--dd-text3); font-size: var(--dd-text-xs); margin: 12px 0 0; line-height: 1.5; }
+.metricRow { display: flex; gap: 12px; align-items: center; padding: 5px 0; font-size: var(--dd-text-sm); }
+.metricLabel { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.number { color: var(--dd-text2); font-size: var(--dd-text-xs); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cost { composes: number; color: var(--dd-text3); }
+.sessionRow { composes: metricRow; width: 100%; background: none; border: 0; text-align: left; color: var(--dd-text1); cursor: pointer; border-radius: var(--dd-r-xs); }
+.sessionRow:hover:not(:disabled) { color: var(--dd-accent-text); }
+.sessionRow:disabled { opacity: 0.5; }
+.projectDot { flex: none; width: 6px; height: 6px; border-radius: 50%; }
+.attention { padding: 16px; margin-bottom: 32px; background: color-mix(in srgb, var(--dd-warn) 5%, var(--dd-canvas)); border: 1px solid color-mix(in srgb, var(--dd-warn) 20%, var(--dd-hairline)); border-radius: var(--dd-r-lg); }
+.count { color: var(--dd-text3); font-weight: 400; }
+.statusDot { width: 6px; height: 6px; border-radius: 50%; background: var(--dd-warn); }
+.waitingList { display: flex; flex-wrap: wrap; gap: 8px; }
+.waitingRow { display: flex; flex: 1 1 240px; align-items: center; gap: 16px; background: var(--dd-tint); border: 0; padding: 12px; border-radius: var(--dd-r-sm); color: var(--dd-text2); cursor: pointer; text-align: left; min-width: 0; }
+.waitingRow:hover { background: var(--dd-tint-hover); }
+.waitingText { flex: 1; min-width: 0; }
+.waitingText > strong, .waitingText > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.waitingText > strong { font-weight: 500; color: var(--dd-text); }
+.waitingText > span { color: var(--dd-text3); font-size: var(--dd-text-sm); margin-top: 4px; }
+@container (max-width: 880px) { .header { flex-direction: column; gap: 20px; } .page { padding: 32px 28px 40px; } }
+@container (max-width: 660px) { .columns[data-usage='true'] { grid-template-columns: minmax(0, 1fr); } .insights { border-left: 0; padding-left: 0; padding-top: 24px; border-top: 1px solid var(--dd-hairline); } .page { padding: 28px 24px; } .title { font-size: 24px; } }

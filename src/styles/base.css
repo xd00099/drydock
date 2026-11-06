@@ -19,3 +19,14 @@ body,
 .xterm {
   padding: 4px 6px;
 }
+
+/* Form controls do not inherit the document's font in WebKit by default. */
+body { font-family: var(--dd-font-ui); font-size: var(--dd-text-base); line-height: var(--dd-leading); color: var(--dd-text1); -webkit-font-smoothing: antialiased; }
+button, input, select, textarea { font-family: inherit; font-size: inherit; }
+button { -webkit-tap-highlight-color: transparent; }
+button, input, select, textarea, [role='button'], [tabindex] { outline-offset: 3px; }
+:focus-visible { outline: 2px solid var(--dd-accent); }
+input::placeholder, textarea::placeholder { color: var(--dd-text3); opacity: 1; }
+button:disabled { cursor: default; }
+kbd { font: var(--dd-text-xs)/1.4 var(--dd-font-ui); color: var(--dd-text3); border: 1px solid var(--dd-hairline-strong); border-radius: var(--dd-r-xs); padding: 1px 5px; white-space: nowrap; }
+::selection { background: var(--dd-accent-bg); color: var(--dd-text); }

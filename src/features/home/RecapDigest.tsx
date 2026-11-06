@@ -4,6 +4,9 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { RecapEntry, SessionView } from '@/lib/types'
 import { baseName, projectColor } from '@/lib/types'
 import LiveIndicator from '@/features/session/LiveIndicator'
+import { Button, IconButton } from '@/components/ui'
+import Icon from '@/components/ui/Icon'
+import css from './RecapDigest.module.css'
 
 // The Home "what happened" work log: each visible session's distilled recap,
 // day-grouped, expandable to its milestone timeline. Everything shown here was
@@ -27,11 +30,6 @@ const PAGE = 30
 // advances past the boundary row no matter how large the tie group is.
 type Cursor = { ts: number; sid: string }
 
-const S = {
-  h: { fontSize: 10, letterSpacing: 1, color: 'var(--dd-dim)', fontWeight: 700, margin: '0 0 8px' } as const,
-  day: { fontSize: 9.5, letterSpacing: 1, color: 'var(--dd-dim2)', fontWeight: 700, margin: '12px 0 4px' } as const,
-  dim: { color: 'var(--dd-dim)' } as const,
-}
 
 function dayLabel(ts: number): string {
   const d = new Date(ts)
@@ -116,89 +114,49 @@ export default function RecapDigest({ sessions, sessionsReady, onFocusSession }:
   }
 
   return (
-    <div style={{ flex: 1, minWidth: 0 }}>
-      <div style={S.h}>WHAT HAPPENED</div>
-      {rows.length === 0 && !busy && (
-        <div style={{ ...S.dim, fontSize: 11.5 }}>
-          No recaps yet — sessions appear here once they've been summarized.
-        </div>
-      )}
+    <section className={css.log} aria-label="Recent work">
+      <h2 className={css.heading}>Recent work</h2>
+      {rows.length === 0 && <div className={css.empty}>
+        <Icon name="terminal" size={24} />
+        <strong>{busy ? 'Loading your work…' : 'A little quiet here, for now.'}</strong>
+        <p>{busy ? 'Gathering session recaps.' : "Your session summaries will appear here as you work. Start a session or open one from the sidebar."}</p>
+      </div>}
       {groups.map((g) => (
         <div key={g.day}>
-          <div style={S.day}>{g.day}</div>
+          <h3 className={css.day}>{g.day}</h3>
           {g.items.map((r) => {
-            const s = bySid.get(r.session_id)
-            // absent from a LOADED snapshot = transcript expired/deleted; while
-            // the snapshot is still in flight, absence means nothing
-            const expired = sessionsReady && !s
+            const session = bySid.get(r.session_id)
+            const expired = sessionsReady && !session
             const open = expanded.has(r.session_id)
             const hasTimeline = r.timeline.length > 0
             return (
-              <div key={r.session_id} style={{ padding: '4px 0', opacity: expired ? 0.55 : 1 }}>
-                <div
-                  onClick={() => hasTimeline && toggle(r.session_id)}
-                  role={hasTimeline ? 'button' : undefined}
-                  title={hasTimeline ? (open ? 'Collapse milestones' : 'Show milestones') : undefined}
-                  style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: hasTimeline ? 'pointer' : 'default' }}
-                >
-                  <span style={{ flex: 'none', width: 7, height: 7, borderRadius: '50%', background: projectColor(s?.project_path ?? r.project_path) }} />
-                  {s && s.live_status !== 'ended' && (
-                    <span style={{ flex: 'none', display: 'flex' }}>
-                      <LiveIndicator status={s.live_status} />
-                    </span>
-                  )}
-                  <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12, color: 'var(--dd-text)' }}>
-                    {baseName(r.project_path)}
-                    {r.label && <span style={{ color: 'var(--dd-text2)' }}> · {r.label}</span>}
-                  </span>
-                  <span style={{ marginLeft: 'auto', flex: 'none', color: 'var(--dd-dim2)', fontFamily: 'Menlo, monospace', fontSize: 10 }}>{fmtTime(r.last_message_at)}</span>
-                  {hasTimeline && (
-                    <span style={{ flex: 'none', color: 'var(--dd-dim)', fontSize: 10, width: 10, textAlign: 'center' }}>{open ? '▾' : '▸'}</span>
-                  )}
-                  <button
-                    onClick={(e) => { e.stopPropagation(); onFocusSession(r.session_id) }}
-                    disabled={!s}
-                    title={expired ? 'transcript no longer indexed — expired or deleted' : 'Open this session'}
-                    style={{ flex: 'none', background: 'none', border: 'none', color: s ? 'var(--dd-accent-muted)' : 'var(--dd-border3)', cursor: s ? 'pointer' : 'default', fontSize: 12, padding: '0 2px' }}
-                  >
-                    ↗
-                  </button>
+              <article key={r.session_id} className={css.entry} data-expired={expired}>
+                <div className={css.entryHead}>
+                  <span className={css.dot} style={{ background: projectColor(session?.project_path ?? r.project_path) }} />
+                  <span className={css.project}>{baseName(r.project_path)}</span>
+                  {session && session.live_status !== 'ended' && <LiveIndicator status={session.live_status} />}
+                  <time className={css.time}>{fmtTime(r.last_message_at)}</time>
+                  <IconButton label="Open this session" disabled={!session} title={expired ? 'Transcript no longer indexed' : 'Open this session'} onClick={() => onFocusSession(r.session_id)}><Icon name="arrow" size={14} /></IconButton>
                 </div>
-                <div
-                  onClick={() => hasTimeline && toggle(r.session_id)}
-                  style={{ margin: '2px 0 0 15px', fontSize: 11.5, color: 'var(--dd-text3)', cursor: hasTimeline ? 'pointer' : 'default', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}
-                >
-                  {r.summary}
-                </div>
-                {open && (
-                  <div style={{ margin: '4px 0 2px 15px' }}>
-                    {r.timeline.map((t, i) => (
-                      <div key={i} style={{ display: 'flex', gap: 6, padding: '1px 0', fontSize: 11.5 }}>
-                        <span style={{ flex: 'none', color: t.in_progress ? 'var(--dd-warn)' : 'var(--dd-ok)' }}>{t.in_progress ? '◐' : '✓'}</span>
-                        <span style={{ minWidth: 0, color: t.in_progress ? 'var(--dd-text1)' : 'var(--dd-text3)' }}>{t.text}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+                {r.label && <div className={css.label}>{r.label}</div>}
+                <p className={css.summary}>{r.summary}</p>
+                {hasTimeline && <button className={css.disclosure} aria-expanded={open} onClick={() => toggle(r.session_id)}>
+                  <span aria-hidden="true">{open ? '−' : '+'}</span> {open ? 'Hide milestones' : `${r.timeline.length} milestone${r.timeline.length === 1 ? '' : 's'}`}
+                </button>}
+                {open && <ul className={css.timeline}>
+                  {r.timeline.map((t, i) => <li key={i}><span style={{ color: t.in_progress ? 'var(--dd-warn)' : 'var(--dd-ok)' }}>{t.in_progress ? '◐' : '✓'}</span><span>{t.text}</span></li>)}
+                </ul>}
+              </article>
             )
           })}
         </div>
       ))}
-      {more && rows.length > 0 && (
-        <button
-          onClick={() => {
-            const tail = rows[rows.length - 1]
-            if (!tail) return
-            paged.current = true
-            load({ ts: tail.last_message_at, sid: tail.session_id })
-          }}
-          disabled={busy}
-          style={{ marginTop: 10, background: 'var(--dd-btn)', border: '1px solid var(--dd-hairline-strong)', borderRadius: 'var(--dd-r-md)', color: 'var(--dd-text2)', fontSize: 11, padding: '3px 10px', cursor: busy ? 'default' : 'pointer' }}
-        >
-          {busy ? 'loading…' : 'show earlier'}
-        </button>
-      )}
-    </div>
+      {more && rows.length > 0 && <Button small onClick={() => {
+        const tail = rows[rows.length - 1]
+        if (!tail) return
+        paged.current = true
+        load({ ts: tail.last_message_at, sid: tail.session_id })
+      }} disabled={busy}>{busy ? 'Loading…' : 'Show earlier'}</Button>}
+    </section>
   )
 }
