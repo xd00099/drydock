@@ -4,6 +4,14 @@ Each tagged release's `## vX.Y.Z` section becomes the GitHub release body and
 the in-app updater's release notes (extracted by `scripts/release-notes.py` in
 CI — a tag without its section fails the release).
 
+## v1.0.1 — 2026-11-05
+
+- **Keep internal Codex threads out of the session list.** Guardian reviews
+  and subagents discovered through rollout files no longer appear as sessions
+  you can resume. This prevents the “Cannot resume a Guardian review thread”
+  error and keeps new Codex tabs from pairing with internal review threads.
+  Older rollout formats remain supported.
+
 ## v1.0.0 — 2026-11-05
 
 Drydock 1.0 is the first official release: a local macOS workspace for finding,

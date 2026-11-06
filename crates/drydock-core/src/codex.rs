@@ -52,9 +52,15 @@ fn is_boilerplate(text: &str) -> bool {
         || t.starts_with("# Context from my IDE")
 }
 
+/// Internal helpers cannot be resumed as independent user conversations.
+/// Older rollouts have no thread_source, so also inspect their source object.
+fn is_user_thread_source(source: Option<&str>) -> bool {
+    matches!(source, None | Some("") | Some("user"))
+}
+
 /// Parse one rollout: session_meta from line 1, then scan (bounded) for the
 /// first real user prompt. Returns None when line 1 isn't a session_meta —
-/// not a rollout we understand.
+/// not a rollout we understand — or when it belongs to an internal thread.
 pub fn parse_rollout(path: &Path, mtime_ms: i64) -> Option<CodexSession> {
     use std::io::{BufRead, BufReader};
     let file = std::fs::File::open(path).ok()?;
@@ -65,6 +71,11 @@ pub fn parse_rollout(path: &Path, mtime_ms: i64) -> Option<CodexSession> {
         return None;
     }
     let payload = meta.get("payload")?;
+    if !is_user_thread_source(payload.get("thread_source").and_then(Value::as_str))
+        || payload.get("source").is_some_and(|s| s.get("subagent").is_some())
+    {
+        return None;
+    }
     let session_id = payload.get("id").and_then(Value::as_str)?.to_string();
     let cwd = payload.get("cwd").and_then(Value::as_str).unwrap_or("").to_string();
 
@@ -166,8 +177,8 @@ pub fn scan_threads_db(codex_dir: &Path) -> Option<Vec<CodexSession>> {
     let mut out = Vec::new();
     for row in rows.flatten() {
         let (id, name, title, first_msg, cwd, rollout_path, recency, source, history_mode) = row;
-        if !matches!(source.as_deref(), None | Some("") | Some("user")) {
-            continue; // subagent threads
+        if !is_user_thread_source(source.as_deref()) {
+            continue; // subagent and Guardian review threads
         }
         let named = name.as_deref().map(str::trim).is_some_and(|n| !n.is_empty());
         let curated_title = title.as_deref().unwrap_or("");
@@ -369,6 +380,45 @@ mod tests {
     }
 
     #[test]
+    fn rollout_scan_excludes_internal_threads_even_without_a_state_db() {
+        use serde_json::json;
+        let tmp = tempfile::tempdir().unwrap();
+        let day = tmp.path().join("sessions/2026/11/05");
+        let cases = [
+            ("cli", json!({"source": "cli"}), true),
+            ("vscode", json!({"source": "vscode", "thread_source": "user"}), true),
+            ("old", json!({}), true),
+            ("unset", json!({"thread_source": null}), true),
+            ("empty", json!({"thread_source": ""}), true),
+            ("guardian", json!({"thread_source": "guardian_review"}), false),
+            ("subagent", json!({"thread_source": "subagent"}), false),
+            // Older helpers predate thread_source; source identifies them.
+            ("legacy-guardian", json!({"source": {"subagent": {"other": "guardian"}}}), false),
+            ("legacy-review", json!({"source": {"subagent": "review"}}), false),
+            ("spawn", json!({"source": {"subagent": {"thread_spawn": {"parent_thread_id": "cli"}}}}), false),
+        ];
+        let mut expected = Vec::new();
+        for (id, mut payload, visible) in cases {
+            payload["id"] = json!(id);
+            payload["cwd"] = json!("/p/proj");
+            let meta = json!({"type": "session_meta", "payload": payload}).to_string();
+            let path = write_rollout(&day, &format!("{id}.jsonl"), &[&meta, &user_msg("hello")]);
+            assert_eq!(parse_rollout(&path, 1).is_some(), visible, "{id}");
+            if visible { expected.push(id); }
+        }
+        expected.sort_unstable();
+        assert!(scan_threads_db(tmp.path()).is_none());
+        let mut cache = std::collections::HashMap::new();
+        // Repeat to cover cached rejections as well as the initial parse.
+        for _ in 0..2 {
+            let sessions = scan_sessions(tmp.path(), &mut cache);
+            let mut ids: Vec<&str> = sessions.iter().map(|s| s.session_id.as_str()).collect();
+            ids.sort_unstable();
+            assert_eq!(ids, expected);
+        }
+    }
+
+    #[test]
     fn scan_walks_date_tree_caches_by_mtime_and_drops_deleted() {
         let tmp = tempfile::tempdir().unwrap();
         let day = tmp.path().join("sessions/2026/08/14");
@@ -439,6 +489,9 @@ mod tests {
                 ("ccc", Some("my audio thing"), "Old name", "first words", None, 400, Some("user"), Some("paginated")),
                 // subagent threads are codex-internal — filtered
                 ("ddd", None, "guardian dump", "x", None, 999, Some("subagent"), Some("legacy")),
+                // Guardian reviews are internal even when file-backed or paginated.
+                ("review-file", None, "review", "x", Some(rollout_str), 1000, Some("guardian_review"), Some("legacy")),
+                ("review-db", None, "review", "x", None, 1001, Some("guardian_review"), Some("paginated")),
                 // file-backed but the file is gone (deleted) — filtered
                 ("eee", None, "husk", "x", Some("/nonexistent/r.jsonl"), 500, None, Some("legacy")),
                 // zstd-compressed by codex's worker: .jsonl gone, .jsonl.zst
