@@ -267,11 +267,8 @@ export default function App() {
     )
 
   const resume = (s: SessionView, opts?: { transcript?: boolean; permanent?: boolean }) => {
-    // Codex sessions (discovery tier): resume via `codex resume`. No
-    // transcript view yet — codex rollouts aren't parsed for reading — so a
-    // transcript request degrades to resume-or-focus. Codex tolerates its
-    // rollouts being reopened, so no live-elsewhere read-only gate either.
-    if (s.agent === 'codex') {
+    // Explicit transcript requests share the same read-only view for every agent.
+    if (s.agent === 'codex' && !opts?.transcript) {
       const here = tabsRef.current.find((t) => t.sessionId === s.session_id && t.kind === 'pty' && !t.exited)
       if (here) { setStage((st) => showTab(st, here.id)); return }
       if (s.session_id.includes("'")) return // spliced single-quoted below
@@ -301,7 +298,7 @@ export default function App() {
       // transcript view (counts as exited for the quit guard)
       const open = tabs.find((t) => t.sessionId === s.session_id && t.kind === 'transcript')
       if (open) { setStage((st) => showTab(st, open.id)); return }
-      addTab({ title: clip(sessionLabel(s), 24), kind: 'transcript', program: null, args: [], cwd: null, sessionId: s.session_id, exited: true, preview }, s.session_id)
+      addTab({ title: clip(sessionLabel(s), 24), kind: 'transcript', program: null, args: [], cwd: s.project_path || null, sessionId: s.session_id, agent: s.agent, exited: true, preview }, s.session_id)
       return
     }
     addTab({
@@ -476,7 +473,7 @@ export default function App() {
           if (r.kind === 'claude' && r.session_id) {
             restored.push({ id, title: r.title || 'claude', kind: 'pty', program: null, args: ['-l', '-c', shellLine(`${claudeCmd} --resume '${r.session_id}'`)], cwd: r.cwd, sessionId: r.session_id, exited: false })
           } else if (r.kind === 'transcript' && r.session_id) {
-            restored.push({ id, title: r.title || 'session', kind: 'transcript', program: null, args: [], cwd: null, sessionId: r.session_id, exited: true })
+            restored.push({ id, title: r.title || 'session', kind: 'transcript', program: null, args: [], cwd: r.cwd, sessionId: r.session_id, agent: r.agent ?? undefined, exited: true })
           } else if (r.kind === 'shell') {
             restored.push({ id, title: r.title || 'shell', kind: 'pty', program: null, args: ['-l'], cwd: r.cwd, exited: false, terminal: true })
           } else if (prof && prof.id === 'codex' && r.session_id) {

@@ -76,7 +76,7 @@ fn view(r: drydock_core::store::SessionRow, summary: Option<String>, name: Optio
         // nor folder membership or hue — the palette doesn't render them
         folder_id: None,
         hue: None,
-        // search runs over the store, and only claude sessions have store rows
+        // Agent identity is filled from the index metadata before returning.
         agent: "claude".to_string(),
     }
 }
@@ -107,33 +107,47 @@ fn named_matches(
         .collect()
 }
 
-#[tauri::command]
-pub fn search(db: State<'_, AppDb>, query: String) -> Result<SearchResponse, String> {
+#[tauri::command(async)]
+pub fn search(db: State<'_, AppDb>, query: String, semantic: Option<bool>) -> Result<SearchResponse, String> {
     let p = parse_query(&query);
     // embed before taking the DB lock so other IPC commands don't queue behind inference
-    let query_vec = if p.text.is_empty() { None } else { crate::embedder::imp::embed_query(&p.text) };
+    let query_vec = if p.text.is_empty() || !semantic.unwrap_or(true) { None } else { crate::embedder::imp::embed_query(&p.text) };
     let store = db.0.lock().unwrap();
 
+    let mut all = store.list_sessions().map_err(|e| e.to_string())?;
+    let hidden: std::collections::HashSet<String> = store.hidden_session_ids()
+        .map_err(|e| e.to_string())?.into_iter().collect();
+    for row in &mut all { row.hidden |= hidden.contains(&row.session_id); }
+    let summaries: std::collections::HashMap<String, String> =
+        store.card_summaries().map_err(|e| e.to_string())?.into_iter().collect();
+    let names: std::collections::HashMap<String, String> =
+        store.session_names().map_err(|e| e.to_string())?.into_iter().collect();
+    let eligible: std::collections::HashSet<String> = all.iter().filter(|r| {
+        session_passes(&view((*r).clone(), None, None), &p)
+    }).map(|r| r.session_id.clone()).collect();
+    let agents: std::collections::HashMap<String, String> = all.iter().filter_map(|r|
+        store.meta_get(&format!("agent:{}", r.session_id)).ok().flatten().map(|a| (r.session_id.clone(), a))
+    ).collect();
     // best snippet per session, sessions ordered by fused rank
     let mut best: Vec<(String, String)> = Vec::new();
     if !p.text.is_empty() {
-        let kw = store.search_keyword(&p.text, 50).map_err(|e| e.to_string())?;
+        let kw = store.search_keyword_filtered(&p.text, 50, Some(&eligible)).map_err(|e| e.to_string())?;
         let sem = query_vec
             .as_deref()
-            .map(|qv| store.search_semantic(qv, 50).unwrap_or_default())
+            .map(|qv| store.search_semantic_filtered(qv, 50, Some(&eligible)).unwrap_or_default())
             .unwrap_or_default();
         // reciprocal rank fusion across the two lists, then dedupe per session
         use std::collections::HashMap;
-        let mut score: HashMap<i64, (f64, String, String)> = HashMap::new();
+        let mut score: HashMap<String, (f64, String)> = HashMap::new();
         for (i, h) in kw.iter().enumerate() {
-            let e = score.entry(h.chunk_id).or_insert((0.0, h.session_id.clone(), h.snippet.clone()));
+            let e = score.entry(h.session_id.clone()).or_insert((0.0, h.snippet.clone()));
             e.0 += 1.0 / (60.0 + i as f64);
         }
         for (i, h) in sem.iter().enumerate() {
-            let e = score.entry(h.chunk_id).or_insert((0.0, h.session_id.clone(), h.snippet.clone()));
+            let e = score.entry(h.session_id.clone()).or_insert((0.0, h.snippet.clone()));
             e.0 += 1.0 / (60.0 + i as f64);
         }
-        let mut fused: Vec<(f64, String, String)> = score.into_values().collect();
+        let mut fused: Vec<(f64, String, String)> = score.into_iter().map(|(sid, (rank, snippet))| (rank, sid, snippet)).collect();
         fused.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         for (_, sid, snippet) in fused {
             if !best.iter().any(|(s, _)| s == &sid) {
@@ -142,11 +156,6 @@ pub fn search(db: State<'_, AppDb>, query: String) -> Result<SearchResponse, Str
         }
     }
 
-    let all = store.list_sessions().map_err(|e| e.to_string())?;
-    let summaries: std::collections::HashMap<String, String> =
-        store.card_summaries().map_err(|e| e.to_string())?.into_iter().collect();
-    let names: std::collections::HashMap<String, String> =
-        store.session_names().map_err(|e| e.to_string())?.into_iter().collect();
     drop(store);
 
     let mut results = Vec::new();
@@ -181,6 +190,9 @@ pub fn search(db: State<'_, AppDb>, query: String) -> Result<SearchResponse, Str
                 }
             }
         }
+    }
+    for result in &mut results {
+        if let Some(agent) = agents.get(&result.session.session_id) { result.session.agent = agent.clone(); }
     }
     results.truncate(30);
     Ok(SearchResponse { results, semantic: crate::embedder::semantic_status().into() })

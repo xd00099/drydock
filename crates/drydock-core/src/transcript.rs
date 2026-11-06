@@ -274,6 +274,7 @@ pub fn read_page_with(path: &Path, from_offset: u64, include_sidechain: bool) ->
     let mut entries = Vec::new();
     for line in text.lines() {
         if let Ok(v) = serde_json::from_str::<Value>(line) {
+            let v = crate::codex::normalize_record(v);
             entries_from_record(&v, include_sidechain, &mut entries);
         }
     }

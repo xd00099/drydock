@@ -182,9 +182,13 @@ Drydock calls your own `claude` binary, so it inherits whatever backend you've c
 
 Everything stays local. Drydock reads `~/.claude` and `~/.codex` and never writes into them — with one explicit exception: right-click → *Delete permanently* removes that session's transcript, at your request. Its own index lives under `~/Library/Application Support/com.drydock.app/`, and embeddings run on-device. Transcript content only ever leaves through briefing cards, generated automatically via your own `claude` CLI to whatever backend you've configured. Everything else on the wire is content-free: a twice-daily GitHub Releases version check, a one-time download of the ~110 MB embedding model on first launch, the MCP health check (your own `claude mcp list`, which contacts the servers you configured), and the libraries a rendered HTML artifact pulls from a fixed list of CDNs (jsDelivr, unpkg, cdnjs, Tailwind, Plotly, D3, Google Fonts). Past that list an artifact can't fetch, open a WebSocket, or load an image, video, font or stylesheet, so the ordinary ways of beaconing out what it renders are shut. One gap is left, named rather than glossed: WebRTC sits outside what a content policy can restrict in WebKit, so a deliberately hostile artifact could still use it. The visible trade-off: a remote `<img src="https://…">` inside an artifact won't load; ask the session to inline it instead. When Claude Code deletes a transcript under its retention policy, the session leaves Drydock too.
 
+Codex plain JSONL rollouts now use the shared transcript view, keyword/semantic index, stars, and briefing cards (generated through your configured Claude CLI). Database-only threads remain discoverable and searchable by title; compressed and database-only conversation content is not yet imported.
+
+Search shows keyword matches immediately, then enriches them using an on-demand local model. The model unloads after two minutes of inactivity. New document embeddings are still generated at startup and twice daily.
+
 ## Roadmap
 
-- Codex transcripts as first-class citizens — readable transcript view, search, briefing cards
+- Codex history formats beyond plain JSONL rollouts (compressed and database-only transcripts)
 - Hooks-based live status for sessions in other terminals (Drydock-launched tabs already use hooks; the registry poll remains for external ones)
 - More first-class agents (pi and opencode are next in line)
 - Windows / Linux support

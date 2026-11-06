@@ -19,6 +19,8 @@ export default function SearchPalette({ open, onClose, onPick, onOverlay }: Prop
   const [q, setQ] = useState('')
   const [resp, setResp] = useState<SearchResponse>({ results: [], semantic: 'unavailable' })
   const [sel, setSel] = useState(0)
+  const selectionRef = useRef(sel)
+  selectionRef.current = sel
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const seq = useRef(0)
@@ -36,11 +38,21 @@ export default function SearchPalette({ open, onClose, onPick, onOverlay }: Prop
     if (!open) return
     const mine = ++seq.current
     const t = setTimeout(() => {
-      invoke<SearchResponse>('search', { query: q })
-        .then((r) => { if (seq.current === mine) { setResp(r); setSel(0) } })
+      invoke<SearchResponse>('search', { query: q, semantic: false })
+        .then(async (r) => {
+          if (seq.current !== mine) return
+          setResp(r); setSel(0)
+          if (!q.trim()) return
+          const enriched = await invoke<SearchResponse>('search', { query: q, semantic: true })
+          if (seq.current === mine) {
+            const selectedId = r.results[selectionRef.current]?.session.session_id
+            setSel(Math.max(0, enriched.results.findIndex((hit) => hit.session.session_id === selectedId)))
+            setResp(enriched)
+          }
+        })
         .catch(console.error)
     }, 120)
-    return () => clearTimeout(t)
+    return () => { clearTimeout(t); ++seq.current }
   }, [q, open])
 
   if (!open) return null

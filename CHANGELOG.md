@@ -4,6 +4,30 @@ Each tagged release's `## vX.Y.Z` section becomes the GitHub release body and
 the in-app updater's release notes (extracted by `scripts/release-notes.py` in
 CI — a tag without its section fails the release).
 
+## v0.8.4 — 2026-11-05
+
+- **Semantic search wakes when you search.** Keyword matches appear immediately,
+  then the local embedding model loads on demand to enrich the results. It
+  unloads after two minutes without searches or indexing work. Document
+  embeddings still catch up at startup and twice daily.
+- **Search filters apply before the result cap.** Project, starred, and live
+  filters no longer lose matches to unrelated sessions. Multiple matching
+  chunks from one session cannot crowd other sessions out; hidden sessions
+  stay out of search and automatic briefing generation.
+- **Safer indexing.** Failed or incomplete project-directory scans no longer
+  count as deleted transcripts. Claude sync leaves other agents' indexed
+  content alone, and simultaneous agent writes wait rather than failing to
+  upgrade a stale database transaction.
+- **Codex JSONL transcripts join the shared index.** Read conversations and
+  tool calls, search their content, export Markdown, star sessions, and get
+  briefing cards through your configured Claude CLI. Database-only threads
+  remain discoverable and searchable by title; compressed and database-only
+  conversation content is not yet imported.
+- **Recent projects fill the new-session input.** Use arrows to highlight a
+  project, then Tab, right arrow, Enter, or a click to fill its path for
+  editing. Enter again starts the session. Keyboard hints, selection scrolling,
+  and accessible suggestion semantics make the flow easier to follow.
+
 ## v0.8.3 — 2026-08-17
 
 - **Codex sessions now wear codex's own names.** Sidebar rows read the thread

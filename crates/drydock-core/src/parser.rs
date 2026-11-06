@@ -6,6 +6,7 @@ pub fn parse_line(line: &str) -> ParsedRecord {
         Ok(v) => v,
         Err(_) => return ParsedRecord::Malformed,
     };
+    let v = crate::codex::normalize_record(v);
     let t = v.get("type").and_then(Value::as_str);
     match t {
         Some(k) if CHAIN_KINDS.contains(&k) => ParsedRecord::Chain(parse_chain(k, &v)),

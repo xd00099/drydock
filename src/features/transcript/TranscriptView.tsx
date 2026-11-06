@@ -523,7 +523,9 @@ const TranscriptView = forwardRef<PaneSearch, Props>(function TranscriptView(
           </span>
         )}
         {fallback && (
-          <span style={{ marginLeft: 'auto', color: 'var(--dd-dim)', fontSize: 11, flexShrink: 0 }} title="The session's .jsonl is gone (or not synced yet); showing the indexed text.">
+          <span style={{ marginLeft: 'auto', color: 'var(--dd-dim)', fontSize: 11, flexShrink: 0 }} title={session?.agent === 'codex'
+            ? 'The transcript file is unavailable. Compressed and database-only Codex history is not imported yet; showing indexed text.'
+            : "The session's .jsonl is gone (or not synced yet); showing the indexed text."}>
             indexed text only
           </span>
         )}

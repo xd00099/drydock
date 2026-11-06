@@ -9,8 +9,8 @@
 //! `.jsonl.zst` — those are SKIPPED here (deliberate: recent sessions are what
 //! the sidebar needs, and a decompression dependency isn't worth the tail yet).
 //!
-//! This module only DISCOVERS sessions (id, cwd, title, mtime). Transcript
-//! indexing/search for codex is a later stage; nothing here touches the store.
+//! Session discovery and response-item normalization. The app syncs plain
+//! rollouts through the shared transcript/search/briefing pipeline.
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -263,6 +263,50 @@ pub fn scan_sessions(
     cache.retain(|p, _| seen.contains(p)); // deleted/archived rollouts drop out
     out.sort_by_key(|s| std::cmp::Reverse(s.mtime_ms));
     out
+}
+
+/// Normalize rollout response items into the shared transcript format. Only
+/// response_item carries conversation content; event_msg mirrors are ignored
+/// to avoid showing/indexing the same assistant answer twice.
+pub fn normalize_record(v: Value) -> Value {
+    use serde_json::json;
+    let ts = v.get("timestamp").cloned().unwrap_or(Value::Null);
+    let Some(p) = v.get("payload") else { return v };
+    let kind = v.get("type").and_then(Value::as_str).unwrap_or("");
+    if kind == "session_meta" {
+        return json!({"type":"system", "sessionId":p["id"], "cwd":p["cwd"],
+            "version":p["cli_version"], "timestamp":ts});
+    }
+    if kind != "response_item" { return v; }
+    let item = p.get("type").and_then(Value::as_str).unwrap_or("");
+    let (role, blocks) = match item {
+        "message" => {
+            let role = p.get("role").and_then(Value::as_str).unwrap_or("assistant");
+            if !matches!(role, "user" | "assistant") { return json!({"type":"ignored"}); }
+            let blocks: Vec<Value> = p.get("content").and_then(Value::as_array).into_iter().flatten()
+                .filter_map(|b| match b.get("type").and_then(Value::as_str) {
+                    Some("input_text" | "output_text" | "text") => Some(json!({"type":"text", "text":b["text"]})),
+                    Some("input_image") => Some(json!({"type":"text", "text":"[image]"})),
+                    _ => None,
+                }).collect();
+            (role, blocks)
+        }
+        "function_call" | "custom_tool_call" => {
+            let args = p.get("arguments").or_else(|| p.get("input")).cloned().unwrap_or(Value::Null);
+            let input = args.as_str().and_then(|s| serde_json::from_str::<Value>(s).ok()).unwrap_or(args);
+            ("assistant", vec![json!({"type":"tool_use", "id":p["call_id"], "name":p["name"], "input":input})])
+        }
+        "function_call_output" | "custom_tool_call_output" =>
+            ("user", vec![json!({"type":"tool_result", "tool_use_id":p["call_id"], "content":p["output"]})]),
+        "reasoning" => {
+            let text = p.get("summary").and_then(Value::as_array).into_iter().flatten()
+                .filter_map(|x| x.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join("\n");
+            ("assistant", vec![json!({"type":"thinking", "thinking":text})])
+        }
+        _ => return json!({"type":"ignored"}),
+    };
+    let meta = role == "user" && blocks.iter().any(|b| b.get("text").and_then(Value::as_str).is_some_and(is_boilerplate));
+    json!({"type":role, "timestamp":ts, "isMeta":meta, "message":{"role":role,"content":blocks}})
 }
 
 #[cfg(test)]

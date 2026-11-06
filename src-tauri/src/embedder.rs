@@ -1,33 +1,11 @@
-//! Background embedding on a SCHEDULE: load the model, drain the queue, drop
-//! the model, sleep half a day. Between runs semantic queries return nothing
-//! and search serves keyword ranking — a deliberate trade.
-//!
-//! Two properties of the ONNX runtime shape this file. Its arena allocator is
-//! grow-only -- the largest `embed()` call a process ever makes becomes that
-//! process's memory floor FOR AS LONG AS THE SESSION LIVES -- and attention
-//! scratch grows as `batch x heads x tokens^2 x 4B`. Batches of 32 full-length
-//! chunks reserved ~1.9GB; capping batches (see `pace`) brought the arena to
-//! ~512MB, but a resident model still made that half-gigabyte the app's
-//! permanent floor. Dropping the model between runs releases the arena AND the
-//! ~110MB of weights; a machine under memory pressure gets all of it back for
-//! the ~23.9 hours a day the queue is empty anyway. New chunks are
-//! keyword-searchable the moment they are written, so the schedule only delays
-//! the newest turns joining the SEMANTIC index, never their findability.
-//!
-//! Deliberately NOT done: truncating chunk text before embedding. e5 already
-//! truncates at 512 tokens, which ~2,000 characters barely reaches, so a
-//! character cap would only discard text the model was about to read -- and
-//! since it changes the vectors it would force `EMBEDDING_VERSION` up and
-//! re-embed the whole corpus (~14.5M characters, tens of minutes of CPU, with
-//! search reduced to keyword-only ranking throughout). Capping the batch buys
-//! the same memory without touching a single stored vector.
+//! Scheduled document indexing plus on-demand query embedding. The shared
+//! model is released after two minutes without searches or indexing work.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
 /// 0 = unavailable (model init failed), 1 = indexing (a drain run is live),
-/// 2 = ready (model loaded, queue empty — brief, mid-run), 3 = parked (vectors
-/// stored, model unloaded until the next scheduled run; queries fall back to
-/// keyword ranking).
+/// 2 = ready (model loaded), 3 = parked (model unloaded; the next semantic
+/// query reloads it while the frontend displays keyword results).
 pub static SEMANTIC_STATE: AtomicU8 = AtomicU8::new(0);
 
 pub fn semantic_status() -> &'static str {
@@ -43,10 +21,7 @@ pub fn semantic_status() -> &'static str {
 mod state_tests {
     use super::*;
 
-    /// The search palette switches on these strings; "parked" is what the
-    /// scheduled lifecycle reports between runs, and anything the frontend
-    /// doesn't recognize renders as plain keyword search — which is exactly
-    /// what parked means, so even an older frontend stays honest.
+    /// Lifecycle states remain distinct for the search palette.
     #[test]
     fn every_state_has_a_name_and_parked_is_distinct() {
         for (v, s) in [(0u8, "unavailable"), (1, "indexing"), (2, "ready"), (3, "parked")] {
@@ -257,16 +232,36 @@ pub mod imp {
     use drydock_core::store::Store;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::Ordering;
-    use std::sync::{Arc, Mutex};
-    use std::time::Duration;
+    use std::sync::{Arc, Mutex, OnceLock};
+    use std::time::{Duration, Instant};
 
-    /// The model, present only while a drain run is live. An `Arc` inside a
-    /// Mutex rather than the model itself: `embed_query` clones the Arc out and
-    /// releases the lock BEFORE embedding, so a search never waits on the batch
-    /// loop and the batch loop never waits on a search. When the run ends the
-    /// slot goes back to None and the last Arc drop releases the ONNX session —
-    /// its grow-only arena and the ~110MB of weights with it.
+    /// Queries and indexing share the model without holding the slot lock
+    /// during inference. The maintenance loop evicts it after inactivity.
     static MODEL: Mutex<Option<Arc<TextEmbedding>>> = Mutex::new(None);
+
+    static CACHE_DIR: OnceLock<PathBuf> = OnceLock::new();
+    static LAST_USED: Mutex<Option<Instant>> = Mutex::new(None);
+    static LOAD: Mutex<()> = Mutex::new(());
+
+    fn model(cache_dir: &Path) -> Option<Arc<TextEmbedding>> {
+        let _load = LOAD.lock().unwrap();
+        *LAST_USED.lock().unwrap() = Some(Instant::now());
+        if let Some(model) = MODEL.lock().unwrap().clone() { return Some(model); }
+        match TextEmbedding::try_new(InitOptions::new(EmbeddingModel::MultilingualE5Small)
+            .with_cache_dir(cache_dir.to_path_buf())) {
+            Ok(model) => {
+                let model = Arc::new(model);
+                *MODEL.lock().unwrap() = Some(model.clone());
+                SEMANTIC_STATE.store(2, Ordering::Relaxed);
+                Some(model)
+            }
+            Err(e) => {
+                eprintln!("semantic model unavailable: {e:#}");
+                SEMANTIC_STATE.store(0, Ordering::Relaxed);
+                None
+            }
+        }
+    }
 
     // Bump this string whenever the embedding recipe changes (model, prefix,
     // pooling) to force a one-time re-embed of every chunk on next launch.
@@ -287,10 +282,22 @@ pub mod imp {
     /// Scheduled embedding: a catch-up run at launch, then one run every
     /// `RUN_EVERY`. All the memory lives inside `run_once`.
     pub fn run(db_path: PathBuf, cache_dir: PathBuf) {
+        let _ = CACHE_DIR.set(cache_dir.clone());
         let mut migrated = false;
+        let mut next_run = Instant::now();
         loop {
-            run_once(&db_path, &cache_dir, &mut migrated);
-            std::thread::sleep(RUN_EVERY);
+            if Instant::now() >= next_run {
+                run_once(&db_path, &cache_dir, &mut migrated);
+                next_run = Instant::now() + RUN_EVERY;
+            }
+            {
+                let _load = LOAD.lock().unwrap();
+                if LAST_USED.lock().unwrap().is_some_and(|t| t.elapsed() >= Duration::from_secs(120)) {
+                    *MODEL.lock().unwrap() = None;
+                    SEMANTIC_STATE.store(3, Ordering::Relaxed);
+                }
+            }
+            std::thread::sleep(Duration::from_secs(10));
         }
     }
 
@@ -333,22 +340,11 @@ pub mod imp {
         let _ = store.reconcile_embed_queue();
         if store.embed_queue_is_empty().unwrap_or(false) {
             let _ = crate::hues::refresh(&store);
-            SEMANTIC_STATE.store(3, Ordering::Relaxed);
+            SEMANTIC_STATE.store(if MODEL.lock().unwrap().is_some() { 2 } else { 3 }, Ordering::Relaxed);
             return;
         }
 
-        let model = match TextEmbedding::try_new(
-            InitOptions::new(EmbeddingModel::MultilingualE5Small).with_cache_dir(cache_dir.to_path_buf()),
-        ) {
-            Ok(m) => Arc::new(m),
-            Err(e) => {
-                eprintln!("semantic search disabled this run (model init failed): {e:#}");
-                SEMANTIC_STATE.store(0, Ordering::Relaxed);
-                return;
-            }
-        };
-        // publish for queries: semantic search works while the run is live
-        *MODEL.lock().unwrap() = Some(model.clone());
+        let Some(model) = model(cache_dir) else { return };
         SEMANTIC_STATE.store(1, Ordering::Relaxed);
 
         loop {
@@ -368,9 +364,8 @@ pub mod imp {
         // is nothing on screen for this to refresh.
         let _ = crate::hues::refresh(&store);
 
-        *MODEL.lock().unwrap() = None;
-        drop(model); // the last Arc frees the session, its arena, the weights
-        SEMANTIC_STATE.store(3, Ordering::Relaxed);
+        *LAST_USED.lock().unwrap() = Some(Instant::now());
+        SEMANTIC_STATE.store(2, Ordering::Relaxed);
     }
 
     enum DrainEnd {
@@ -471,11 +466,10 @@ pub mod imp {
     /// a `passage:` prefix on documents; fastembed adds neither, so we prepend
     /// it here (and `passage:` in the background loop).
     ///
-    /// None whenever the model is parked (most of the time, by design): the
-    /// caller serves keyword ranking instead. The Arc is cloned out and the
-    /// lock released before embedding — see `MODEL`.
+    /// Reload a parked model on demand. The frontend already has keyword
+    /// results while this runs; no database lock is held during inference.
     pub fn embed_query(q: &str) -> Option<Vec<f32>> {
-        let model = MODEL.lock().unwrap().clone()?;
+        let model = model(CACHE_DIR.get()?)?;
         model
             .embed(vec![format!("query: {q}")], None)
             .ok()?

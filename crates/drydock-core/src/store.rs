@@ -402,7 +402,10 @@ impl Store {
 
     /// Merge a parse delta into the session row and append its chunks. One transaction.
     pub fn apply_delta(&mut self, session_id: &str, d: &SessionDelta, chunks: &[Chunk]) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        // Acquire the writer reservation before reading. Deferred transactions
+        // cannot upgrade a stale WAL snapshot when another agent writes first;
+        // SQLite returns BUSY immediately instead of honoring busy_timeout.
+        let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let existing: Option<SessionRow> = Self::row_in_conn(&tx, session_id)?;
 
         let merged = SessionDelta {
@@ -515,6 +518,12 @@ impl Store {
         Ok(())
     }
 
+    /// Agent-specific liveness, independent of the Claude process registry.
+    pub fn set_agent_live_status(&self, session_id: &str, status: &str) -> Result<()> {
+        self.conn.execute("UPDATE sessions SET live_status=?2 WHERE session_id=?1", params![session_id, status])?;
+        Ok(())
+    }
+
     /// Overwrite a session's project_path directly (one-time data repairs).
     /// Bypasses apply_delta's stickiness on purpose. No-op for unknown ids.
     pub fn set_project_path(&self, session_id: &str, path: &str) -> Result<()> {
@@ -595,7 +604,7 @@ impl Store {
         chunks: &[Chunk],
         usage: &std::collections::HashMap<String, [i64; 4]>,
     ) -> Result<bool> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let parent_real: bool = tx
             .query_row(
                 "SELECT 1 FROM sessions WHERE session_id = ?1 AND title_source != 'radar-stub'",
@@ -686,7 +695,7 @@ impl Store {
     /// row (title_source='radar-stub') so the radar can show it; stubs are removed once dead.
     pub fn apply_live(&mut self, live: &[crate::radar::LiveSession]) -> Result<()> {
         let tx = self.conn.transaction()?;
-        tx.execute("UPDATE sessions SET live_status='ended', live_pid=NULL WHERE live_status != 'ended'", [])?;
+        tx.execute("UPDATE sessions SET live_status='ended', live_pid=NULL WHERE live_status != 'ended' AND session_id NOT IN (SELECT substr(key, 7) FROM meta WHERE key LIKE 'agent:%' AND value = 'codex')", [])?;
         for l in live {
             let updated = tx.execute(
                 "UPDATE sessions SET live_status = ?2, live_pid = ?3 WHERE session_id = ?1",
@@ -748,20 +757,26 @@ impl Store {
     }
 
     pub fn search_keyword(&self, query: &str, limit: i64) -> Result<Vec<SearchHit>> {
+        self.search_keyword_filtered(query, limit, None)
+    }
+
+    pub fn search_keyword_filtered(&self, query: &str, limit: i64, eligible: Option<&std::collections::HashSet<String>>) -> Result<Vec<SearchHit>> {
         let q = fts_query(query);
         if q.is_empty() {
             return Ok(Vec::new());
         }
         let mut stmt = self.conn.prepare(
             "SELECT chunk_id, session_id, snippet(chunks_fts, 0, '«', '»', '…', 12), bm25(chunks_fts)
-             FROM chunks_fts WHERE chunks_fts MATCH ?1 ORDER BY bm25(chunks_fts) LIMIT ?2",
+             FROM chunks_fts WHERE chunks_fts MATCH ?1 ORDER BY bm25(chunks_fts)",
         )?;
         let rows: Vec<SearchHit> = stmt
-            .query_map(params![q, limit], |r| {
+            .query_map(params![q], |r| {
                 Ok(SearchHit { chunk_id: r.get(0)?, session_id: r.get(1)?, snippet: r.get(2)?, rank: r.get(3)? })
             })?
             .collect::<Result<_, _>>()?;
-        Ok(rows)
+        let mut seen = std::collections::HashSet::new();
+        Ok(rows.into_iter().filter(|h| eligible.is_none_or(|ids| ids.contains(&h.session_id)))
+            .filter(|h| eligible.is_none() || seen.insert(h.session_id.clone())).take(limit.max(0) as usize).collect())
     }
 
     pub fn get_card(&self, session_id: &str) -> Result<Option<Card>> {
@@ -836,6 +851,7 @@ impl Store {
              WHERE s.live_status != 'busy'
                AND s.user_message_count >= 3
                AND s.hidden = 0
+               AND s.session_id NOT IN (SELECT session_id FROM hidden_sessions)
                AND s.title_source != 'radar-stub'
                AND (c.session_id IS NULL
                     OR (s.message_count - c.at_message_count >= 5
@@ -960,6 +976,10 @@ impl Store {
 
     /// Brute-force cosine over all stored vectors; rank = 1 - cosine (lower = better).
     pub fn search_semantic(&self, query: &[f32], limit: usize) -> Result<Vec<SearchHit>> {
+        self.search_semantic_filtered(query, limit, None)
+    }
+
+    pub fn search_semantic_filtered(&self, query: &[f32], limit: usize, eligible: Option<&std::collections::HashSet<String>>) -> Result<Vec<SearchHit>> {
         let mut stmt = self.conn.prepare(
             "SELECT e.chunk_id, e.embedding, c.session_id, c.text
              FROM chunk_embeddings e JOIN chunks c ON c.chunk_id = e.chunk_id",
@@ -975,6 +995,7 @@ impl Store {
             })?
             .flatten()
             .filter_map(|(chunk_id, blob, session_id, text)| {
+                if eligible.is_some_and(|ids| !ids.contains(&session_id)) { return None; }
                 let v: Vec<f32> = blob.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
                 if v.len() != query.len() {
                     return None;
@@ -990,6 +1011,8 @@ impl Store {
             })
             .collect();
         scored.sort_by(|a, b| a.rank.partial_cmp(&b.rank).unwrap_or(std::cmp::Ordering::Equal));
+        let mut seen = std::collections::HashSet::new();
+        scored.retain(|h| eligible.is_none() || seen.insert(h.session_id.clone()));
         scored.truncate(limit);
         Ok(scored)
     }

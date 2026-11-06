@@ -129,21 +129,25 @@ pub fn scan_subagents(claude_dir: &Path) -> Result<Vec<AgentFile>> {
 pub fn scan_projects(claude_dir: &Path) -> Result<Vec<SessionFile>> {
     let projects = claude_dir.join("projects");
     let mut out = Vec::new();
-    let Ok(project_dirs) = std::fs::read_dir(&projects) else { return Ok(out) };
-    for proj in project_dirs.flatten() {
-        if !proj.path().is_dir() { continue; }
-        let Ok(entries) = std::fs::read_dir(proj.path()) else { continue };
-        for e in entries.flatten() {
+    let project_dirs = match std::fs::read_dir(&projects) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+        Err(e) => return Err(e.into()),
+    };
+    // An incomplete inventory must never authorize deletion mirroring.
+    for proj in project_dirs {
+        let proj = proj?;
+        if !proj.file_type()?.is_dir() { continue; }
+        for e in std::fs::read_dir(proj.path())? {
+            let e = e?;
             let path = e.path();
-            if !path.is_file() || path.extension().and_then(|x| x.to_str()) != Some("jsonl") {
+            if !e.file_type()?.is_file() || path.extension().and_then(|x| x.to_str()) != Some("jsonl") {
                 continue;
             }
             let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
-            let Ok(md) = e.metadata() else { continue };
-            let mtime = md.modified().ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
+            let md = e.metadata()?;
+            let mtime = md.modified()?.duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64).unwrap_or(0);
             out.push(SessionFile { path: path.clone(), session_id: stem.to_string(), size: md.len(), mtime });
         }
     }

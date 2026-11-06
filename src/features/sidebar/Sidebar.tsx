@@ -396,9 +396,8 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
           </span>
           {/* hover-only: read without resuming (a plain click SPAWNS claude for
               ended sessions — this is the safe browse path). span, not button:
-              a button can't nest inside the row button. Claude-only: codex
-              rollouts aren't parsed for reading yet. */}
-          {s.agent === 'claude' && (
+              a button can't nest inside the row button. */}
+          {(s.agent === 'claude' || s.agent === 'codex') && (
             <span
               className="dd-rowbtn"
               role="button"
@@ -699,9 +698,8 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
           >
             {menu.view === 'main' ? (
               <>
-                {/* star is a column on the claude index's sessions table —
-                    codex rows have no row there, so a star wouldn't stick */}
-                {menu.s.agent === 'claude' && (
+                {/* Indexed agents share persistent stars. */}
+                {(menu.s.agent === 'claude' || menu.s.agent === 'codex') && (
                   <button className={cls.menuItem} onClick={() => { onToggleStar(menu.s); setMenu(null) }}>
                     {menu.s.starred ? 'Unstar' : 'Star'}
                   </button>
@@ -724,9 +722,8 @@ export default function Sidebar({ onHome, sessions, folders, hidden, activeSessi
                     Clear name
                   </button>
                 )}
-                {/* codex rollouts aren't parsed for reading yet — same gate as
-                    the row's hover ≣ button */}
-                {menu.s.agent === 'claude' && (
+                {/* Read without starting an agent process. */}
+                {(menu.s.agent === 'claude' || menu.s.agent === 'codex') && (
                   <button className={cls.menuItem} onClick={() => { onTranscript(menu.s); setMenu(null) }}>
                     View transcript
                   </button>

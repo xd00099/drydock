@@ -358,6 +358,7 @@ pub fn sessions_snapshot(
         .list_sessions()
         .map_err(|e| e.to_string())?
         .into_iter()
+        .filter(|r| store.meta_get(&format!("agent:{}", r.session_id)).ok().flatten().as_deref() != Some("codex"))
         .map(|r| {
             let attn = waiting.get(&r.session_id).filter(|_| r.live_status != "ended");
             SessionView {
@@ -389,25 +390,23 @@ pub fn sessions_snapshot(
             }
         })
         .collect::<Vec<_>>();
-    // Codex sessions ride beside the claude index (discovery tier: rollout
-    // scan, no store row). Busy = rollout touched in the last two minutes;
-    // attention marks (once the notify hook feeds them) join the same way as
-    // claude's. Name/folder/hidden are id-keyed flag tables, so they attach to
-    // codex ids exactly like claude's; only STAR stays claude-only — it's a
-    // column on the sessions table, and codex has no row there.
+    // Codex discovery supplies recency and curated titles; the shared index
+    // supplies stars and briefing cards. Busy remains a coarse two-minute
+    // activity window, with turn-finished attention from the notify hook.
     let mut sessions = sessions;
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     for c in codex.snapshot() {
+        let indexed = store.get_session(&c.session_id).map_err(|e| e.to_string())?;
         let busy = now_ms.saturating_sub(c.mtime_ms) < crate::agents::ACTIVE_MS;
         let attn = waiting.get(&c.session_id).filter(|_| busy);
         sessions.push(SessionView {
             title: c.title.unwrap_or_else(|| format!("codex · {}", &c.session_id[..8.min(c.session_id.len())])),
             title_source: "first-prompt".to_string(),
             name: names.get(&c.session_id).cloned(),
-            summary: None,
+            summary: summaries.get(&c.session_id).cloned(),
             latest_recap: c.recap,
             live_status: match attn.map(|w| w.kind) {
                 Some(crate::attention::Attn::Blocked) => "needs_input".to_string(),
@@ -423,8 +422,8 @@ pub fn sessions_snapshot(
             session_id: c.session_id,
             project_path: c.cwd,
             last_message_at: Some(c.mtime_ms),
-            starred: false,
-            hidden: false,
+            starred: indexed.as_ref().is_some_and(|r| r.starred),
+            hidden: indexed.as_ref().is_some_and(|r| r.hidden),
             agent: "codex".to_string(),
         });
     }

@@ -41,7 +41,7 @@ fn tail_chars(s: &str, max_chars: usize) -> &str {
 
 fn build_prompt(title: &str, recap: Option<&str>, tail: &str) -> String {
     format!(
-        "You summarize a Claude Code session so its owner can tell at a glance what it was and resume instantly.\n\
+        "You summarize a coding agent session so its owner can tell at a glance what it was and resume instantly.\n\
          Session title: {title}\n\
          Latest recap: {}\n\
          Transcript tail (role-tagged):\n{tail}\n\n\

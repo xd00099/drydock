@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { getSetting } from '@/lib/settings'
 
@@ -48,6 +48,8 @@ export default function NewSessionDialog({ open, recents, onLaunch, onClose }: {
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const inputRef = useRef<HTMLInputElement | null>(null)
+  const listId = useId()
+  const listRef = useRef<HTMLDivElement | null>(null)
   const seqRef = useRef(0) // stale list_dirs guard
   const launchSeqRef = useRef(0) // Esc after Enter must cancel the pending launch
 
@@ -75,9 +77,12 @@ export default function NewSessionDialog({ open, recents, onLaunch, onClose }: {
         .then((names) => { if (seqRef.current === token) setDirs(names) })
         .catch(() => { if (seqRef.current === token) setDirs([]) })
     }, 80)
-    return () => window.clearTimeout(t)
+    return () => { window.clearTimeout(t); ++seqRef.current }
   }, [open, dir])
   useEffect(() => setSel(-1), [value])
+  useEffect(() => {
+    if (sel >= 0) listRef.current?.querySelector(`[data-index="${sel}"]`)?.scrollIntoView?.({ block: 'nearest' })
+  }, [sel])
 
   if (!open) return null
 
@@ -102,21 +107,23 @@ export default function NewSessionDialog({ open, recents, onLaunch, onClose }: {
   }
 
   const complete = (i: number) => {
-    if (!showRecents && matches[i]) setValue(dir + matches[i] + '/')
+    const path = rows[i]
+    if (!path) return
+    setValue(showRecents ? path : path + '/')
+    setErr(null)
     setSel(-1)
     inputRef.current?.focus()
   }
 
   const onKey = (e: React.KeyboardEvent) => {
-    if (e.nativeEvent.isComposing) return // IME composition owns these keys
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return // IME composition owns these keys
     if (e.key === 'Escape') { e.preventDefault(); onClose(); return }
     if (e.key === 'ArrowDown') { e.preventDefault(); setSel((s) => Math.min(s + 1, rows.length - 1)); return }
     if (e.key === 'ArrowUp') { e.preventDefault(); setSel((s) => Math.max(s - 1, -1)); return }
-    if ((e.key === 'Tab' || e.key === 'ArrowRight') && !showRecents && sel >= 0) { e.preventDefault(); complete(sel); return }
-    if (e.key === 'Tab' && !showRecents && matches.length === 1) { e.preventDefault(); complete(0); return }
+    if (!e.shiftKey && (e.key === 'Tab' || e.key === 'ArrowRight') && sel >= 0 && rows[sel]) { e.preventDefault(); complete(sel); return }
+    if (e.key === 'Tab' && !e.shiftKey && rows.length === 1) { e.preventDefault(); complete(0); return }
     if (e.key === 'Enter') {
       e.preventDefault()
-      if (sel >= 0 && showRecents) { launch(rows[sel]); return }
       if (sel >= 0) { complete(sel); return }
       launch(resolved)
     }
@@ -141,18 +148,29 @@ export default function NewSessionDialog({ open, recents, onLaunch, onClose }: {
           onChange={(e) => { setValue(e.target.value); setErr(null) }}
           onKeyDown={onKey}
           spellCheck={false}
+          role="combobox"
+          aria-label="Project folder"
+          aria-autocomplete="list"
+          aria-expanded={rows.length > 0}
+          aria-controls={listId}
+          aria-activedescendant={sel >= 0 && rows[sel] ? `${listId}-${sel}` : undefined}
         />
         <div style={S.hint}>{hint}</div>
+        <div style={{ ...S.hint, color: 'var(--dd-dim)' }}>
+          {sel >= 0 ? 'Tab / → / Enter fills path — Enter again starts session' : '↑↓ choose a folder · Tab fills path · Enter starts session'}
+        </div>
         {rows.length > 0 && (
-          <div style={S.list}>
+          <div ref={listRef} style={S.list}>
             <div style={S.cap}>{showRecents ? 'recent projects' : 'folders'}</div>
+            <div id={listId} role="listbox" aria-label={showRecents ? 'Recent projects' : 'Folders'}>
             {rows.map((r, i) => (
-              <div key={r} style={S.row(i === sel)}
+              <div key={r} id={`${listId}-${i}`} data-index={i} role="option" aria-selected={i === sel} style={S.row(i === sel)}
                 onMouseEnter={() => setSel(i)}
-                onClick={() => (showRecents ? launch(r) : complete(i))}>
+                onClick={() => complete(i)}>
                 {r}{showRecents ? '' : '/'}
               </div>
             ))}
+            </div>
           </div>
         )}
       </div>

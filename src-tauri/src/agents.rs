@@ -2,7 +2,8 @@
 //!
 //! A poll thread rescans `~/.codex/sessions` (mtime-cached, so steady state is
 //! a directory walk with zero file reads) and holds the result; the sessions
-//! snapshot merges it beside the claude index as rows with agent = "codex".
+//! snapshot merges it beside Claude sessions as rows with agent = "codex".
+//! Plain rollout content is mirrored into Drydock's shared index.
 //! Codex has no live-PID registry (unlike ~/.claude/sessions), so "busy" is
 //! recency: codex appends to the rollout during a turn, and a session whose
 //! file moved in the last two minutes is treated as active.
@@ -102,8 +103,58 @@ pub fn start(app: &AppHandle) {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0);
+            // Use the shared index: content, cards, names and stars have the
+            // same contract for both agents. Failed syncs retry next poll.
+            let db_path = handle.path().app_data_dir().ok().map(|p| p.join("drydock.db"));
+            let mut indexed = false;
+            if let Some(db_path) = db_path {
+                if let Ok(mut store) = drydock_core::store::Store::open(&db_path) {
+                    // Never infer deletion from a partial discovery scan. A
+                    // missing file is independently confirmed before pruning.
+                    if let Ok(paths) = store.all_synced_paths() {
+                        for (path, sid, _) in paths {
+                            if store.meta_get(&format!("agent:{sid}")).ok().flatten().as_deref() == Some("codex")
+                                && state.find(&sid).is_none()
+                                && std::path::Path::new(&path).try_exists().ok() == Some(false) {
+                                if store.delete_session_data(&sid).is_ok() { indexed = true; }
+                            }
+                        }
+                    }
+                    for session in state.snapshot() {
+                        let result = (|| -> anyhow::Result<()> {
+                            store.meta_set(&format!("agent:{}", session.session_id), "codex")?;
+                            if let Some(path) = &session.path {
+                                let md = std::fs::metadata(path)?;
+                                let sf = drydock_core::scanner::SessionFile {
+                                    path: path.clone(), session_id: session.session_id.clone(), size: md.len(),
+                                    mtime: md.modified()?.duration_since(std::time::UNIX_EPOCH)?.as_millis() as i64,
+                                };
+                                if matches!(drydock_core::sync::sync_file(&mut store, &sf)?, drydock_core::sync::SyncOutcome::Parsed { .. }) {
+                                    indexed = true;
+                                }
+                            } else if store.get_session(&session.session_id)?.is_none() {
+                                // A metadata-only thread remains searchable by
+                                // its title; do not invent a transcript for it.
+                                let delta = drydock_core::accumulator::SessionDelta {
+                                    project_path: Some(session.cwd.clone()), first_prompt: session.title.clone(),
+                                    last_message_at: Some(session.mtime_ms), ..Default::default()
+                                };
+                                let chunks = session.title.as_ref().map(|title| vec![drydock_core::chunker::Chunk {
+                                    role: "user".into(), text: title.clone(), ts: Some(session.mtime_ms)
+                                }]).unwrap_or_default();
+                                store.apply_delta(&session.session_id, &delta, &chunks)?;
+                                indexed = true;
+                            }
+                            store.set_agent_live_status(&session.session_id,
+                                if now_ms.saturating_sub(session.mtime_ms) < ACTIVE_MS { "busy" } else { "ended" })?;
+                            Ok(())
+                        })();
+                        if let Err(e) = result { eprintln!("codex index {}: {e:#}", session.session_id); }
+                    }
+                }
+            }
             let active = state.active_ids(now_ms);
-            if changed || active != prev_active {
+            if changed || indexed || active != prev_active {
                 prev_active = active;
                 let _ = handle.emit("index-updated", ());
             }

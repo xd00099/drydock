@@ -318,6 +318,13 @@ pub fn sync_all(store: &mut Store, claude_dir: &Path) -> Result<SyncReport> {
         .chain(agents.iter().map(|a| a.path.to_string_lossy().to_string()))
         .collect();
     for (path, session_id, is_agent) in store.all_synced_paths()? {
+        // A missing source root may be temporarily unavailable. Only a complete
+        // Claude inventory can authorize removals, and never for another agent.
+        if !claude_dir.join("projects").try_exists()? || !Path::new(&path).starts_with(claude_dir.join("projects")) {
+            continue;
+        }
+        // Sidecar discovery is best effort; confirm absence independently.
+        if is_agent && Path::new(&path).try_exists()? { continue; }
         if on_disk.contains(&path) {
             continue;
         }
