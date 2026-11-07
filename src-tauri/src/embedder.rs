@@ -203,21 +203,23 @@ pub mod imp {
     use std::time::{Duration, Instant};
 
     /// Queries and indexing share the model without holding the slot lock
-    /// during inference. The maintenance loop evicts it after inactivity.
-    static MODEL: Mutex<Option<Arc<TextEmbedding>>> = Mutex::new(None);
+    /// during inference. ONNX sessions need mutable access, so lock the model
+    /// for one batch only, releasing it before database writes or pacing.
+    /// The maintenance loop evicts the model after inactivity.
+    static MODEL: Mutex<Option<Arc<Mutex<TextEmbedding>>>> = Mutex::new(None);
 
     static CACHE_DIR: OnceLock<PathBuf> = OnceLock::new();
     static LAST_USED: Mutex<Option<Instant>> = Mutex::new(None);
     static LOAD: Mutex<()> = Mutex::new(());
 
-    fn model(cache_dir: &Path) -> Option<Arc<TextEmbedding>> {
+    fn model(cache_dir: &Path) -> Option<Arc<Mutex<TextEmbedding>>> {
         let _load = LOAD.lock().unwrap();
         *LAST_USED.lock().unwrap() = Some(Instant::now());
         if let Some(model) = MODEL.lock().unwrap().clone() { return Some(model); }
         match TextEmbedding::try_new(InitOptions::new(EmbeddingModel::MultilingualE5Small)
             .with_cache_dir(cache_dir.to_path_buf())) {
             Ok(model) => {
-                let model = Arc::new(model);
+                let model = Arc::new(Mutex::new(model));
                 *MODEL.lock().unwrap() = Some(model.clone());
                 SEMANTIC_STATE.store(2, Ordering::Relaxed);
                 Some(model)
@@ -344,7 +346,7 @@ pub mod imp {
     }
 
     /// Drain the queue on one connection.
-    fn drain(store: &mut Store, model: &TextEmbedding) -> DrainEnd {
+    fn drain(store: &mut Store, model: &Mutex<TextEmbedding>) -> DrainEnd {
         let mut pacer = Pacer::default();
         let mut db_errors = 0u32;
         // Set after a multi-row batch fails in the model, so the next pass
@@ -387,11 +389,12 @@ pub mod imp {
     /// that embeds but fails to write leaves its rows pending, and calling that
     /// progress is what let this loop run a table scan and an ONNX inference
     /// back to back, forever, on one bad row.
-    fn embed_batch(store: &mut Store, model: &TextEmbedding, batch: &[(i64, String)]) -> Step {
+    fn embed_batch(store: &mut Store, model: &Mutex<TextEmbedding>, batch: &[(i64, String)]) -> Step {
         // e5 documents must carry the `passage:` prefix (paired with the
         // `query:` prefix on searches); fastembed does not add it for us.
         let texts: Vec<String> = batch.iter().map(|(_, t)| format!("passage: {t}")).collect();
-        let vecs = match model.embed(texts, None) {
+        let result = model.lock().unwrap().embed(texts, None);
+        let vecs = match result {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("embed batch failed ({} chunks): {e:#}", batch.len());
@@ -437,8 +440,8 @@ pub mod imp {
     /// results while this runs; no database lock is held during inference.
     pub fn embed_query(q: &str) -> Option<Vec<f32>> {
         let model = model(CACHE_DIR.get()?)?;
-        model
-            .embed(vec![format!("query: {q}")], None)
+        let result = model.lock().ok()?.embed(vec![format!("query: {q}")], None);
+        result
             .ok()?
             .into_iter()
             .next()

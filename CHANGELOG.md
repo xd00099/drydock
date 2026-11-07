@@ -4,6 +4,30 @@ Each tagged release's `## vX.Y.Z` section becomes the GitHub release body and
 the in-app updater's release notes (extracted by `scripts/release-notes.py` in
 CI — a tag without its section fails the release).
 
+## v1.3.0 — 2026-11-06
+
+- **Project tools follow the session.** The Project tab shows the current
+  session's Claude Code or Codex skills and MCP configuration, including
+  Drydock's native tools. Separate harness caches prevent one agent's tools
+  from appearing in another's session. Configuration errors and disabled
+  connections stay visible; Codex configuration is distinguished from live
+  connection health.
+- **Native Codex artifacts and feedback.** New and resumed Codex sessions
+  automatically receive Drydock's artifact and inline-review MCP tools.
+  Artifacts rendered before a new thread is identified are saved to that
+  session's gallery once it is paired. Session credentials stay private and
+  temporary launch files are cleaned up when the session exits.
+- **Shared project setup across agents.** Drydock's project registry supplies
+  shared skills and stdio or HTTP MCP connections to both supported harnesses,
+  with project-scoped toggles and consistent connection precedence. Existing
+  harness configuration files are kept intact; servers that require account
+  sign-in may need separate authentication in each agent.
+- **Leaner, faster builds.** Text search now excludes unused image-model
+  codecs, removing 44 dependencies from the macOS build graph. AppKit bindings
+  enable only the features needed by Drydock and its dependencies. Existing
+  search embeddings remain compatible. Builds on `main` populate a shared Rust
+  and ONNX runtime cache for subsequent releases, replacing isolated tag caches.
+
 ## v1.2.0 — 2026-11-06
 
 - **Clear titles and useful summaries.** Briefing now shows a compact AI summary

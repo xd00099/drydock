@@ -1,0 +1,50 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/actions/setup-build/**'
+      - '.github/workflows/build.yml'
+      - '.github/workflows/release.yml'
+      - '.cargo/**'
+      - 'rust-toolchain*'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/**'
+      - 'src/**'
+      - 'src-tauri/**'
+      - 'index.html'
+      - 'package*.json'
+      - '*config*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15 # arm64, matching the release runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-build
+        with:
+          save-rust-cache: ${{ github.ref == 'refs/heads/main' }}
+
+      - run: npm ci
+
+      - name: Test frontend
+        run: npm test
+
+      - name: Test Rust workspace
+        run: cargo test --workspace --locked
+
+      # Build the same optimized dependencies as releases, without packaging
+      # or signing. Main's cache is then available to every subsequent tag.
+      - name: Build release binary
+        run: npx tauri build --no-bundle -- --locked

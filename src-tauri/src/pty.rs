@@ -26,6 +26,14 @@ impl PtyManager {
         Self { sessions: Default::default(), extra_env: Arc::new(env) }
     }
 
+    /// One spawn's private environment, with the same shared PTY registry.
+    /// In particular, an MCP token must never leak into another tab's launch.
+    pub fn with_spawn_env(&self, env: Vec<(String, String)>) -> Self {
+        let mut pairs = self.extra_env.as_ref().clone();
+        pairs.extend(env);
+        Self { sessions: Arc::clone(&self.sessions), extra_env: Arc::new(pairs) }
+    }
+
     /// Spawn `program args` in a fresh PTY under caller-chosen `id`.
     /// `on_output` fires per read chunk; `on_exit` fires once with the exit code.
     #[allow(clippy::too_many_arguments)]

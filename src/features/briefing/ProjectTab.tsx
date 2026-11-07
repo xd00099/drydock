@@ -3,10 +3,10 @@ import { invoke } from '@tauri-apps/api/core'
 import { baseName, relAge, type McpServer, type Skill } from '@/lib/types'
 import { S, loadStrSet } from './styles'
 
-function SkillsSection({ projectPath }: { projectPath?: string }) {
-  // Fetched per-mount (~17 file reads) so it stays fresh when plugins change and
-  // a transient failure isn't pinned by a module cache. Includes plugin +
-  // personal (~/.claude) skills and this project's own (<project>/.claude/skills).
+type ProjectScope = { projectPath?: string; agent: string }
+
+function SkillsSection({ projectPath, agent }: ProjectScope) {
+  // Read the shared catalog or the chosen harness's local skills afresh.
   const [state, setState] = useState<'loading' | 'error' | Skill[]>('loading')
   // Groups start collapsed (just a header + count); persisted so an expand
   // survives the panel's per-session remount.
@@ -14,11 +14,11 @@ function SkillsSection({ projectPath }: { projectPath?: string }) {
   useEffect(() => {
     let live = true
     setState('loading')
-    invoke<Skill[]>('list_skills', { projectPath: projectPath ?? null })
+    invoke<Skill[]>('list_skills', { projectPath: projectPath ?? null, agent })
       .then((s) => live && setState(s))
       .catch(() => live && setState('error'))
     return () => { live = false }
-  }, [projectPath])
+  }, [projectPath, agent])
 
   const toggle = (plugin: string) =>
     setExpanded((prev) => {
@@ -32,13 +32,13 @@ function SkillsSection({ projectPath }: { projectPath?: string }) {
     <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
       <span style={S.secHead}>SKILLS</span>
       {Array.isArray(state) && state.length > 0 && (
-        <span style={{ color: 'var(--dd-dim)', fontSize: 10 }}>{state.length} · plugin, personal &amp; project</span>
+        <span style={{ color: 'var(--dd-dim)', fontSize: 10 }}>{state.length}</span>
       )}
     </div>
   )
   if (state === 'loading') return <div>{header}<div style={S.muted}>loading skills…</div></div>
   if (state === 'error') return <div>{header}<div style={S.muted}>couldn’t load skills</div></div>
-  if (state.length === 0) return <div>{header}<div style={S.muted}>no plugin skills found</div></div>
+  if (state.length === 0) return <div>{header}<div style={S.muted}>no local skills found for this agent</div></div>
 
   const groups = new Map<string, Skill[]>()
   for (const s of state) {
@@ -74,6 +74,8 @@ function SkillsSection({ projectPath }: { projectPath?: string }) {
 // Connection-health dot color per status token from `claude mcp list`.
 const STATUS_COLOR: Record<string, string> = {
   connected: 'var(--dd-ok)',
+  available: 'var(--dd-ok)',
+  configured: 'var(--dd-dim)',
   failed: 'var(--dd-err)',
   pending: 'var(--dd-warn-muted)',
   unknown: 'var(--dd-dim)',
@@ -112,9 +114,9 @@ const mcpCheckInFlight = new Map<string, Promise<unknown>>()
 const mcpServersCache = new Map<string, McpServer[]>()
 
 // Worst-first, so the section header can report health even while collapsed.
-const STATUS_RANK: Record<string, number> = { failed: 4, pending: 3, unknown: 2, checking: 1, connected: 0 }
+const STATUS_RANK: Record<string, number> = { failed: 4, pending: 3, unknown: 2, checking: 1, connected: 0, available: 0, configured: 2 }
 
-function McpSection({ projectPath }: { projectPath?: string }) {
+function McpSection({ projectPath, agent }: ProjectScope) {
   const [servers, setServers] = useState<McpServer[] | null>(null)
   // null = never checked (dots show "checking"); {} = checked, no statuses
   const [status, setStatus] = useState<Record<string, { st: string; raw: string }> | null>(null)
@@ -130,11 +132,16 @@ function McpSection({ projectPath }: { projectPath?: string }) {
   // "one check at a time" latch (state lags; a ref doesn't).
   const epochRef = useRef(0)
   const inFlightRef = useRef(false)
-  const cacheKey = projectPath ?? ''
+  const cacheKey = `${agent}:${projectPath ?? ''}`
+  const canCheckHealth = agent === 'claude'
+  const [listErr, setListErr] = useState<string | null>(null)
+  const [actionErr, setActionErr] = useState<string | null>(null)
+  const [reload, setReload] = useState(0)
+  const [loading, setLoading] = useState(true)
 
   const runCheck = useCallback((hasExternal: boolean) => {
     const epoch = epochRef.current
-    if (!hasExternal) {
+    if (!hasExternal || !canCheckHealth) {
       setStatus({})
       setCheckedAt(Date.now())
       return
@@ -146,7 +153,7 @@ function McpSection({ projectPath }: { projectPath?: string }) {
     // remount mid-check must not spawn a second concurrent CLI process
     let check = mcpCheckInFlight.get(cacheKey)
     if (!check) {
-      check = invoke<[string, string, string][]>('mcp_status', { projectPath: projectPath ?? null })
+      check = invoke<[string, string, string][]>('mcp_status', { projectPath: projectPath ?? null, agent })
         .then((triples) => {
           // single writer per spawn; joiners read the cache in their .then
           mcpStatusCache.set(cacheKey, {
@@ -172,7 +179,7 @@ function McpSection({ projectPath }: { projectPath?: string }) {
         inFlightRef.current = false
         if (epochRef.current === epoch) setChecking(false)
       })
-  }, [projectPath, cacheKey])
+  }, [projectPath, cacheKey, canCheckHealth, agent])
 
   useEffect(() => {
     epochRef.current++
@@ -182,41 +189,46 @@ function McpSection({ projectPath }: { projectPath?: string }) {
     // anyway, and its finally() harmlessly re-clears this)
     inFlightRef.current = false
     setServers(null)
+    setLoading(true)
     setCheckErr(null)
+    setListErr(null)
     setChecking(false)
     // seed from the caches so a remount shows last-known health immediately
-    const cached = mcpStatusCache.get(projectPath ?? '')
+    const cached = mcpStatusCache.get(cacheKey)
     setStatus(cached?.status ?? null)
     setCheckedAt(cached?.checkedAt ?? null)
-    setServers(mcpServersCache.get(projectPath ?? '') ?? null)
-    invoke<McpServer[]>('list_mcp_servers', { projectPath: projectPath ?? null })
+    setServers(mcpServersCache.get(cacheKey) ?? null)
+    invoke<McpServer[]>('list_mcp_servers', { projectPath: projectPath ?? null, agent })
       .then((list) => {
         if (epochRef.current !== epoch) return
-        mcpServersCache.set(projectPath ?? '', list)
+        mcpServersCache.set(cacheKey, list)
         setServers(list)
         // a cached check stands in for the mount-time one only while it's
         // fresh AND covers every external server — a just-added server must
         // trigger a real check, not wear "not in the output" for a minute
-        const covered = !!cached && list.every((s) => s.builtin || cached.status[s.name] !== undefined)
+        const covered = !!cached && list.every((s) => s.builtin || s.scope === 'shared' || cached.status[s.name] !== undefined)
         if (!cached || !covered || Date.now() - cached.checkedAt >= MCP_RECHECK_MS)
-          runCheck(list.some((s) => !s.builtin))
+          runCheck(list.some((s) => !s.builtin && s.scope !== 'shared'))
       })
-      .catch(() => {
+      .catch((e) => {
         if (epochRef.current !== epoch) return
+        setListErr(String(e))
         setServers([])
         setStatus({})
       })
-  }, [projectPath, runCheck])
+      .finally(() => { if (epochRef.current === epoch) setLoading(false) })
+    return () => { epochRef.current++ }
+  }, [projectPath, agent, cacheKey, runCheck, reload])
 
   // A dot is only as honest as its age: re-check every minute while this tab
   // stays open (a dead server otherwise kept its green from panel-mount time).
   // The FIRST tick honors the cached check's age — a 59s-old seed re-checks in
   // ~1s, not 60 — so remounting can never stretch staleness past one TTL.
-  const hasExternal = !!servers?.some((s) => !s.builtin)
+  const hasExternal = !!servers?.some((s) => !s.builtin && s.scope !== 'shared')
   const checkedAtRef = useRef<number | null>(null)
   checkedAtRef.current = checkedAt
   useEffect(() => {
-    if (!hasExternal) return
+    if (!hasExternal || !canCheckHealth) return
     const first = checkedAtRef.current == null
       ? MCP_RECHECK_MS
       : Math.max(0, checkedAtRef.current + MCP_RECHECK_MS - Date.now())
@@ -226,22 +238,23 @@ function McpSection({ projectPath }: { projectPath?: string }) {
       iv = window.setInterval(() => runCheck(true), MCP_RECHECK_MS)
     }, first)
     return () => { window.clearTimeout(t); if (iv) window.clearInterval(iv) }
-  }, [hasExternal, runCheck])
+  }, [hasExternal, canCheckHealth, runCheck])
 
   const toggleExpand = (name: string) =>
     setExpanded((prev) => { const n = new Set(prev); if (n.has(name)) n.delete(name); else n.add(name); return n })
 
   const toggle = async (s: McpServer) => {
     setBusy((prev) => new Set(prev).add(s.name))
+    setActionErr(null)
     try {
-      await invoke('set_mcp_enabled', { name: s.name, enabled: !s.enabled })
+      await invoke(s.scope === 'shared' ? 'project_set_mcp_enabled' : 'set_mcp_enabled', { name: s.name, enabled: !s.enabled, ...(s.scope === 'shared' ? { projectPath } : {}) })
       setServers((prev) => {
         const next = prev && prev.map((x) => (x.name === s.name ? { ...x, enabled: !x.enabled } : x))
         if (next) mcpServersCache.set(cacheKey, next) // keep the remount seed honest
         return next
       })
     } catch (e) {
-      console.error(e)
+      setActionErr(String(e))
     } finally {
       setBusy((prev) => { const n = new Set(prev); n.delete(s.name); return n })
     }
@@ -259,8 +272,12 @@ function McpSection({ projectPath }: { projectPath?: string }) {
   const dotFor = (s: McpServer): { status: string; title: string } => {
     if (s.builtin)
       return s.enabled
-        ? { status: 'connected', title: 'Listening · renders to the Artifacts tab' }
+        ? { status: 'available', title: 'Drydock native · automatically available to new Claude Code and Codex sessions' }
         : { status: 'unknown', title: 'Off — new sessions won’t get the render tool' }
+    if (s.configured_enabled === false) return { status: 'unknown', title: 'Disabled in Codex configuration · enable it in Codex first' }
+    if (!s.enabled) return { status: 'unknown', title: 'Disabled for new sessions' }
+    if (s.scope === 'shared') return { status: 'configured', title: 'Shared by Drydock · available to both agents on launch · sign in separately if the server requires it' }
+    if (!canCheckHealth) return { status: 'configured', title: 'Configured in Codex · check /mcp inside the session for its live connection' }
     if (status === null) return { status: 'checking', title: 'Checking…' }
     const e = status[s.name]
     // not in the (possibly cache-seeded) map while a check runs: it's being
@@ -299,7 +316,7 @@ function McpSection({ projectPath }: { projectPath?: string }) {
         {worst && (
           <StatusDot
             status={worst}
-            title={`worst across enabled servers: ${worst}${checkedAt ? ` · checked ${ageText(checkedAt)}` : ''}\nhealth via \`claude mcp list\``}
+            title={`Enabled servers: ${worst}${hasExternal && canCheckHealth && checkedAt ? ` · checked ${ageText(checkedAt)} via Claude Code` : ''}`}
           />
         )}
         {servers !== null && servers.length > 0 && (
@@ -319,14 +336,14 @@ function McpSection({ projectPath }: { projectPath?: string }) {
           }
           style={{ color: checkErr ? 'var(--dd-err)' : 'var(--dd-dim)', fontSize: 11, whiteSpace: 'nowrap', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}
         >
-          {checking ? 'checking…' : checkErr ? 'check failed' : hasExternal && checkedAt ? relAge(checkedAt) : ''}
+          {loading ? 'loading…' : checking ? 'checking…' : checkErr ? 'check failed' : hasExternal && canCheckHealth && checkedAt ? relAge(checkedAt) : ''}
         </span>
-        {hasExternal && (
+        {(hasExternal || listErr) && (
           <button
-            onClick={() => runCheck(true)}
-            disabled={checking}
-            title="Re-check server health now"
-            style={{ ...S.iconBtn, flex: 'none', fontSize: 11, padding: '1px 5px', opacity: checking ? 0.4 : 1, cursor: checking ? 'default' : 'pointer' }}
+            onClick={() => canCheckHealth && !listErr ? runCheck(true) : setReload((n) => n + 1)}
+            disabled={checking || loading}
+            title={canCheckHealth && !listErr ? 'Re-check server health now' : 'Reload MCP configuration'}
+            style={{ ...S.iconBtn, flex: 'none', fontSize: 11, padding: '1px 5px', opacity: checking || loading ? 0.4 : 1, cursor: checking || loading ? 'default' : 'pointer' }}
           >
             ↻
           </button>
@@ -339,10 +356,12 @@ function McpSection({ projectPath }: { projectPath?: string }) {
           {checkErr}
         </div>
       )}
-      <div style={{ color: 'var(--dd-dim)', fontSize: 11, marginBottom: 8, lineHeight: 1.4 }}>toggling applies to new sessions · secrets hidden</div>
+      <div style={{ color: 'var(--dd-dim)', fontSize: 11, marginBottom: 8, lineHeight: 1.4 }}>Changes apply on launch{agent === 'codex' ? ' · connection status in /mcp' : ''}</div>
+      {listErr && <div role="alert" style={{ ...S.muted, color: 'var(--dd-err)' }}>{listErr}</div>}
+      {actionErr && <div role="alert" style={{ color: 'var(--dd-err)', marginBottom: 8 }}>{actionErr}</div>}
       {servers === null ? (
         <div style={S.muted}>loading…</div>
-      ) : servers.length === 0 ? (
+      ) : listErr ? null : servers.length === 0 ? (
         <div style={S.muted}>no MCP servers configured{projectPath ? ' for this project' : ''}</div>
       ) : (
         servers.map((s) => {
@@ -365,9 +384,9 @@ function McpSection({ projectPath }: { projectPath?: string }) {
                 <span style={{ color: 'var(--dd-dim2)', fontSize: 9 }}>{s.scope}</span>
                 <Toggle
                   on={s.enabled}
-                  busy={busy.has(s.name)}
+                  busy={busy.has(s.name) || s.configured_enabled === false}
                   onClick={() => toggle(s)}
-                  title={s.enabled ? 'Disable for new Drydock sessions' : 'Enable for new Drydock sessions'}
+                  title={s.configured_enabled === false ? 'Disabled in Codex configuration · enable it in Codex first' : s.enabled ? 'Disable for new Drydock sessions' : 'Enable for new Drydock sessions'}
                 />
               </div>
               {s.detail && (
@@ -396,21 +415,21 @@ function McpSection({ projectPath }: { projectPath?: string }) {
 // project get. Browse-y lists (skills) scroll on top; the short, actionable
 // MCP section is pinned below with its own scroll — the same arrangement as
 // briefing card over FILES CHANGED.
-export function ProjectTab({ projectPath }: { projectPath?: string }) {
+export function ProjectTab({ projectPath, agent = 'claude' }: { projectPath?: string; agent?: string }) {
   const proj = projectPath ? baseName(projectPath) : undefined
+  if (agent !== 'claude' && agent !== 'codex') return <div style={{ ...S.muted, padding: 16 }}>Project tools are available for Claude Code and Codex. This agent uses its own tool configuration.</div>
   return (
     <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
       {/* pinned above the scroll: the scope must stay visible however far the
           skills list is scrolled — both sections below answer to it */}
-      {proj && (
-        <div style={{ flex: 'none', padding: '12px 12px 0', color: 'var(--dd-text3)' }}>
-          for project: <span style={{ color: 'var(--dd-text1)' }}>{proj}</span>
-        </div>
-      )}
-      <div style={{ flex: '1 1 auto', minHeight: 0, overflowY: 'auto', padding: proj ? '8px 12px 12px' : 12 }}>
-        <SkillsSection projectPath={projectPath} />
+      <div style={{ flex: 'none', padding: '12px 12px 0', color: 'var(--dd-text3)' }}>
+        {proj && <span style={S.name}>{proj} · </span>}
+        <span>{agent === 'claude' ? 'Claude Code' : 'Codex'}</span>
       </div>
-      <McpSection projectPath={projectPath} />
+      <div style={{ flex: '1 1 auto', minHeight: 0, overflowY: 'auto', padding: proj ? '8px 12px 12px' : 12 }}>
+        <SkillsSection key={`${agent}:${projectPath ?? ''}`} projectPath={projectPath} agent={agent} />
+      </div>
+      <McpSection key={`${agent}:${projectPath ?? ''}`} projectPath={projectPath} agent={agent} />
     </div>
   )
 }

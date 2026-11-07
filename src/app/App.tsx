@@ -1296,6 +1296,7 @@ export default function App() {
                   args={t.args}
                   cwd={t.cwd}
                   sessionId={t.sessionId}
+                  agent={t.agent}
                   visible={shown}
                   focused={t.id === activeId}
                   onExit={() => markExited(t.id)}

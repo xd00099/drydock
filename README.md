@@ -142,6 +142,11 @@ transcripts. Taking over a session running elsewhere asks before stopping it.
 
 ## Agent support
 
+**Project** shows the current session's harness skills and MCP connections,
+including shared project tools and Drydock's native artifact and review tools.
+New and resumed Claude Code and Codex sessions receive the project's shared
+setup. Account sign-ins may still be required separately.
+
 Claude Code and Codex have session discovery, resume, plain-JSONL transcript
 search, and session details. Enable pi, OpenCode, Copilot, Cursor, Droid, Gemini, or a
 custom command to launch them in terminal tabs.
@@ -150,8 +155,7 @@ Codex session details read successful plan updates and cumulative token usage
 when a readable rollout is available. File changes come from Git across the
 repository. Summaries and handoffs also read paginated Codex history directly;
 transcript display/search still require readable rollout files. Compressed
-rollouts are not yet imported. Checkpoint history
-and Drydock’s artifact tools are currently Claude-specific.
+rollouts are not yet imported. Checkpoint history remains Claude-specific.
 
 ## Configuration and data
 
@@ -197,5 +201,10 @@ require an updater signing key; for an unsigned local build, disable
 
 For development, `npm run tauri:dev` opens **Drydock Dev** with a separate data
 directory. Run `npm test` and `cargo test --workspace` before contributing.
+
+Pushes to `main` run the tests and build the release binary to cache Rust
+dependencies for later release tags. The first build after a dependency or
+toolchain change may still need to compile dependencies. The shared cache also
+includes the ONNX runtime used by text search; image-model codecs are excluded.
 
 [Report an issue](https://github.com/xd00099/drydock/issues) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE)

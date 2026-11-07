@@ -1,7 +1,7 @@
-//! Read-only enumeration of Claude Code "capabilities" — installed plugin skills
+//! Read-only enumeration of harness capabilities — installed plugin skills
 //! and configured MCP servers — surfaced in Drydock's right panel.
 //!
-//! Reads `~/.claude` only and NEVER writes (the cardinal rule). MCP secrets
+//! Reads harness configuration and NEVER writes it. MCP secrets
 //! (`env` / `headers`) are deliberately never returned — only the server name,
 //! transport kind, and the command/url. The resolution mirrors Claude Code's own
 //! config sources best-effort; it is a reference view, not a live connection.
@@ -19,6 +19,7 @@ pub struct Skill {
     pub name: String,
     pub description: String,
     pub plugin: String, // the plugin that provides it (grouping key), or "personal"
+    pub path: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -29,6 +30,7 @@ pub struct McpServer {
     pub scope: String,  // where it's configured: "project" | "user" | "global" | "drydock"
     pub builtin: bool,  // true → Drydock's own injected server (drydock-artifacts)
     pub enabled: bool,  // false → Drydock denies its tools to new sessions it launches
+    pub configured_enabled: bool, // false → disabled in the harness itself
     pub tools: Vec<String>, // known tool names (only populated for the builtin server)
 }
 
@@ -74,7 +76,7 @@ fn collect_skill_dir(dir: &Path, plugin: &str, out: &mut Vec<Skill>, seen: &mut 
         };
         if let Some((name, description)) = parse_skill_frontmatter(&text) {
             if seen.insert((plugin.to_string(), name.clone())) {
-                out.push(Skill { name, description, plugin: plugin.to_string() });
+                out.push(Skill { name, description, plugin: plugin.to_string(), path: md.to_string_lossy().to_string() });
             }
         }
     }
@@ -115,6 +117,53 @@ pub fn skills(project_path: Option<&str>) -> Vec<Skill> {
     }
     if let Some(p) = project_path {
         collect_skill_dir(&Path::new(p).join(".claude/skills"), "project", &mut out, &mut seen);
+    }
+    out.sort_by(|a, b| a.plugin.cmp(&b.plugin).then_with(|| a.name.cmp(&b.name)));
+    out
+}
+
+fn codex_home() -> Option<PathBuf> {
+    std::env::var_os("CODEX_HOME").map(PathBuf::from).or_else(|| home().map(|h| h.join(".codex")))
+}
+
+/// Local Codex skill locations. Repository discovery stops at the Git root;
+/// no Claude plugin or personal-skill directory is mixed into this catalog.
+fn codex_skills_in(home: &Path, codex: &Path, project: Option<&Path>) -> Vec<Skill> {
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+    collect_skill_dir(&home.join(".agents/skills"), "personal", &mut out, &mut seen);
+    collect_skill_dir(&codex.join("skills"), "personal", &mut out, &mut seen);
+    collect_skill_dir(&codex.join("skills/.system"), "system", &mut out, &mut seen);
+    if let Some(project) = project {
+        for ancestor in project.ancestors() {
+            collect_skill_dir(&ancestor.join(".agents/skills"), "project", &mut out, &mut seen);
+            if ancestor.join(".git").exists() { break; }
+        }
+    }
+    // Only configured/enabled local plugins, not every stale cache version.
+    let config = std::fs::read_to_string(codex.join("config.toml")).ok()
+        .and_then(|s| toml::from_str::<toml::Value>(&s).ok());
+    if let Some(plugins) = config.as_ref().and_then(|c| c.get("plugins")).and_then(toml::Value::as_table) {
+        for (id, cfg) in plugins {
+            if cfg.get("enabled").and_then(toml::Value::as_bool) != Some(true) { continue; }
+            let Some((name, market)) = id.split_once('@') else { continue; };
+            if [name, market].iter().any(|v| v.is_empty() || v.contains(['/', '\\']) || *v == "..") { continue; }
+            let root = codex.join("plugins/cache").join(market).join(name);
+            let mut versions: Vec<_> = std::fs::read_dir(root).into_iter().flatten().flatten().map(|e| e.path()).collect();
+            versions.sort_by_cached_key(|p| p.file_name().unwrap_or_default().to_string_lossy()
+                .split(|c: char| !c.is_ascii_digit()).filter_map(|s| s.parse::<u64>().ok()).collect::<Vec<_>>());
+            if let Some(version) = versions.last() {
+                collect_skill_dir(&version.join("skills"), name, &mut out, &mut seen);
+            }
+        }
+    }
+    // Explicit local disables are part of the catalog as well as the runtime.
+    if let Some(rules) = config.as_ref().and_then(|c| c.get("skills")).and_then(|s| s.get("config")).and_then(toml::Value::as_array) {
+        out.retain(|skill| {
+            rules.iter().filter(|r| r.get("name").and_then(toml::Value::as_str) == Some(&skill.name)
+                || r.get("path").and_then(toml::Value::as_str).is_some_and(|path| Path::new(path) == Path::new(&skill.path)))
+                .filter_map(|r| r.get("enabled").and_then(toml::Value::as_bool)).next_back().unwrap_or(true)
+        });
     }
     out.sort_by(|a, b| a.plugin.cmp(&b.plugin).then_with(|| a.name.cmp(&b.name)));
     out
@@ -174,7 +223,7 @@ fn redact_url(url: &str) -> String {
 /// Describe a single server config as (kind, detail), reading only non-secret
 /// fields. `url` ⇒ http/sse; `command` ⇒ stdio. env/headers are never read, URL
 /// userinfo and secret-shaped args are redacted.
-fn describe_server(cfg: &serde_json::Value) -> (String, String) {
+pub(crate) fn describe_server(cfg: &serde_json::Value) -> (String, String) {
     if let Some(url) = cfg.get("url").and_then(|u| u.as_str()) {
         let kind = cfg.get("type").and_then(|t| t.as_str()).unwrap_or("http");
         return (kind.to_string(), redact_url(url));
@@ -209,7 +258,7 @@ fn add_servers(obj: &serde_json::Value, scope: &str, out: &mut Vec<McpServer>, s
         // enabled/builtin/tools are filled by the command layer, which knows the
         // Drydock deny-list and the loopback server; here every config-sourced
         // server starts as an enabled, non-builtin entry with no known tools.
-        out.push(McpServer { name: name.clone(), kind, detail, scope: scope.to_string(), builtin: false, enabled: true, tools: Vec::new() });
+        out.push(McpServer { name: name.clone(), kind, detail, scope: scope.to_string(), builtin: false, enabled: true, configured_enabled: true, tools: Vec::new() });
     }
 }
 
@@ -350,7 +399,10 @@ fn output_with_timeout(mut cmd: std::process::Command, timeout: std::time::Durat
     let deadline = std::time::Instant::now() + timeout;
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => return reader.join().ok(),
+            Ok(Some(status)) => {
+                let out = reader.join().ok()?;
+                return status.success().then_some(out);
+            }
             Ok(None) if std::time::Instant::now() >= deadline => {
                 #[cfg(unix)]
                 unsafe {
@@ -367,6 +419,69 @@ fn output_with_timeout(mut cmd: std::process::Command, timeout: std::time::Durat
             Err(_) => return None,
         }
     }
+}
+
+/// Let Codex resolve its own trusted config layers. JSON contains credentials;
+/// only the redacted presentation fields leave this function.
+pub fn codex_mcp_servers(project_path: Option<&str>) -> Result<Vec<McpServer>, String> {
+    parse_codex_servers(&codex_mcp_output(project_path)?)
+}
+
+fn codex_mcp_output(project_path: Option<&str>) -> Result<Vec<u8>, String> {
+    codex_mcp_command(project_path, "codex mcp list --json")
+}
+
+fn codex_mcp_command(project_path: Option<&str>, command: &str) -> Result<Vec<u8>, String> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+    let mut cmd = std::process::Command::new(shell);
+    cmd.args(["-l", "-c", command]);
+    if let Some(p) = project_path { cmd.current_dir(p); }
+    let out = output_with_timeout(cmd, MCP_LIST_TIMEOUT)
+        .ok_or("Could not read Codex MCP configuration. Check that `codex mcp list --json` succeeds in this project.")?;
+    Ok(out)
+}
+
+/// Raw transport settings stay in the backend and are imported only by an
+/// explicit Share action. Authentication state itself belongs to each client.
+pub fn server_config(project: &str, agent: &str, name: &str) -> Result<serde_json::Value, String> {
+    if agent == "codex" {
+        let command = format!("codex mcp get --json -- {}", crate::cli::sh_single_quote(name));
+        let entry: serde_json::Value = serde_json::from_slice(&codex_mcp_command(Some(project), &command)?).map_err(|_| "Could not read Codex MCP configuration.")?;
+        let mut config = entry.get("transport").and_then(serde_json::Value::as_object).cloned().ok_or("This Codex server is no longer configured.")?;
+        for key in ["enabled_tools", "disabled_tools", "startup_timeout_sec", "tool_timeout_sec"] {
+            if let Some(value) = entry.get(key).filter(|v| !v.is_null()) { config.insert(key.into(), value.clone()); }
+        }
+        return Ok(serde_json::Value::Object(config));
+    }
+    if agent != "claude" { return Err("Choose Claude Code or Codex as the import source.".into()); }
+    let read = |path: PathBuf| std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+    for path in [".mcp.json", ".claude/settings.json", ".claude/settings.local.json"] {
+        if let Some(config) = read(Path::new(project).join(path)).and_then(|v| v.get("mcpServers").and_then(|s| s.get(name)).cloned()) { return Ok(config); }
+    }
+    if let Some(home) = home() {
+        if let Some(v) = read(home.join(".claude.json")) {
+            if let Some(config) = v.get("projects").and_then(|v| project_entry(v, project)).and_then(|v| v.get("mcpServers")).and_then(|v| v.get(name)) { return Ok(config.clone()); }
+            if let Some(config) = v.get("mcpServers").and_then(|v| v.get(name)) { return Ok(config.clone()); }
+        }
+        if let Some(config) = read(home.join(".claude/settings.json")).and_then(|v| v.get("mcpServers").and_then(|v| v.get(name)).cloned()) { return Ok(config); }
+    }
+    Err("This Claude Code server is no longer configured.".into())
+}
+
+fn parse_codex_servers(bytes: &[u8]) -> Result<Vec<McpServer>, String> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| "Codex returned an unreadable MCP server list.")?;
+    let list = value.as_array().ok_or("Codex returned an unreadable MCP server list.")?;
+    let mut out = Vec::new();
+    for entry in list {
+        let Some(name) = entry.get("name").and_then(serde_json::Value::as_str) else { continue; };
+        let cfg = entry.get("transport").unwrap_or(entry);
+        let (kind, detail) = describe_server(cfg);
+        let kind = if kind == "streamable_http" { "http".into() } else { kind };
+        let enabled = entry.get("enabled").and_then(serde_json::Value::as_bool).unwrap_or(true);
+        out.push(McpServer { name: name.to_string(), kind, detail, scope: "codex".into(), builtin: false,
+            enabled, configured_enabled: enabled, tools: Vec::new() });
+    }
+    Ok(out)
 }
 
 /// Health-check the user's MCP servers via `claude mcp list`, run in `project_path`
@@ -389,13 +504,72 @@ pub fn mcp_status(project_path: Option<&str>) -> Result<Vec<(String, String, Str
 // ---- tauri commands -----------------------------------------------------
 
 #[tauri::command]
-pub fn list_skills(project_path: Option<String>) -> Vec<Skill> {
-    skills(project_path.as_deref())
+pub fn list_skills(project_path: Option<String>, agent: Option<String>, tools: tauri::State<'_, crate::project_tools::ProjectTools>) -> Result<Vec<Skill>, String> {
+    let setup = project_path.as_deref().map(|p| tools.get(p)).transpose()?.unwrap_or_default();
+    if agent.as_deref() == Some("shared") {
+        return Ok(crate::project_tools::skill_views(&setup));
+    }
+    let agent = agent.as_deref().unwrap_or("claude");
+    if agent != "claude" && agent != "codex" { return Ok(Vec::new()); }
+    Ok(crate::project_tools::merge_skills(local_skills(project_path.as_deref(), agent), &setup))
+}
+
+pub fn local_skills(project_path: Option<&str>, agent: &str) -> Vec<Skill> {
+    match agent {
+        "claude" => skills(project_path),
+        "codex" => match (home(), codex_home()) {
+            (Some(home), Some(codex)) => codex_skills_in(&home, &codex, project_path.map(Path::new)),
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_skills_use_native_paths_and_stop_at_repo_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let codex = home.join(".codex");
+        let repo = temp.path().join("repo");
+        let nested = repo.join("src");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(&nested).unwrap();
+        for (path, name) in [
+            (home.join(".agents/skills/user"), "user"),
+            (codex.join("skills/.system/system"), "system"),
+            (repo.join(".agents/skills/repo"), "repo"),
+            (temp.path().join(".agents/skills/outside"), "outside"),
+            (repo.join(".claude/skills/claude-only"), "claude-only"),
+            (codex.join("plugins/cache/market/plugin/1.9.0/skills/old"), "old"),
+            (codex.join("plugins/cache/market/plugin/1.10.0/skills/new"), "new"),
+        ] {
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("SKILL.md"), format!("---\nname: {name}\ndescription: Example.\n---\n")).unwrap();
+        }
+        std::fs::write(codex.join("config.toml"), "[plugins.\"plugin@market\"]\nenabled=true\n[[skills.config]]\nname=\"user\"\nenabled=false\n").unwrap();
+        let names: Vec<_> = codex_skills_in(&home, &codex, Some(&nested)).into_iter().map(|s| s.name).collect();
+        assert_eq!(names, vec!["new", "repo", "system"]);
+    }
+
+    #[test]
+    fn codex_mcp_json_redacts_secrets_and_preserves_native_disables() {
+        let servers = parse_codex_servers(br#"[
+            {"name":"local","enabled":false,"transport":{"type":"stdio","command":"node","args":["server.js","--token=secret"],"env":{"SECRET":"hidden"}}},
+            {"name":"remote","enabled":true,"transport":{"type":"streamable_http","url":"https://user:password@example.com/mcp","http_headers":{"Authorization":"hidden"}}}
+        ]"#).unwrap();
+        assert!(!servers[0].enabled);
+        assert!(!servers[0].configured_enabled);
+        assert_eq!(servers[0].detail, "node server.js --token=<redacted>");
+        assert_eq!(servers[1].detail, "https://example.com/mcp");
+        assert_eq!(servers[1].kind, "http");
+        let text = serde_json::to_string(&servers).unwrap();
+        for secret in ["hidden", "password", "=secret"] { assert!(!text.contains(secret)); }
+        assert!(parse_codex_servers(b"not json").is_err());
+    }
 
     #[test]
     fn parses_single_line_frontmatter() {

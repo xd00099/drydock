@@ -165,8 +165,8 @@ export type UsageOverview = {
   top_sessions: TopSession[]
 }
 
-// Read-only capability views for the right panel (from ~/.claude, secrets stripped)
-export type Skill = { name: string; description: string; plugin: string }
+// Harness-specific local capability views (credentials stripped).
+export type Skill = { name: string; description: string; plugin: string; path?: string }
 // `builtin` = Drydock's own drydock-artifacts server; `enabled` = whether Drydock
 // offers it to the sessions it launches (false → its tools are denied for new
 // sessions); `tools` is only populated for the builtin server.
@@ -177,6 +177,7 @@ export type McpServer = {
   scope: string
   builtin: boolean
   enabled: boolean
+  configured_enabled?: boolean // false when disabled in the harness config
   tools: string[]
 }
 // Live connection status from `claude mcp list`, per server name.

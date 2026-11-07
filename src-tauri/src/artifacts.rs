@@ -1,4 +1,4 @@
-//! Loopback MCP server that lets a Claude Code session render an artifact in
+//! Loopback MCP server that lets a coding session render an artifact in
 //! Drydock's right-panel "Artifacts" tab.
 //!
 //! Why this shape (see docs/artifact-preview.md for the full rationale): Claude
@@ -60,6 +60,10 @@ const MAX_PROMPT_LEN: usize = 8 * 1024;
 /// shell `-c` command. It names the exact tool id because current Claude Code may
 /// defer/lazy-load MCP tool schemas, so the model needs an explicit pointer.
 pub const NUDGE: &str = "You are running inside Drydock, which has an Artifacts side panel. When you create a self-contained visual artifact for the user to look at (an HTML page or UI mockup, an SVG image or diagram, or a Markdown document), show it by calling the tool mcp__drydock-artifacts__render_artifact with a short title. IMPORTANT for efficiency: if the artifact is in a file (including one you just wrote), pass its `path` (absolute, or relative to your working directory) and do NOT paste the file contents into the call — Drydock reads the file itself, so you avoid regenerating it. Use the `content` argument only for artifacts that are not saved to any file. It renders locally inside Drydock and is not published to claude.ai. After you render an HTML plan or mockup for the user to review, call mcp__drydock-artifacts__await_artifact_feedback to receive the inline annotations the user leaves on it; apply them, re-render, and call it again until it returns status ended. It blocks briefly and returns status waiting when nothing has arrived yet, so just call it again to keep waiting.";
+
+/// Standard MCP initialization instructions travel with the server, so every
+/// client gets the workflow without replacing its developer instructions.
+const SERVER_INSTRUCTIONS: &str = "This session runs inside Drydock. Use render_artifact to show HTML mockups, SVG diagrams, or Markdown documents in the local Artifacts panel. Prefer path for files you have already written; use content only for unsaved artifacts. After rendering HTML for review, use await_artifact_feedback to receive the user's inline annotations, apply them, and re-render. Re-call when status is waiting; stop when status is ended. These tools render locally and do not publish content.";
 
 const TOOL_DESCRIPTION: &str = "Render a self-contained visual artifact (HTML page/UI mockup, SVG image/diagram, or Markdown document) in Drydock's Artifacts side panel so the user can SEE it immediately. Pass EITHER `path` (preferred — a file you already wrote; Drydock reads it, so you don't resend or regenerate its content) OR inline `content` (only for artifacts not saved to a file). Renders locally inside Drydock and is NOT published to claude.ai. For an HTML plan/mockup you want reviewed, follow the render with await_artifact_feedback to collect the user's inline annotations.";
 
@@ -145,6 +149,16 @@ pub struct TokenInfo {
     pub pty_id: u32,
     pub cwd: Option<PathBuf>,
     pub session_id: Option<String>,
+    pub native_tools: NativeTools,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeTools {
+    pub skills: Vec<crate::project_tools::SharedSkill>,
+    pub artifacts: bool,
+}
+impl Default for NativeTools {
+    fn default() -> Self { Self { skills: Vec::new(), artifacts: true } }
 }
 
 /// Per-session render/hook token → its resolution.
@@ -165,6 +179,7 @@ struct Stored {
     title: String,
     content: String,
     path: Option<PathBuf>,
+    saved: bool,
 }
 
 /// Artifact id (string form of the monotonic counter) → stored artifact. Every
@@ -398,10 +413,22 @@ impl ArtifactServer {
     /// session's working directory, used to resolve relative artifact paths;
     /// `session_id` is the id pinned at spawn. The token travels in the injected
     /// --mcp-config / hook-command Authorization header; never a cmdline arg.
+    #[cfg(test)]
     pub fn mint(&self, pty_id: u32, cwd: Option<PathBuf>, session_id: Option<String>) -> String {
+        self.mint_with_tools(pty_id, cwd, session_id, Vec::new(), true)
+    }
+
+    pub fn mint_with_tools(&self, pty_id: u32, cwd: Option<PathBuf>, session_id: Option<String>, skills: Vec<crate::project_tools::SharedSkill>, artifacts: bool) -> String {
         let token = random_token();
-        self.tokens.lock().unwrap().insert(token.clone(), TokenInfo { pty_id, cwd, session_id });
+        self.tokens.lock().unwrap().insert(token.clone(), TokenInfo { pty_id, cwd, session_id, native_tools: NativeTools { skills, artifacts } });
         token
+    }
+
+    /// Bind a fresh session once. Repeated discovery is harmless and cannot
+    /// redirect a resumed session's gallery to a different conversation.
+    pub fn bind_session(&self, pty_id: u32, session_id: &str) {
+        bind_tokens(&self.tokens, pty_id, session_id);
+        persist_pending(&self.tokens, &self.store, &self.dir, pty_id);
     }
 
     /// Drop every token AND stored artifact for a tab id (on pty exit) — an
@@ -570,7 +597,7 @@ fn handle_conn(
             let map = tokens.lock().unwrap();
             resolve_token(header(&req, "authorization"), &map)
         };
-        let Some(TokenInfo { pty_id, cwd, session_id }) = resolved else {
+        let Some(TokenInfo { pty_id, cwd, session_id, native_tools }) = resolved else {
             write_status(&mut stream, 401, keep_alive)?;
             if keep_alive { continue } else { return Ok(()) }
         };
@@ -578,13 +605,17 @@ fn handle_conn(
         // Hook delivery (Notification/Stop stdin JSON forwarded by the injected
         // hook command): update the attention state, no body in the response.
         if req.path.starts_with("/hook") {
+            if let Some(sid) = crate::attention::parse_hook(&req.body).and_then(|h| h.session_id) {
+                bind_tokens(tokens, pty_id, &sid);
+                persist_pending(tokens, store, dir, pty_id);
+            }
             crate::attention::handle_hook(app, pty_id, session_id.as_deref(), &req.body);
             write_status(&mut stream, 204, keep_alive)?;
             if keep_alive { continue } else { return Ok(()) }
         }
 
         let ctx = PollCtx { hub: feedback, pty_id, app, block: Duration::from_millis(POLL_BLOCK_MS) };
-        let routed = route_with(&req.body, cwd.as_deref(), Some(&ctx));
+        let routed = route_with(&req.body, cwd.as_deref(), Some(&ctx), &native_tools);
         for e in &routed.emits {
             // A fresh HTML render restarts the review round's engagement clock.
             if e.kind == "html" {
@@ -597,9 +628,7 @@ fn handle_conn(
             store_insert(store, &id, pty_id, seq, now_ms(), &e.kind, &e.title, &e.content, e.path.clone());
             // ...and persist it to the session's on-disk gallery, so it survives
             // the session and the app (the Artifacts tab lists these as "saved").
-            if let Some(sid) = &session_id {
-                persist_artifact(dir, sid, seq, &e.kind, &e.title, &e.content, e.path.as_deref());
-            }
+            persist_pending(tokens, store, dir, pty_id);
             // HTML runs its own JS, so it loads from the isolated artifact://
             // origin via an <iframe src> — send NO inline content on the event.
             // SVG/Markdown need no scripting; they ride the payload and render
@@ -799,12 +828,12 @@ struct PollCtx<'a> {
 /// Route a raw request body with no poll context (used by unit tests).
 #[cfg(test)]
 fn route(body: &[u8], cwd: Option<&Path>) -> Routed {
-    route_with(body, cwd, None)
+    route_with(body, cwd, None, &NativeTools::default())
 }
 
 /// Route a raw request body (single message, or a batch array) to a response.
 /// `cwd` is the calling session's working directory, for relative artifact paths.
-fn route_with(body: &[u8], cwd: Option<&Path>, ctx: Option<&PollCtx>) -> Routed {
+fn route_with(body: &[u8], cwd: Option<&Path>, ctx: Option<&PollCtx>, native: &NativeTools) -> Routed {
     let v: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
         Err(_) => {
@@ -823,7 +852,7 @@ fn route_with(body: &[u8], cwd: Option<&Path>, ctx: Option<&PollCtx>) -> Routed 
             // Batch items get NO poll context: a blocking await inside a batch
             // would hold every other item's response (and emits) hostage for
             // 25s. It fails fast as a tool error the model can recover from.
-            let r = route_one(it, cwd, None);
+            let r = route_one(it, cwd, None, native);
             if let Some(j) = r.json {
                 out.push(j);
             }
@@ -835,21 +864,59 @@ fn route_with(body: &[u8], cwd: Option<&Path>, ctx: Option<&PollCtx>) -> Routed 
             Routed { status: 200, json: Some(Value::Array(out)), emits, redeliver: None }
         }
     } else {
-        route_one(&v, cwd, ctx)
+        route_one(&v, cwd, ctx, native)
     }
 }
 
-fn route_one(msg: &Value, cwd: Option<&Path>, ctx: Option<&PollCtx>) -> Routed {
+fn route_one(msg: &Value, cwd: Option<&Path>, ctx: Option<&PollCtx>, native: &NativeTools) -> Routed {
     // No id → JSON-RPC notification: never gets a response.
     let Some(id) = msg.get("id").cloned() else {
         return Routed { status: 202, json: None, emits: vec![], redeliver: None };
     };
     let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
     match method {
-        "initialize" => respond(id, initialize_result(msg)),
+        "initialize" => {
+            let mut result = initialize_result(msg);
+            let mut instructions = if native.artifacts { SERVER_INSTRUCTIONS.to_string() } else { "This session runs inside Drydock.".into() };
+            if !native.skills.is_empty() {
+                instructions.push_str(" Shared project skills are available to both Claude Code and Codex. Read the relevant skill with read_project_skill before using its workflow; resolve supporting files relative to its returned directory. Skills:\n");
+                for skill in &native.skills { instructions.push_str(&format!("- {}: {}\n", skill.name, skill.description)); }
+            }
+            result["instructions"] = Value::String(instructions);
+            respond(id, result)
+        },
         "ping" => respond(id, json!({})),
-        "tools/list" => respond(id, tools_list_result()),
-        "tools/call" => tools_call(id, msg, cwd, ctx),
+        "tools/list" => {
+            let mut result = tools_list_result();
+            let list = result["tools"].as_array_mut().unwrap();
+            if !native.artifacts { list.clear(); }
+            if !native.skills.is_empty() {
+                list.push(json!({"name":"list_project_skills","description":"List the project's shared skills, available across coding agents in Drydock.","annotations":{"readOnlyHint":true},"inputSchema":{"type":"object","properties":{}}}));
+                list.push(json!({"name":"read_project_skill","description":"Read a shared project skill's instructions before following its workflow. Returns its directory for resolving supporting files.","annotations":{"readOnlyHint":true},"inputSchema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}}));
+            }
+            respond(id, result)
+        },
+        "tools/call" => {
+            let name = msg.pointer("/params/name").and_then(Value::as_str).unwrap_or("");
+            if name == "list_project_skills" { return respond(id, json!({"content":[{"type":"text","text":serde_json::to_string(&native.skills).unwrap()}]})); }
+            if name == "read_project_skill" {
+                let requested = msg.pointer("/params/arguments/name").and_then(Value::as_str).unwrap_or("");
+                let result = native.skills.iter().find(|s| s.name == requested).ok_or("This skill is not shared with the project.").and_then(|skill| {
+                    let path = Path::new(&skill.path);
+                    let file = std::fs::File::open(path).map_err(|_| "The shared skill could not be read. Check its source installation.")?;
+                    let mut text = String::new();
+                    file.take(1024 * 1024 + 1).read_to_string(&mut text).map_err(|_| "The shared skill could not be read.")?;
+                    if text.len() > 1024 * 1024 { return Err("The shared skill is too large."); }
+                    Ok(format!("Skill: {}\nDirectory: {}\n\n{}", skill.name, path.parent().unwrap_or(Path::new("/")).display(), text))
+                });
+                return match result {
+                    Ok(text) => respond(id, json!({"content":[{"type":"text","text":text}]})),
+                    Err(error) => respond(id, json!({"isError":true,"content":[{"type":"text","text":error}]})),
+                };
+            }
+            if !native.artifacts { return respond(id, json!({"isError":true,"content":[{"type":"text","text":"Artifact tools are disabled for this session."}]})); }
+            tools_call(id, msg, cwd, ctx)
+        },
         _ => respond_err(id, -32601, "Method not found"),
     }
 }
@@ -881,6 +948,7 @@ fn initialize_result(msg: &Value) -> Value {
     json!({
         "protocolVersion": pv,
         "capabilities": { "tools": {} },
+        "instructions": SERVER_INSTRUCTIONS,
         "serverInfo": { "name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION") }
     })
 }
@@ -1143,7 +1211,7 @@ fn store_insert(store: &Store, id: &str, pty_id: u32, seq: u64, created_ms: i64,
     let mut m = store.lock().unwrap();
     m.insert(
         id.to_string(),
-        Stored { pty_id, seq, created_ms, kind: kind.to_string(), title: title.to_string(), content: content.to_string(), path },
+        Stored { pty_id, seq, created_ms, kind: kind.to_string(), title: title.to_string(), content: content.to_string(), path, saved: false },
     );
     let mut mine: Vec<(String, u64)> =
         m.iter().filter(|(_, s)| s.pty_id == pty_id).map(|(k, s)| (k.clone(), s.seq)).collect();
@@ -1152,6 +1220,29 @@ fn store_insert(store: &Store, id: &str, pty_id: u32, seq: u64, created_ms: i64,
         for (k, _) in mine.iter().take(mine.len() - MAX_ARTIFACTS_PER_PTY) {
             m.remove(k);
         }
+    }
+}
+
+/// Serialize pairing with rendering: a render that started before discovery
+/// still sees the latest binding here. Each buffered artifact is saved once.
+fn bind_tokens(tokens: &Tokens, pty_id: u32, session_id: &str) {
+    if !valid_session_component(session_id) { return; }
+    let mut tokens = tokens.lock().unwrap();
+    if tokens.values().any(|v| v.pty_id == pty_id && v.session_id.as_deref().is_some_and(|sid| sid != session_id)) { return; }
+    for v in tokens.values_mut().filter(|v| v.pty_id == pty_id) {
+        v.session_id = Some(session_id.to_string());
+    }
+}
+
+fn persist_pending(tokens: &Tokens, store: &Store, dir: &Path, pty_id: u32) {
+    let tokens = tokens.lock().unwrap();
+    let Some(sid) = tokens.values().find(|t| t.pty_id == pty_id).and_then(|t| t.session_id.as_deref()) else { return; };
+    let mut store = store.lock().unwrap();
+    let mut pending: Vec<_> = store.values_mut().filter(|s| s.pty_id == pty_id && !s.saved).collect();
+    pending.sort_by_key(|s| s.seq);
+    for s in pending {
+        persist_artifact_at(dir, sid, s.seq, s.created_ms, &s.kind, &s.title, &s.content, s.path.as_deref());
+        s.saved = true;
     }
 }
 
@@ -1241,7 +1332,13 @@ fn now_ms() -> i64 {
 /// Write one artifact (content + meta sidecar) into the session's gallery dir,
 /// then prune the oldest past the per-session cap. Best-effort: a failed write
 /// only loses persistence, never the render.
+#[cfg(test)]
 fn persist_artifact(dir: &Path, session_id: &str, seq: u64, kind: &str, title: &str, content: &str, source: Option<&Path>) {
+    persist_artifact_at(dir, session_id, seq, now_ms(), kind, title, content, source);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn persist_artifact_at(dir: &Path, session_id: &str, seq: u64, created_ms: i64, kind: &str, title: &str, content: &str, source: Option<&Path>) {
     if !valid_session_component(session_id) {
         return;
     }
@@ -1249,7 +1346,7 @@ fn persist_artifact(dir: &Path, session_id: &str, seq: u64, kind: &str, title: &
     if std::fs::create_dir_all(&d).is_err() {
         return;
     }
-    let stem = format!("{}-{seq}", now_ms());
+    let stem = format!("{created_ms}-{seq}");
     let file = format!("{stem}.{}", ext_for_kind(kind));
     if std::fs::write(d.join(&file), content).is_err() {
         return;
@@ -1257,7 +1354,7 @@ fn persist_artifact(dir: &Path, session_id: &str, seq: u64, kind: &str, title: &
     let meta = serde_json::json!({
         "title": title,
         "kind": kind,
-        "created_ms": now_ms(),
+        "created_ms": created_ms,
         "seq": seq,
         "path": source.map(|p| p.display().to_string()),
     });
@@ -1437,7 +1534,7 @@ mod tests {
     fn tokens(pairs: &[(&str, u32)]) -> HashMap<String, TokenInfo> {
         pairs
             .iter()
-            .map(|(t, id)| (t.to_string(), TokenInfo { pty_id: *id, cwd: None, session_id: None }))
+            .map(|(t, id)| (t.to_string(), TokenInfo { pty_id: *id, cwd: None, session_id: None, native_tools: NativeTools::default() }))
             .collect()
     }
 
@@ -1474,8 +1571,37 @@ mod tests {
         let r = route(msg.to_string().as_bytes(), None);
         let res = &r.json.unwrap()["result"];
         assert_eq!(res["protocolVersion"], "2025-03-26");
+        assert!(res["instructions"].as_str().unwrap().contains("render_artifact"));
+        assert!(!res["instructions"].as_str().unwrap().contains("claude"));
         assert_eq!(res["serverInfo"]["name"], SERVER_NAME);
         assert!(r.emits.is_empty());
+    }
+
+    #[test]
+    fn shared_skills_are_scoped_to_the_session_and_work_with_artifacts_disabled() {
+        let temp = tempfile::tempdir().unwrap();
+        let skill = temp.path().join("SKILL.md");
+        std::fs::write(&skill, "---\nname: project-flow\n---\nRead references/context.md before working.").unwrap();
+        let native = NativeTools { artifacts: false, skills: vec![crate::project_tools::SharedSkill {
+            name: "project-flow".into(), description: "Project workflow".into(), path: skill.to_string_lossy().into_owned(), source: "claude".into()
+        }] };
+        let request = |method: &str, params: Value| json!({"jsonrpc":"2.0","id":1,"method":method,"params":params}).to_string();
+        let call = |method, params| route_with(request(method, params).as_bytes(), None, None, &native).json.unwrap();
+        let initialize = call("initialize", json!({}));
+        assert!(initialize["result"]["instructions"].as_str().unwrap().contains("project-flow"));
+        let list = call("tools/list", json!({}));
+        let names: Vec<_> = list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert_eq!(names, vec!["list_project_skills", "read_project_skill"]);
+        let read = call("tools/call", json!({"name":"read_project_skill","arguments":{"name":"project-flow"}}));
+        let text = read["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("references/context.md"));
+        assert!(text.contains(temp.path().to_str().unwrap()));
+        let unknown = call("tools/call", json!({"name":"read_project_skill","arguments":{"name":"../unshared"}}));
+        assert_eq!(unknown["result"]["isError"], true);
+        let render = call("tools/call", json!({"name":"render_artifact","arguments":{"title":"blocked","content":"test","kind":"markdown"}}));
+        assert_eq!(render["result"]["isError"], true);
+        let other = route(request("tools/call", json!({"name":"read_project_skill","arguments":{"name":"project-flow"}})).as_bytes(), None);
+        assert_eq!(other.json.unwrap()["result"]["isError"], true);
     }
 
     #[test]
@@ -1856,6 +1982,36 @@ mod tests {
 
     fn test_server(dir: PathBuf) -> ArtifactServer {
         ArtifactServer { port: 0, tokens: Arc::new(Mutex::new(HashMap::new())), store: Arc::new(Mutex::new(HashMap::new())), feedback: Arc::new(FeedbackHub::default()), dir }
+    }
+
+    #[test]
+    fn fresh_codex_binding_saves_buffered_artifacts_once_and_cannot_reassign() {
+        let temp = tempfile::tempdir().unwrap();
+        let srv = test_server(temp.path().to_path_buf());
+        let token = srv.mint(7, None, None);
+        let _other = srv.mint(8, None, Some("other-session".into()));
+        store_insert(&srv.store, "1", 7, 1, 100, "markdown", "Before discovery", "# early", None);
+        store_insert(&srv.store, "2", 8, 2, 101, "markdown", "Other tab", "# other", None);
+        persist_pending(&srv.tokens, &srv.store, &srv.dir, 7);
+        assert!(srv.list_saved("codex-thread").is_empty());
+        srv.bind_session(7, "codex-thread");
+        assert_eq!(srv.tokens.lock().unwrap()[&token].session_id.as_deref(), Some("codex-thread"));
+        let saved = srv.list_saved("codex-thread");
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].created_ms, 100);
+        assert_eq!(srv.read_saved("codex-thread", &saved[0].file).as_deref(), Some("# early"));
+        srv.bind_session(7, "codex-thread");
+        srv.bind_session(7, "wrong-thread");
+        srv.bind_session(7, "../escape");
+        assert_eq!(srv.list_saved("codex-thread").len(), 1);
+        assert!(srv.list_saved("wrong-thread").is_empty());
+        store_insert(&srv.store, "3", 7, 3, 102, "markdown", "After discovery", "# late", None);
+        persist_pending(&srv.tokens, &srv.store, &srv.dir, 7);
+        assert_eq!(srv.list_saved("codex-thread").len(), 2);
+        assert!(srv.list_saved("other-session").is_empty());
+        srv.release(7);
+        srv.bind_session(7, "ended-thread");
+        assert!(srv.list_saved("ended-thread").is_empty());
     }
 
     #[test]

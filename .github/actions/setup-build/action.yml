@@ -1,0 +1,26 @@
+name: Set up macOS build
+description: Shared toolchain and dependency cache for builds and releases
+
+inputs:
+  save-rust-cache:
+    description: Save dependencies from trusted main-branch builds
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: npm
+
+    - uses: dtolnay/rust-toolchain@stable
+
+    - uses: swatinem/rust-cache@v2
+      with:
+        # Tags can restore main's cache, but cannot restore other tags' caches.
+        # Use the same key for the build and release jobs; only main saves it.
+        shared-key: macos-aarch64
+        save-if: ${{ inputs.save-rust-cache }}
+        # ort-sys links downloaded static libraries from outside target/.
+        cache-directories: ~/Library/Caches/ort.pyke.io

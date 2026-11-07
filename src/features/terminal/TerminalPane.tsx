@@ -31,7 +31,8 @@ type Props = {
   program: string | null
   args: string[]
   cwd: string | null
-  sessionId?: string // the claude session id pinned at launch (hooks/artifacts key)
+  sessionId?: string // pinned at launch, or discovered after a fresh Codex spawn
+  agent?: string
   visible: boolean
   // Split screen shows several terminals at once; only the focused pane's may
   // hold the keyboard. Unfocused-but-visible terminals blur (hollow cursor).
@@ -145,7 +146,7 @@ function termMatchInfo(term: Terminal, q: string): TermMatchInfo {
 }
 
 const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
-  { id, program, args, cwd, sessionId, visible, focused, onExit, onInteract, onMatches },
+  { id, program, args, cwd, sessionId, agent, visible, focused, onExit, onInteract, onMatches },
   ref,
 ) {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -162,6 +163,11 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
   // edge cases) — stay in plain selection-only mode from then on
   const decorationsBrokenRef = useRef(false)
   const readyRef = useRef(false)
+  const sessionIdRef = useRef(sessionId)
+  sessionIdRef.current = sessionId
+  useEffect(() => {
+    if (readyRef.current && sessionId) invoke('pty_bind_session', { id, sessionId }).catch(console.error)
+  }, [id, sessionId])
   const onExitRef = useRef(onExit)
   onExitRef.current = onExit
   const onInteractRef = useRef(onInteract)
@@ -423,8 +429,9 @@ const TerminalPane = forwardRef<PaneSearch, Props>(function TerminalPane(
         onExitRef.current()
       })
       if (disposed) { unExit(); return }
-      await invoke('pty_spawn', { id, program, args, cwd, sessionId: sessionId ?? null, cols: term.cols, rows: term.rows })
+      await invoke('pty_spawn', { id, program, args, cwd, agent: agent ?? null, sessionId: sessionIdRef.current ?? null, cols: term.cols, rows: term.rows })
       readyRef.current = true
+      if (sessionIdRef.current) await invoke('pty_bind_session', { id, sessionId: sessionIdRef.current })
       if (disposed) invoke('pty_kill', { id })
     })().catch((err) => {
       term.write(`\r\n[failed to start: ${err}]\r\n`)

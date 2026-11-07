@@ -20,14 +20,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: swatinem/rust-cache@v2
+      # Restore the dependencies built on main. Tag-only caches cannot be
+      # reused by later tags, so releases do not save another large copy.
+      - uses: ./.github/actions/setup-build
 
       - name: Verify tag matches the app version
         run: |
@@ -48,7 +43,7 @@ jobs:
       - run: npm ci
 
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
       # createUpdaterArtifacts also emits Drydock.app.tar.gz + .sig, minisign-
       # signed with the key in the TAURI_SIGNING_PRIVATE_KEY secret (the in-app
@@ -57,7 +52,7 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
-        run: npx tauri build --bundles app,dmg
+        run: npx tauri build --bundles app,dmg -- --locked
 
       - name: Stage artifacts
         run: |

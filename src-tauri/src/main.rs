@@ -14,6 +14,7 @@ mod fs_nav;
 mod hues;
 mod index;
 mod pty;
+mod project_tools;
 mod search;
 mod settings;
 mod summary;
@@ -135,12 +136,12 @@ fn splice_codex_flags(cmd: &str, flags: &str) -> String {
 fn inject_artifact_flags(cmd: &str, cfg_path: &str) -> String {
     let Some(end) = find_agent_word(cmd, "claude") else { return cmd.to_string() };
     format!(
-        "{head} --mcp-config '{cfg}' --allowedTools {tool} {await_tool} --append-system-prompt '{nudge}'{rest}",
+        "{head} --mcp-config {cfg} --allowedTools {tool} {await_tool} --append-system-prompt {nudge}{rest}",
         head = &cmd[..end],
-        cfg = cfg_path,
+        cfg = cli::sh_single_quote(cfg_path),
         tool = artifacts::TOOL_ID,
         await_tool = artifacts::AWAIT_TOOL_ID,
-        nudge = artifacts::NUDGE,
+        nudge = cli::sh_single_quote(artifacts::NUDGE),
         rest = &cmd[end..],
     )
 }
@@ -195,6 +196,22 @@ fn disallowed_flags(disabled: &[String]) -> Option<String> {
     }
 }
 
+/// Codex accepts per-invocation TOML overrides. Keep the bearer token in the
+/// child environment, rather than exposing it in the shell command or argv.
+fn codex_mcp_flags(port: u16, enabled: bool, disabled: &[String], shared: &toml::Table) -> String {
+    let mut servers = shared.clone();
+    for name in disabled {
+        servers.entry(name.clone()).or_insert_with(|| toml::Value::Table(Default::default()))
+            .as_table_mut().unwrap().insert("enabled".into(), toml::Value::Boolean(false));
+    }
+    if enabled {
+        let config = toml::from_str::<toml::Table>(&format!("url=\"http://127.0.0.1:{port}/mcp\"\nbearer_token_env_var=\"DRYDOCK_ARTIFACT_TOKEN\"\nenabled=true\ntool_timeout_sec=60")).unwrap();
+        servers.insert(artifacts::SERVER_NAME.into(), toml::Value::Table(config));
+    }
+    if servers.is_empty() { return String::new(); }
+    format!("-c {}", cli::sh_single_quote(&format!("mcp_servers={}", toml::Value::Table(servers))))
+}
+
 /// Spawn a PTY under a frontend-chosen id. program=None → login shell from
 /// $SHELL. `session_id` is the claude session id the frontend pinned at launch
 /// (None for plain shells) — it keys hook deliveries and artifact persistence.
@@ -205,11 +222,13 @@ fn pty_spawn(
     mgr: State<'_, PtyManager>,
     artifacts: State<'_, artifacts::ArtifactServer>,
     settings: State<'_, settings::SettingsState>,
+    project_tools: State<'_, project_tools::ProjectTools>,
     id: u32,
     program: Option<String>,
     args: Option<Vec<String>>,
     cwd: Option<String>,
     session_id: Option<String>,
+    agent: Option<String>,
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
@@ -221,6 +240,14 @@ fn pty_spawn(
     // a "+"/⌘T shell passes no cwd; start it in $HOME so it has a real,
     // nameable directory instead of the app's launch dir ("/").
     let cwd = cwd.or_else(|| std::env::var("HOME").ok());
+    let supported = agent.as_deref().is_none_or(|a| a == "claude" || a == "codex")
+        && args.iter().any(|a| is_claude_exec(a) || is_codex_exec(a));
+    let shared = if supported { cwd.as_deref().map(|p| project_tools.get(p)).transpose()?.unwrap_or_default() } else { Default::default() };
+    let mut prepared = if shared.servers.is_empty() { project_tools::Prepared::new() } else {
+        let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        project_tools::Prepared::prepare(&shared, cwd.as_deref().unwrap_or("/"), &data.join("mcp"), id)?
+    };
+    let native_enabled = settings.artifacts_enabled() || !shared.skills.is_empty();
 
     // Drydock shapes the claude tabs it launches purely with spawn flags — it
     // NEVER edits ~/.claude. For a claude tab we:
@@ -238,17 +265,19 @@ fn pty_spawn(
     // is_claude_exec) still runs as the plain `exec <command>` the Agents
     // settings page promises — no hooks, no MCP, no system-prompt nudge.
     let mut cleanup_files: Vec<std::path::PathBuf> = Vec::new();
-    if let Some(idx) = session_id
-        .is_some()
+    let mut launch_env = Vec::new();
+    if let Some(idx) = (session_id.is_some() && agent.as_deref().is_none_or(|a| a == "claude"))
         .then(|| args.iter().position(|a| is_claude_exec(a)))
         .flatten()
     {
-        if let Some(flags) = disallowed_flags(&settings.mcp_disabled()) {
+        let mut disabled: Vec<_> = settings.mcp_disabled().into_iter().filter(|name| !shared.servers.contains_key(name)).collect();
+        disabled.extend(shared.servers.iter().filter(|(_, s)| !s.enabled).map(|(name, _)| name.clone()));
+        if let Some(flags) = disallowed_flags(&disabled) {
             args[idx] = splice_claude_flags(&args[idx], &flags);
         }
         // One bearer token per claude tab authenticates BOTH loopback surfaces:
         // hook deliveries (/hook) and artifact renders (/mcp).
-        let token = artifacts.mint(id, cwd.clone().map(std::path::PathBuf::from), session_id.clone());
+        let token = artifacts.mint_with_tools(id, cwd.clone().map(std::path::PathBuf::from), session_id.clone(), shared.skills.clone(), settings.artifacts_enabled());
         if let Ok(dir) = app.path().app_data_dir() {
             let hooks_dir = dir.join("hooks");
             let _ = std::fs::create_dir_all(&hooks_dir);
@@ -257,29 +286,33 @@ fn pty_spawn(
             // The hook forwards its stdin JSON to the loopback server; `|| true`
             // so a dead/slow server never blocks or errors the session's hooks.
             let hooks_cfg = hooks_settings_json(&token, artifacts.port);
-            if !hooks_str.contains('\'') && std::fs::write(&hooks_path, hooks_cfg).is_ok() {
-                args[idx] = splice_claude_flags(&args[idx], &format!("--settings '{hooks_str}'"));
+            if project_tools::write_private(&hooks_path, hooks_cfg.as_bytes()).is_ok() {
+                args[idx] = splice_claude_flags(&args[idx], &format!("--settings {}", cli::sh_single_quote(&hooks_str)));
                 cleanup_files.push(hooks_path);
             }
-            if settings.artifacts_enabled() {
+            if native_enabled || !prepared.claude.is_empty() {
                 let mcp_dir = dir.join("mcp");
                 let _ = std::fs::create_dir_all(&mcp_dir);
                 let cfg_path = mcp_dir.join(format!("{id}.json"));
                 let cfg_str = cfg_path.to_string_lossy().to_string();
-                let mut servers = serde_json::Map::new();
-                servers.insert(
+                let mut servers = prepared.claude.clone();
+                if native_enabled { servers.insert(
                     artifacts::SERVER_NAME.to_string(),
                     serde_json::json!({
                         "type": "http",
                         "url": format!("http://127.0.0.1:{}/mcp", artifacts.port),
                         "headers": { "Authorization": format!("Bearer {token}") }
                     }),
-                );
+                ); }
                 let cfg = serde_json::json!({ "mcpServers": serde_json::Value::Object(servers) });
-                if !cfg_str.contains('\'') && std::fs::write(&cfg_path, cfg.to_string()).is_ok() {
-                    args[idx] = inject_artifact_flags(&args[idx], &cfg_str);
-                    cleanup_files.push(cfg_path);
+                if let Err(e) = project_tools::write_private(&cfg_path, cfg.to_string().as_bytes()) {
+                    artifacts.release(id);
+                    for path in &cleanup_files { let _ = std::fs::remove_file(path); }
+                    return Err(format!("Could not prepare shared project tools: {e}"));
                 }
+                args[idx] = if settings.artifacts_enabled() { inject_artifact_flags(&args[idx], &cfg_str) }
+                    else { splice_claude_flags(&args[idx], &format!("--mcp-config {}", cli::sh_single_quote(&cfg_str))) };
+                cleanup_files.push(cfg_path);
             }
         }
     }
@@ -289,8 +322,24 @@ fn pty_spawn(
     // forwards the payload to the loopback listener. Codex passes the payload
     // as the FINAL ARGV ARGUMENT with the program's stdio nulled — hence a
     // script reading "$1", not stdin. Cleaned up on exit like the hook files.
-    if let Some(idx) = args.iter().position(|a| is_codex_exec(a)) {
-        let token = artifacts.mint(id, cwd.clone().map(std::path::PathBuf::from), None);
+    if let Some(idx) = agent.as_deref().is_none_or(|a| a == "codex")
+        .then(|| args.iter().position(|a| is_codex_exec(a))).flatten() {
+        let token = artifacts.mint_with_tools(id, cwd.clone().map(std::path::PathBuf::from), session_id.clone(), shared.skills.clone(), settings.artifacts_enabled());
+        let disabled = settings.mcp_disabled();
+        // A lone enabled=false entry for an absent server is invalid Codex
+        // config. Resolve names before applying Drydock's shared deny-list.
+        let disabled = if disabled.is_empty() { disabled } else {
+            let configured = capabilities::codex_mcp_servers(cwd.as_deref()).map_err(|e| {
+                artifacts.release(id);
+                e
+            })?;
+            disabled.into_iter().filter(|name| !shared.servers.contains_key(name) && configured.iter().any(|s| &s.name == name)).collect()
+        };
+        let flags = codex_mcp_flags(artifacts.port, native_enabled, &disabled, &prepared.codex);
+        if !flags.is_empty() { args[idx] = splice_codex_flags(&args[idx], &flags); }
+        if native_enabled {
+            launch_env.push(("DRYDOCK_ARTIFACT_TOKEN".to_string(), token.clone()));
+        }
         if let Ok(dir) = app.path().app_data_dir() {
             let hooks_dir = dir.join("hooks");
             let _ = std::fs::create_dir_all(&hooks_dir);
@@ -301,11 +350,11 @@ fn pty_spawn(
                 artifacts.port
             );
             // path is spliced into shell + TOML quoting — refuse both quote kinds
-            if !script_str.contains('\'') && !script_str.contains('"') && std::fs::write(&script_path, script).is_ok() {
+            if !script_str.contains('\'') && !script_str.contains('"') && project_tools::write_private(&script_path, script.as_bytes()).is_ok() {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
+                    let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o700));
                 }
                 args[idx] = splice_codex_flags(&args[idx], &format!("-c 'notify=[\"{script_str}\"]'"));
                 cleanup_files.push(script_path);
@@ -313,12 +362,18 @@ fn pty_spawn(
         }
     }
 
+    if let Some(path) = &prepared.env_script {
+        if let Some(idx) = args.iter().position(|a| is_claude_exec(a) || is_codex_exec(a)) {
+            args[idx] = format!(". {}\n{}", cli::sh_single_quote(&path.to_string_lossy()), args[idx]);
+        }
+    }
+    cleanup_files.append(&mut prepared.files);
     let release_tokens = artifacts.tokens_handle();
     let release_feedback = artifacts.feedback_handle();
     let exit_cleanup = cleanup_files.clone();
 
     let app_exit = app.clone();
-    let result = mgr.spawn(
+    let result = mgr.with_spawn_env(launch_env).spawn(
         id,
         &program,
         &args,
@@ -351,6 +406,13 @@ fn pty_spawn(
         }
     }
     result.map_err(|e| e.to_string())
+}
+
+/// Fresh Codex sessions acquire an id after launch. Attach their native tools
+/// to that id and save artifacts rendered before discovery finished.
+#[tauri::command]
+fn pty_bind_session(id: u32, session_id: String, artifacts: State<'_, artifacts::ArtifactServer>) {
+    artifacts.bind_session(id, &session_id);
 }
 
 #[tauri::command]
@@ -420,16 +482,27 @@ fn pty_cwds(mgr: State<'_, PtyManager>, ids: Vec<u32>) -> Vec<(u32, String)> {
 /// (`drydock-artifacts`) prepended and each config-sourced server's `enabled`
 /// reflecting the Drydock deny-list. This is the config/intent view; live
 /// connection status comes separately from `mcp_status`.
-#[tauri::command]
+#[tauri::command(async)]
 fn list_mcp_servers(
     project_path: Option<String>,
+    agent: Option<String>,
     settings: State<'_, settings::SettingsState>,
     artifacts: State<'_, artifacts::ArtifactServer>,
-) -> Vec<capabilities::McpServer> {
+    project_tools: State<'_, project_tools::ProjectTools>,
+) -> Result<Vec<capabilities::McpServer>, String> {
     let disabled = settings.mcp_disabled();
-    let mut servers = capabilities::mcp_servers(project_path.as_deref());
+    let mut servers = match agent.as_deref().unwrap_or("claude") {
+        "claude" => capabilities::mcp_servers(project_path.as_deref()),
+        "codex" => capabilities::codex_mcp_servers(project_path.as_deref())?,
+        "shared" => project_path.as_deref().map(|p| project_tools.get(p).map(|s| project_tools::server_views(&s))).transpose()?.unwrap_or_default(),
+        _ => return Ok(Vec::new()),
+    };
+    if agent.as_deref() != Some("shared") {
+        let setup = project_path.as_deref().map(|p| project_tools.get(p)).transpose()?.unwrap_or_default();
+        servers = project_tools::merge_servers(servers, &setup);
+    }
     for s in &mut servers {
-        s.enabled = !disabled.iter().any(|d| d == &s.name);
+        if s.scope != "shared" { s.enabled &= !disabled.iter().any(|d| d == &s.name); }
     }
     let builtin = capabilities::McpServer {
         name: artifacts::SERVER_NAME.to_string(),
@@ -438,12 +511,13 @@ fn list_mcp_servers(
         scope: "drydock".to_string(),
         builtin: true,
         enabled: settings.artifacts_enabled(),
+        configured_enabled: true,
         tools: vec![artifacts::TOOL_NAME.to_string(), artifacts::AWAIT_TOOL_NAME.to_string()],
     };
     let mut out = Vec::with_capacity(servers.len() + 1);
     out.push(builtin); // Drydock's own server first
-    out.extend(servers);
-    out
+    out.extend(servers.into_iter().filter(|s| s.name != artifacts::SERVER_NAME));
+    Ok(out)
 }
 
 /// Live `claude mcp list` health-check for the user's configured servers:
@@ -452,7 +526,8 @@ fn list_mcp_servers(
 /// leaving a stale green dot (see capabilities::mcp_status). Blocking-friendly:
 /// runs on Tauri's async runtime, not the main thread.
 #[tauri::command(async)]
-fn mcp_status(project_path: Option<String>) -> Result<Vec<(String, String, String)>, String> {
+fn mcp_status(project_path: Option<String>, agent: Option<String>) -> Result<Vec<(String, String, String)>, String> {
+    if agent.as_deref().unwrap_or("claude") != "claude" { return Ok(Vec::new()); }
     capabilities::mcp_status(project_path.as_deref())
 }
 
@@ -737,6 +812,7 @@ fn main() {
             app.manage(PtyManager::with_env(cfg.env_pairs()));
             app.manage(collaboration::Collaboration::new(data.join("collaboration"))?);
             app.manage(summary::Summaries::default());
+            app.manage(project_tools::ProjectTools::new(data.join("projects")));
             // Overnight-sleep display recovery: emit `system-woke` so the
             // frontend can rebuild layers + terminals (wake.rs / lib/wake.ts).
             wake::watch(app.handle().clone());
@@ -765,6 +841,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             pty_spawn,
+            pty_bind_session,
             pty_write,
             pty_resize,
             pty_kill,
@@ -826,6 +903,10 @@ fn main() {
             agents_probe,
             agents::codex_latest_session,
             capabilities::list_skills,
+            project_tools::project_share_skill,
+            project_tools::project_share_mcp,
+            project_tools::project_remove_tool,
+            project_tools::project_set_mcp_enabled,
             updates::app_version,
             updates::check_update,
             updates::install_update,
@@ -972,6 +1053,20 @@ mod tests {
         // compound override: the env setup stays intact, flags follow the word
         let out = splice_codex_flags("export API=x && codex resume 'abc'", "-c 'n'");
         assert_eq!(out, "export API=x && codex -c 'n' resume 'abc'");
+    }
+
+    #[test]
+    fn codex_native_mcp_flags_are_additive_and_never_contain_a_token() {
+        let flags = codex_mcp_flags(1234, true, &["github".into(), "odd'name".into()], &Default::default());
+        assert!(flags.contains("DRYDOCK_ARTIFACT_TOKEN"));
+        assert!(flags.contains("127.0.0.1:1234/mcp"));
+        assert!(flags.contains("tool_timeout_sec = 60"));
+        assert!(flags.contains("github = { enabled = false }"));
+        assert!(!flags.contains("developer_instructions"));
+        let cmd = splice_codex_flags("exec codex --profile work resume 'thread'", &flags);
+        assert!(cmd.ends_with(" --profile work resume 'thread'"));
+        assert!(codex_mcp_flags(1234, false, &[], &Default::default()).is_empty());
+        assert!(!codex_mcp_flags(1234, false, &["github".into()], &Default::default()).contains("drydock-artifacts"));
     }
 
     #[test]

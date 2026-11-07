@@ -202,7 +202,7 @@ export default function BriefingPanel({ sourceAgent, agents, onHandoff, onOpenSe
         ) : tab === 'briefing' ? (
           sessionId ? <CollaborationPanel key={sessionId} sessionId={sessionId} sourceAgent={sourceAgent} agents={agents} onHandoff={onHandoff} onOpenSession={onOpenSession}>{briefing}</CollaborationPanel> : briefing()
         ) : (
-          <ProjectTab projectPath={projectPath} />
+          <ProjectTab projectPath={projectPath} agent={sourceAgent} />
         )}
       </div>
     </div>

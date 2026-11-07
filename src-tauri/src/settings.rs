@@ -22,9 +22,9 @@ pub struct Settings {
     /// configured only in `.zshrc` (which a non-interactive login shell skips)
     /// or not in the GUI environment at all.
     pub claude_env: BTreeMap<String, String>,
-    /// Whether Drydock injects its Preview-panel artifact tool into the claude
-    /// tabs it launches (a per-session `--mcp-config` pointing at the loopback
-    /// MCP server). Default on; set `false` to opt out. The loopback server
+    /// Whether Drydock injects its artifact tools into Claude Code and Codex
+    /// tabs. Each launch receives its own authenticated MCP connection.
+    /// Default on; set `false` to opt out. The loopback server
     /// always listens (it's token-gated), so flipping this only changes whether
     /// new sessions get a token + the injected config.
     pub artifacts_enabled: bool,
