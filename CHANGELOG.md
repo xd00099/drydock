@@ -4,6 +4,29 @@ Each tagged release's `## vX.Y.Z` section becomes the GitHub release body and
 the in-app updater's release notes (extracted by `scripts/release-notes.py` in
 CI — a tag without its section fails the release).
 
+## v1.2.0 — 2026-11-06
+
+- **Clear titles and useful summaries.** Briefing now shows a compact AI summary
+  with **Refresh**, an update time, and a **New activity** indicator. One refresh
+  updates the short title used throughout Drydock and the summary together;
+  manual names take precedence. New commits observed while Briefing is open
+  trigger a debounced refresh, including amended commits. Opening a session or
+  ordinary conversation activity does not start an AI call. The old background
+  card-generation sweep has been removed.
+- **Actual Codex conversation context.** Summaries and handoffs read user and
+  agent messages from paginated Codex history as well as indexed rollout files.
+  Reasoning and tool payloads are excluded. Title-only metadata no longer gets
+  mistaken for a conversation or used to generate an uninformative summary.
+- **Fresh handoffs.** **Handoff…** now lives below the summary and refreshes its
+  AI title and summary before preparing the editable packet. Existing refreshes
+  finish first; failures remain visible with a retry and preserve the previous
+  summary. No stale packet is offered after a failed refresh.
+- **Git changes beside review.** **Uncommitted files** replaces transcript edit
+  history with staged, unstaged, and non-ignored new Git files across the
+  repository, with status and line counts. Clean checkouts show **Last commit
+  files**. The list updates after external edits and commits; **Review with…**
+  stays in this section, using the same Git scope.
+
 ## v1.1.2 — 2026-11-06
 
 - **Delete conversations by folder.** Right-click a workspace or project and

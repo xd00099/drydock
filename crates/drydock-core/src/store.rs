@@ -589,6 +589,7 @@ impl Store {
         )?;
         tx.execute("DELETE FROM chunks WHERE session_id = ?1", params![session_id])?;
         tx.execute("DELETE FROM cards WHERE session_id = ?1", params![session_id])?;
+        tx.execute("DELETE FROM meta WHERE key = 'session-summary-v1:' || ?1", params![session_id])?;
         tx.execute("DELETE FROM sync_state WHERE session_id = ?1", params![session_id])?;
         tx.execute("DELETE FROM session_usage WHERE session_id = ?1", params![session_id])?;
         if purge_flags {
@@ -773,6 +774,22 @@ impl Store {
         Ok(rows)
     }
 
+    /// Bounded parent-conversation tail for summaries and freshness checks.
+    /// Synthetic summaries and subagent traffic must never feed back into it.
+    pub fn summary_chunks(&self, session_id: &str) -> Result<Vec<Chunk>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT role, text, ts FROM (
+               SELECT seq, role, text, ts FROM chunks
+               WHERE session_id = ?1 AND role != 'card' AND agent_id IS NULL
+               ORDER BY seq DESC LIMIT 40
+             ) ORDER BY seq",
+        )?;
+        let rows = stmt.query_map(params![session_id], |r| {
+            Ok(Chunk { role: r.get(0)?, text: r.get(1)?, ts: r.get(2)? })
+        })?.collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
     pub fn search_keyword(&self, query: &str, limit: i64) -> Result<Vec<SearchHit>> {
         self.search_keyword_filtered(query, limit, None)
     }
@@ -820,6 +837,25 @@ impl Store {
             params![session_id, summary, timeline, now, at_message_count],
         )?;
         replace_card_chunk(&tx, session_id, card_text)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Publish title, summary, provenance and search text together. Keep user
+    /// names untouched and refuse late results for a deleted conversation.
+    pub fn put_session_summary(&mut self, session_id: &str, title: &str, body: &str, metadata: &str, at_message_count: i64) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE session_id = ?1)", params![session_id], |r| r.get(0))?;
+        anyhow::ensure!(exists, "Session was deleted while refreshing its summary");
+        // Preserve the existing title/search/Home integration without reviving
+        // the old timeline generator. This is one plain-language summary.
+        let timeline = serde_json::json!([{ "text": body, "detail": [], "in_progress": false }]).to_string();
+        tx.execute(
+            "INSERT OR REPLACE INTO cards(session_id, summary, timeline, generated_at, at_message_count) VALUES (?1,?2,?3,?4,?5)",
+            params![session_id, title, timeline, chrono::Utc::now().timestamp_millis(), at_message_count],
+        )?;
+        tx.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('session-summary-v1:' || ?1, ?2)", params![session_id, metadata])?;
+        replace_card_chunk(&tx, session_id, &format!("{title}\n{body}"))?;
         tx.commit()?;
         Ok(())
     }
@@ -1982,6 +2018,40 @@ mod tests {
 
     // delta() puts last_message_at at 1000, so this "now" is 10 min of quiet later
     const QUIET_NOW: i64 = 1000 + 600_000;
+
+    #[test]
+    fn session_summary_updates_titles_and_search_atomically_without_overwriting_names() {
+        let mut s = mem();
+        let sid = "11111111-1111-1111-1111-111111111111";
+        s.apply_delta(sid, &delta("Recover sessions"), &[Chunk { role: "user".into(), text: "Recover sessions".into(), ts: Some(1000) }]).unwrap();
+        s.set_session_name(sid, "My hand-picked name").unwrap();
+        s.put_session_summary(sid, "Session Recovery", "Restored metadata-only threads.", "{\"source\":\"v1\"}", 2).unwrap();
+        assert_eq!(s.display_label(sid).unwrap().as_deref(), Some("My hand-picked name"));
+        assert_eq!(s.card_summaries().unwrap(), vec![(sid.into(), "Session Recovery".into())]);
+        assert_eq!(s.meta_get(&format!("session-summary-v1:{sid}")).unwrap().as_deref(), Some("{\"source\":\"v1\"}"));
+        assert!(s.search_keyword("metadata-only", 10).unwrap().iter().any(|hit| hit.session_id == sid));
+        assert_eq!(s.summary_chunks(sid).unwrap().len(), 1, "generated text must not feed itself");
+        s.set_session_name(sid, "").unwrap();
+        assert_eq!(s.display_label(sid).unwrap().as_deref(), Some("Session Recovery"));
+        s.delete_session(sid).unwrap();
+        assert!(s.meta_get(&format!("session-summary-v1:{sid}")).unwrap().is_none());
+        assert!(s.put_session_summary(sid, "Late result", "Must not recreate deleted data", "{}", 2).is_err());
+        assert!(s.get_card(sid).unwrap().is_none());
+    }
+
+    #[test]
+    fn summary_context_is_bounded_and_excludes_synthetic_and_subagent_chunks() {
+        let mut s = mem();
+        let sid = "11111111-1111-1111-1111-111111111111";
+        let chunks: Vec<_> = (0..60).map(|n| Chunk { role: "user".into(), text: format!("message {n}"), ts: Some(n) }).collect();
+        s.apply_delta(sid, &delta("Parent goal"), &chunks).unwrap();
+        s.conn.execute("INSERT INTO chunks(session_id,seq,role,text,agent_id) VALUES (?1,100,'assistant','Subagent only','child')", params![sid]).unwrap();
+        s.put_session_summary(sid, "Parent Summary", "Generated summary", "{}", 2).unwrap();
+        let context = s.summary_chunks(sid).unwrap();
+        assert_eq!(context.len(), 40);
+        assert_eq!(context.first().unwrap().text, "message 20");
+        assert_eq!(context.last().unwrap().text, "message 59");
+    }
 
     #[test]
     fn card_roundtrip_and_eligibility() {

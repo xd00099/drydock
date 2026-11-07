@@ -1,59 +1,31 @@
-import { useState } from 'react'
-import { invoke } from '@tauri-apps/api/core'
-import { fmtTokens, relAge, type CardView, type FileTouch, type SessionUsage, type TasksView, type TimelineItem } from '@/lib/types'
-import { Button, Chip } from '@/components/ui'
+import { useState, type ReactNode } from 'react'
+import { fmtTokens, type SessionUsage, type TasksView } from '@/lib/types'
+import { Chip } from '@/components/ui'
 import TimeMachine from '@/features/timemachine/TimeMachine'
-import { FilesChanged } from './FilesChanged'
+import { RepositoryFiles } from './RepositoryFiles'
 import { TasksSection } from './TasksSection'
-import { S } from './styles'
+import { SessionSummary } from './SessionSummary'
 import css from './Briefing.module.css'
 
-function Item({ it }: { it: TimelineItem }) {
-  return (
-    <li className={css.timelineItem}>
-      <span style={{ color: it.in_progress ? 'var(--dd-ok-bright)' : 'var(--dd-text1)' }}>
-        {it.in_progress ? '◐ ' : ''}
-        {it.text}
-        {it.in_progress && <span style={{ color: 'var(--dd-dim)', fontStyle: 'italic' }}> — in progress</span>}
-      </span>
-      {it.detail.length > 0 && (
-        <ul style={{ margin: '3px 0 0', paddingLeft: 16, listStyle: 'none' }}>
-          {it.detail.map((d, i) => (
-            <li key={i} style={{ color: 'var(--dd-text2)', marginBottom: 2 }}>
-              <span style={{ color: 'var(--dd-dim2)' }}>– </span>
-              {d}
-            </li>
-          ))}
-        </ul>
-      )}
-    </li>
-  )
-}
-
-// Per-file status glyph, git-style: created / modified / gone from disk.
-
-export function BriefingTab({ sourceAgent, sessionId, card, starred, files, tasks, usage, projectPath, label, onToggleStar, onRename }: { sourceAgent: string; sessionId: string | null; card: CardView | null; starred: boolean; files: FileTouch[]; tasks: TasksView | null; usage: SessionUsage | null; projectPath?: string; label?: string | null; onToggleStar?: () => void; onRename?: (name: string) => void }) {
+export function BriefingTab({ sourceAgent, sessionId, starred, tasks, usage, label, onToggleStar, onRename, collaborationActions, summaryActions }: { sourceAgent: string; sessionId: string | null; starred: boolean; tasks: TasksView | null; usage: SessionUsage | null; label?: string | null; onToggleStar?: () => void; onRename?: (name: string) => void; collaborationActions?: ReactNode; summaryActions?: ReactNode }) {
   // editing holds the label CAPTURED when the pencil was clicked (null = not
   // editing): the unchanged-commit guard must compare against what the user
   // saw when they started, not the live prop — a mid-edit refresh changing
   // `label` must neither freeze a stale auto title nor block a real commit.
-  const [refreshing, setRefreshing] = useState(false)
-  const [refreshError, setRefreshError] = useState<string | null>(null)
   const [editing, setEditing] = useState<string | null>(null)
-  // time machine overlay: false = closed, string = start at this file,
-  // null = whole-session checkpoint view
+  const [head, setHead] = useState<string | null>(null)
+  // Time machine opens the session's checkpoint history independently of Git.
   const [tm, setTm] = useState<string | null | false>(false)
   const commitRename = (value: string) => {
     const initial = editing
     setEditing(null)
     const name = value.trim()
-    // unchanged = no-op: a click-away blur must not freeze an AUTO title
-    // (card summary) into a permanent override
+    // An unchanged click-away blur must not create a permanent name override.
     if (initial === null || name === initial.trim()) return
     onRename?.(name)
   }
   if (!sessionId)
-    return <div className={css.empty}>No indexed session yet — once this conversation is saved, its briefing card appears here.</div>
+    return <div className={css.empty}>Session details appear once this conversation is saved.</div>
   return (
     <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
       <div className={css.content}>
@@ -84,7 +56,7 @@ export function BriefingTab({ sourceAgent, sessionId, card, starred, files, task
               onBlur={(e) => commitRename(e.currentTarget.value)}
             />
           ) : (
-            <div style={{ flex: 1, color: 'var(--dd-text)', fontWeight: 600, fontSize: 13, lineHeight: 1.3 }}>{label || card?.summary || 'Session'}</div>
+            <div style={{ flex: 1, color: 'var(--dd-text)', fontWeight: 600, fontSize: 13, lineHeight: 1.3 }}>{label || 'Session'}</div>
           )}
           {onRename && editing === null && (
             <button
@@ -108,46 +80,16 @@ export function BriefingTab({ sourceAgent, sessionId, card, starred, files, task
             </Chip>
           )}
         </div>
-        {card ? (
-          <>
-            {card.timeline.length > 0 ? (
-              <ul style={{ margin: 0, padding: 0, listStyle: 'none' }}>
-                {/* one source of "now doing": with a live task board below,
-                    the AI card's own in-progress flags stand down */}
-                {card.timeline.map((it, i) => (
-                  <Item key={i} it={tasks && tasks.tasks.length > 0 ? { ...it, in_progress: false } : it} />
-                ))}
-              </ul>
-            ) : (
-              <div style={S.muted}>no timeline yet</div>
-            )}
-            <div style={{ color: 'var(--dd-dim)', fontSize: 10, marginTop: 12 }}>card from {relAge(card.generated_at)} ago</div>
-          </>
-        ) : (
-          <div style={S.muted}>no briefing card yet</div>
-        )}
-        {sourceAgent === 'codex' && tasks?.transcript_available === false && <p style={S.muted}>This Codex thread has no readable local rollout. Its plan, file changes, and token usage are unavailable.</p>}
-        <Button
-          style={{ marginTop: 12 }}
-          disabled={refreshing || (sourceAgent === 'codex' && tasks?.transcript_available === false)}
-          onClick={async () => {
-            setRefreshing(true); setRefreshError(null)
-            try { await invoke('refresh_card', { sessionId }) }
-            catch (e) { setRefreshError(String(e)) }
-            finally { setRefreshing(false) }
-          }}
-        >
-          {refreshing ? 'Refreshing…' : 'Refresh card'}
-        </Button>
-        {refreshError && <p role="alert" style={{ color: 'var(--dd-err)', overflowWrap: 'anywhere' }}>{refreshError}</p>}
+        <SessionSummary key={sessionId} sessionId={sessionId} head={head} actions={summaryActions} />
       </div>
       <TasksSection view={tasks} />
-      <FilesChanged
-        files={files}
-        projectPath={projectPath}
+      <RepositoryFiles
+        key={sessionId}
         sessionId={sessionId}
+        onHeadChange={setHead}
+        actions={collaborationActions}
         squeeze={!!tasks && tasks.tasks.length > 0}
-        onTimeMachine={sourceAgent === 'claude' ? (p) => setTm(p) : undefined}
+        onTimeMachine={sourceAgent === 'claude' ? () => setTm(null) : undefined}
       />
       {tm !== false && <TimeMachine sessionId={sessionId} initialPath={tm} onClose={() => setTm(false)} />}
     </div>

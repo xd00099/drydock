@@ -5,10 +5,10 @@ mod agents;
 mod attention;
 mod capabilities;
 mod cc_data;
+mod cli;
 mod collaboration;
 mod codex_delete;
 mod embedder;
-mod enricher;
 mod files;
 mod fs_nav;
 mod hues;
@@ -16,6 +16,7 @@ mod index;
 mod pty;
 mod search;
 mod settings;
+mod summary;
 mod takeover;
 mod updates;
 mod wake;
@@ -731,11 +732,11 @@ fn main() {
             use tauri::Manager;
             let data = app.path().app_data_dir().expect("data dir");
             std::fs::create_dir_all(&data).ok();
-            // Drydock settings drive both spawn paths; inject claude_env into
-            // every PTY (terminal tabs) and, in the enricher, into card calls.
+            // Drydock settings supply environment overrides to terminal tabs.
             let cfg = settings::Settings::load(&data);
             app.manage(PtyManager::with_env(cfg.env_pairs()));
             app.manage(collaboration::Collaboration::new(data.join("collaboration"))?);
+            app.manage(summary::Summaries::default());
             // Overnight-sleep display recovery: emit `system-woke` so the
             // frontend can rebuild layers + terminals (wake.rs / lib/wake.ts).
             wake::watch(app.handle().clone());
@@ -759,11 +760,6 @@ fn main() {
                 // scheduled: catch-up drain now, then twice a day; the model
                 // (and its half-GB ONNX arena) exists only while a run is live
                 std::thread::spawn(move || embedder::imp::run(db, cache));
-            }
-            {
-                let db = data.join("drydock.db");
-                let handle = app.handle().clone();
-                std::thread::spawn(move || enricher::run(handle, db));
             }
             Ok(())
         })
@@ -807,6 +803,7 @@ fn main() {
             index::delete_session_permanently,
             index::session_chunks,
             collaboration::collaboration_prepare,
+            collaboration::collaboration_changes,
             collaboration::collaboration_list,
             collaboration::collaboration_review,
             collaboration::collaboration_cancel,
@@ -821,9 +818,9 @@ fn main() {
             files::agent_transcript,
             files::open_path,
             search::search,
-            enricher::get_card,
-            enricher::refresh_card,
-            enricher::check_claude,
+            cli::check_claude,
+            summary::get_session_summary,
+            summary::refresh_session_summary,
             agents_get,
             agents_set,
             agents_probe,
@@ -854,6 +851,7 @@ fn main() {
             if let tauri::RunEvent::Exit = event {
                 use tauri::Manager;
                 app.state::<collaboration::Collaboration>().cancel_all();
+                app.state::<summary::Summaries>().cancel_all();
                 app.state::<PtyManager>().kill_all();
             }
         });

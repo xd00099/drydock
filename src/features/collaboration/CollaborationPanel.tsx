@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { Button } from '@/components/ui'
@@ -7,8 +7,9 @@ import type { ResolvedAgent } from '@/lib/agents'
 import { findingsPacket, type CollaborationRecord, type HandoffLaunch } from './types'
 import s from './Collaboration.module.css'
 
-type Props = { sessionId: string; sourceAgent: string; agents: ResolvedAgent[]; onHandoff: (launch: HandoffLaunch) => void; onOpenSession: (id: string) => void }
-export default function CollaborationPanel({ sessionId, sourceAgent, agents, onHandoff, onOpenSession }: Props) {
+export type CollaborationActions = { review: ReactNode; handoff: ReactNode; history: ReactNode }
+type Props = { sessionId: string; sourceAgent: string; agents: ResolvedAgent[]; onHandoff: (launch: HandoffLaunch) => void; onOpenSession: (id: string) => void; children?: (actions: CollaborationActions) => ReactNode }
+export default function CollaborationPanel({ sessionId, sourceAgent, agents, onHandoff, onOpenSession, children }: Props) {
   const choices = agents.filter((a) => a.enabled && (a.id === 'claude' || a.id === 'codex'))
   const [open, setOpen] = useState(false)
   const [mode, setMode] = useState<'review' | 'handoff'>('review')
@@ -27,6 +28,8 @@ export default function CollaborationPanel({ sessionId, sourceAgent, agents, onH
   const dialog = useRef<HTMLDivElement>(null)
   const sequence = useRef(0)
   const alive = useRef(true)
+  const preparing = useRef(false)
+  const [retryPreparation, setRetryPreparation] = useState<{ mode: 'review' | 'handoff'; review?: CollaborationRecord; findings: string } | null>(null)
 
   useEffect(() => {
     alive.current = true
@@ -60,8 +63,12 @@ export default function CollaborationPanel({ sessionId, sourceAgent, agents, onH
   }, [open, record?.id])
 
   const close = () => { ++sequence.current; setOpen(false); setBusy(false) }
-  const prepare = async (nextMode: 'review' | 'handoff', review?: CollaborationRecord) => {
+  const prepare = async (nextMode: 'review' | 'handoff', review?: CollaborationRecord, carriedFindings?: string) => {
+    if (preparing.current) return
+    preparing.current = true
+    const fixes = carriedFindings ?? (review ? findingsPacket(review, selected) : '')
     const token = ++sequence.current
+    setRetryPreparation(null)
     setMode(nextMode); setOpen(true); setBusy(true); setError(''); setNotice(''); setFile(null)
     setRecord(null); setSelected([])
     setTarget(nextMode === 'handoff' && review ? sourceAgent : choices.find((a) => a.id !== sourceAgent)?.id ?? choices[0]?.id ?? '')
@@ -71,10 +78,10 @@ export default function CollaborationPanel({ sessionId, sourceAgent, agents, onH
       if (review && await invoke<boolean>('collaboration_stale', { id: review.id })) throw new Error('The code changed since this review. Run a new review before preparing fixes.')
       if (token !== sequence.current) return
       setRecord(next)
-      setPacket(review ? next.packet + '\n\n' + findingsPacket(review, selected) : next.packet)
+      setPacket(fixes ? next.packet + '\n\n' + fixes : next.packet)
       setCriteria(''); setModel('')
-    } catch (e) { if (token === sequence.current) setError(String(e)) }
-    finally { if (token === sequence.current) setBusy(false) }
+    } catch (e) { if (token === sequence.current) { setError(String(e)); setRetryPreparation({ mode: nextMode, review, findings: fixes }) } }
+    finally { preparing.current = false; if (token === sequence.current) setBusy(false) }
   }
   const view = (r: CollaborationRecord) => {
     ++sequence.current; setBusy(false); setOpen(true); setRecord(r); setPacket(r.packet); setCriteria(r.criteria)
@@ -121,12 +128,13 @@ export default function CollaborationPanel({ sessionId, sourceAgent, agents, onH
     }
   }, [choiceIds, record?.status, sourceAgent, target])
   const latest = history[0]
+  const actions: CollaborationActions = {
+    review: <Button small onClick={() => prepare('review')}><Icon name="review" size={14} />Review with…</Button>,
+    handoff: <Button small onClick={() => prepare('handoff')}><Icon name="arrow" size={14} />Handoff…</Button>,
+    history: latest ? <button className={s.latest} onClick={() => view(latest)}>{latest.status === 'handoff' ? 'Handoff' : 'Review'} · {latest.target_agent} · {latest.status}</button> : null,
+  }
   return <>
-    <div className={s.actions}>
-      <Button small onClick={() => prepare('review')}><Icon name="review" size={14} />Review with…</Button>
-      <Button small onClick={() => prepare('handoff')}><Icon name="arrow" size={14} />Handoff…</Button>
-      {latest && <button className={s.latest} onClick={() => view(latest)}>{latest.status === 'handoff' ? 'Handoff' : 'Review'} · {latest.target_agent} · {latest.status}</button>}
-    </div>
+    {children ? children(actions) : <div className={s.actions}>{actions.review}{actions.handoff}{actions.history}</div>}
     {open && <div className={s.scrim} onClick={(e) => { if (e.target === e.currentTarget && !busy) close() }}>
       <div ref={dialog} className={s.dialog} role="dialog" aria-modal="true" aria-labelledby="collaboration-title" tabIndex={-1}
         onKeyDown={(e) => {
@@ -142,7 +150,7 @@ export default function CollaborationPanel({ sessionId, sourceAgent, agents, onH
         }}>
         <div className={s.header}>
           <div><h2 id="collaboration-title" className={s.heading}>{mode === 'review' ? 'Independent agent review' : 'Continue with another agent'}</h2>
-            <div className={s.subtitle}>{record?.title ?? 'Capturing your project…'}</div></div>
+            <div className={s.subtitle}>{record?.title ?? (mode === 'handoff' ? 'Refreshing your session summary…' : 'Capturing your project…')}</div></div>
           <Button variant="ghost" onClick={close} disabled={busy}>Close</Button>
         </div>
         <div className={s.body}>
@@ -154,8 +162,9 @@ export default function CollaborationPanel({ sessionId, sourceAgent, agents, onH
             </button>)}
           </aside>
           <main className={s.content}>
-            {busy && !record && <p role="status">Capturing files and preparing context…</p>}
+            {busy && !record && <p role="status">{mode === 'handoff' ? 'Refreshing the title and summary, then preparing your handoff…' : 'Capturing files and preparing context…'}</p>}
             {error && <p className={s.error} role="alert">{error}</p>}
+            {!busy && !record && retryPreparation && <Button small onClick={() => prepare(retryPreparation.mode, retryPreparation.review, retryPreparation.findings)}>Try again</Button>}
             {notice && <p className={s.note} role="status">{notice}</p>}
             {record && <>
               <p className={s.note}>{record.scope}{!record.scope.startsWith('Handoff') && ` · ${record.files.length} captured files · snapshot ${record.snapshot_id.slice(0, 10)}`}</p>

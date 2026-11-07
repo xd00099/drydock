@@ -371,7 +371,7 @@ fn output_with_timeout(mut cmd: std::process::Command, timeout: std::time::Durat
 
 /// Health-check the user's MCP servers via `claude mcp list`, run in `project_path`
 /// (so project-scoped `.mcp.json` servers are included) through a login shell —
-/// GUI apps lack PATH, matching the enricher's claude invocation. Read-only; it
+/// GUI apps lack PATH, so agent commands use a login shell. Read-only; it
 /// never writes config. Errors (can't spawn, timed out) surface to the caller so
 /// the UI can say so instead of silently showing nothing.
 pub fn mcp_status(project_path: Option<&str>) -> Result<Vec<(String, String, String)>, String> {

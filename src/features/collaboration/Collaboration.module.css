@@ -1,4 +1,4 @@
-.actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 16px; border-bottom: 1px solid var(--dd-hairline); }
+.actions { flex: none; display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 16px 10px; }
 .latest { flex-basis: 100%; background: none; border: none; text-align: left; color: var(--dd-text3); font: inherit; cursor: pointer; padding: 3px 0 0; }
 .scrim { position: fixed; inset: 0; z-index: 90; background: var(--dd-scrim); display: grid; place-items: center; padding: 24px; transform: translateZ(0); }
 .dialog { width: min(100%, 1000px); max-height: calc(100vh - 48px); background: var(--dd-surface); border: 1px solid var(--dd-hairline-strong); border-radius: var(--dd-r-xl); box-shadow: var(--dd-shadow-3); font: var(--dd-text-base)/1.5 var(--dd-font-ui); color: var(--dd-text); display: flex; flex-direction: column; overflow: hidden; outline: none; }

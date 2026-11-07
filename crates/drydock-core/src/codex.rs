@@ -45,7 +45,7 @@ pub fn codex_dir() -> Option<PathBuf> {
 
 /// The injected preambles codex records as "user" messages. The first user
 /// text NOT matching these is the prompt the human actually typed.
-fn is_boilerplate(text: &str) -> bool {
+pub(crate) fn is_boilerplate(text: &str) -> bool {
     let t = text.trim_start();
     t.starts_with('<') // <environment_context>, <permissions instructions>, …
         || t.starts_with("# AGENTS.md")

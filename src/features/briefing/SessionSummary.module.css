@@ -1,0 +1,15 @@
+.section { margin-top: 18px; }
+.header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 -6px 5px 0; }
+.heading { color: var(--dd-text3); font: 600 10px var(--dd-font-ui); letter-spacing: 0.6px; }
+.body { color: var(--dd-text2); font-size: 12px; line-height: 1.75; overflow-wrap: anywhere; }
+.body p { margin: 0 0 9px; white-space: pre-line; }
+.body p:last-child { margin-bottom: 0; }
+.empty { color: var(--dd-dim); font-size: 12px; line-height: 1.65; margin: 2px 0 0; }
+.meta { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 10px; margin-top: 12px; color: var(--dd-dim); font-size: 10px; line-height: 1.5; }
+.activity { display: inline-flex; align-items: center; gap: 4px; color: var(--dd-warn-muted); }
+.dot { width: 4px; height: 4px; border-radius: 50%; background: currentColor; }
+.error { color: var(--dd-err); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; margin: 9px 0 0; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--dd-hairline); }
+.spinning { animation: summary-spin 1s linear infinite; }
+@keyframes summary-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinning { animation: none; } }

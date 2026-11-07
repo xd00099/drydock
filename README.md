@@ -58,20 +58,44 @@ searching through terminal windows.
 | --- | --- |
 | **Find** | Keyword and on-device semantic search, with `proj:`, `starred:`, and `live:` filters. |
 | **Resume** | Real agent terminals, readable transcripts, Markdown export, and split panes. |
-| **Understand** | Briefing timelines, task or plan status, token usage, and files changed. |
+| **Understand** | Session details, task or plan status, token usage, and current Git file changes. |
 | **Organize** | Projects, working folders, stars, and session names stored in Drydock. |
 | **Preview** | HTML, SVG, and Markdown artifacts from Drydock-launched Claude sessions, with inline review. |
 
 ## A second agent, with the right context
 
-Open a session’s **Briefing** panel to use either workflow:
+Open a session’s **Briefing** panel. **Review with…** sits with **Uncommitted
+files**, and **Handoff…** sits beneath **Summary**.
+This section lists staged, unstaged, and non-ignored new files across the session’s
+Git repository. With a clean checkout, it becomes **Last commit files** and shows
+the latest commit’s changes, matching the reviewer’s scope. It refreshes as files
+are edited or committed, including changes made outside that session.
+
+The **Summary** section saves a short AI title and a few sentences about the
+session. **Refresh** updates both in one call through the source agent’s installed
+CLI. Manual session names always take precedence. Summaries show their update
+time and a **New activity** indicator when conversation content has changed.
+Codex summaries read the paginated history database as well as indexed rollout
+messages. They use actual user/agent text, excluding reasoning and tool payloads.
+Title-only metadata cannot generate a summary; without readable conversation
+content, refresh stays unavailable. **Handoff…** sits directly below the summary;
+**Review with…** stays with the Git file changes.
+
+A new commit observed while Briefing is visible automatically refreshes its
+session summary after a short delay, combining rapid commits into one call.
+Opening a session, ordinary edits, and conversation messages do not trigger AI
+generation. Failed refreshes preserve the previous summary and can be retried.
+Automatic failures are not repeatedly retried for the same commit. There is no
+background sweep over other sessions. Refreshes use the CLI’s account usage.
 
 - **Review with…** gives Claude Code or Codex a captured source snapshot, diff,
   and your acceptance criteria. Inspect findings against the captured files,
   copy selected findings, or prepare a fixes handoff. Changed source marks a
   review stale. Reviews suggest tests; they do not execute them or apply edits.
 - **Handoff…** prepares an editable packet with the goal, progress, recent
-  conversation, briefing, and current diff. Choose an agent and open a new
+  conversation, summary, and current diff. It refreshes the AI title and summary
+  first, waiting for an existing refresh when needed. Failed refreshes show an
+  error and retry; no stale handoff is prepared. Choose an agent and open a new
   interactive session. Source and destination stay linked.
 
 <img src=".github/assets/handoff.png" alt="Handoff dialog with Claude Code selected as the destination and an editable context packet prepared from a Codex session" />
@@ -119,13 +143,14 @@ transcripts. Taking over a session running elsewhere asks before stopping it.
 ## Agent support
 
 Claude Code and Codex have session discovery, resume, plain-JSONL transcript
-search, and briefings. Enable pi, OpenCode, Copilot, Cursor, Droid, Gemini, or a
+search, and session details. Enable pi, OpenCode, Copilot, Cursor, Droid, Gemini, or a
 custom command to launch them in terminal tabs.
 
-Codex briefings read successful plan updates, patch changes, and cumulative token
-usage; card generation uses Codex. File tracking covers recorded patches rather
-than arbitrary shell edits. Compressed and database-only conversation content is
-not yet imported; those threads remain discoverable by title. Checkpoint history
+Codex session details read successful plan updates and cumulative token usage
+when a readable rollout is available. File changes come from Git across the
+repository. Summaries and handoffs also read paginated Codex history directly;
+transcript display/search still require readable rollout files. Compressed
+rollouts are not yet imported. Checkpoint history
 and Drydock’s artifact tools are currently Claude-specific.
 
 ## Configuration and data
@@ -135,22 +160,19 @@ live in `~/Library/Application Support/com.drydock.app/settings.json`:
 
 ```json
 {
-  "card_model": "sonnet",
-  "codex_card_model": null,
   "claude_env": {},
   "editor_cmd": "code"
 }
 ```
 
-`card_model` controls Claude briefings; `codex_card_model` controls Codex briefings.
-A `null` model uses the CLI’s default. `claude_env` supplies environment overrides
+`claude_env` supplies environment overrides
 to spawned processes; `editor_cmd` chooses the editor for changed files.
 
 Drydock reads agent stores without changing their configuration. Explicit
 **Delete permanently** removes a transcript at your request. Its own index,
 organization data, and saved reviews live in its app-data directory. Search
-embeddings run on-device. Briefing generation sends transcript excerpts through
-the source CLI; reviews send captured code, and handoffs send the packet you
+embeddings run on-device. Summary refreshes send bounded conversation excerpts
+through the source agent’s CLI. Reviews send captured code, and handoffs send the packet you
 preview, through the selected agent’s backend.
 
 Other network activity includes update checks, the initial embedding-model

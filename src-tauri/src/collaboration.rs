@@ -159,15 +159,126 @@ struct Capture {
     files: Vec<String>,
     omitted: Vec<String>,
 }
+struct ChangeScope {
+    head: String,
+    status: Vec<u8>,
+    working: bool,
+}
+impl ChangeScope {
+    fn read(root: &Path) -> Result<Self> {
+        let head = String::from_utf8_lossy(&git(root, &["rev-parse", "HEAD"])?).trim().to_string();
+        let status = git(root, &["status", "--porcelain=v1", "-z", "--untracked-files=all"])?;
+        let working = !status.is_empty();
+        Ok(Self { head, status, working })
+    }
+    fn label(&self) -> &str { if self.working { "Working changes" } else { "Last commit" } }
+    fn diff(&self, root: &Path, format: &[&str]) -> Result<Vec<u8>> {
+        let mut args = if self.working { vec!["diff"] } else { vec!["show", "--format="] };
+        args.extend(["--no-ext-diff", "--no-textconv"]);
+        args.extend_from_slice(format);
+        args.extend(["HEAD", "--", "."]);
+        git(root, &args)
+    }
+    fn untracked(&self) -> impl Iterator<Item = &[u8]> {
+        self.status.split(|b| *b == 0).filter_map(|p| p.strip_prefix(b"?? "))
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct ChangedFile {
+    path: String,
+    previous_path: Option<String>,
+    resolved: Option<String>,
+    status: String,
+    adds: Option<u64>,
+    dels: Option<u64>,
+}
+#[derive(serde::Serialize)]
+pub struct RepositoryChanges {
+    root: String,
+    head: String,
+    scope: String,
+    files: Vec<ChangedFile>,
+}
+
+// A lightweight view of the same Git scope used by capture(). No transcript
+// history, staging, or full source snapshot is needed to refresh the file list.
+fn repository_changes(root: &Path) -> Result<RepositoryChanges> {
+    let scope = ChangeScope::read(root)?;
+    let names = scope.diff(root, &["--name-status", "-z"])?;
+    let stats = scope.diff(root, &["--numstat", "-z"])?;
+    let mut counts = HashMap::new();
+    let mut rows = stats.split(|b| *b == 0);
+    while let Some(row) = rows.next().filter(|p| !p.is_empty()) {
+        let mut fields = row.splitn(3, |b| *b == b'\t');
+        let adds = fields.next().and_then(|v| std::str::from_utf8(v).ok()).and_then(|v| v.parse::<u64>().ok());
+        let dels = fields.next().and_then(|v| std::str::from_utf8(v).ok()).and_then(|v| v.parse::<u64>().ok());
+        let mut path = fields.next().ok_or("Invalid Git file statistics")?;
+        // With -z a rename has an empty path field, then separate old/new
+        // path records. Never parse human-oriented quoting or brace syntax.
+        if path.is_empty() {
+            rows.next().ok_or("Invalid Git rename statistics")?;
+            path = rows.next().ok_or("Invalid Git rename statistics")?;
+        }
+        counts.insert(path.to_vec(), (adds, dels));
+    }
+    let mut files = Vec::new();
+    let mut fields = names.split(|b| *b == 0);
+    while let Some(status) = fields.next().filter(|p| !p.is_empty()) {
+        let first = fields.next().ok_or("Invalid Git file list")?;
+        let renamed = matches!(status.first(), Some(b'R' | b'C'));
+        let bytes = if renamed { fields.next().ok_or("Invalid Git rename")? } else { first };
+        let name = std::str::from_utf8(bytes).map_err(|_| "A file name is not UTF-8")?;
+        let previous_path = if renamed { Some(String::from_utf8(first.to_vec()).map_err(|_| "A file name is not UTF-8")?) } else { None };
+        if !safe_relative(Path::new(name)) { return Err("Unsafe repository file path".into()); }
+        let path = root.join(name);
+        let resolved = path.canonicalize().ok().filter(|p| p.is_file() && p.starts_with(root)).map(|p| p.to_string_lossy().into_owned());
+        let (adds, dels) = counts.get(bytes).copied().unwrap_or((None, None));
+        files.push(ChangedFile { path: name.into(), previous_path, resolved, status: String::from_utf8_lossy(&status[..1]).into_owned(), adds, dels });
+    }
+    for bytes in scope.untracked() {
+        let name = std::str::from_utf8(bytes).map_err(|_| "A file name is not UTF-8")?;
+        if !safe_relative(Path::new(name)) { return Err("Unsafe repository file path".into()); }
+        let path = root.join(name);
+        let resolved = path.canonicalize().ok().filter(|p| p.is_file() && p.starts_with(root));
+        let adds = resolved.as_ref().and_then(|_| std::fs::symlink_metadata(&path).ok())
+            .filter(|md| md.is_file() && md.len() <= MAX_FILE)
+            .and_then(|_| std::fs::read(&path).ok())
+            .filter(|data| !data.contains(&0))
+            .and_then(|data| String::from_utf8(data).ok())
+            .map(|text| text.lines().count() as u64);
+        let resolved = resolved.map(|p| p.to_string_lossy().into_owned());
+        if let Some(existing) = files.iter_mut().find(|f| f.path == name) {
+            // A staged deletion followed by recreating the same path appears
+            // as both a tracked deletion and an untracked file. Show one
+            // replacement row, retaining deleted lines from the HEAD diff.
+            existing.status = "M".into();
+            existing.adds = adds;
+            existing.resolved = resolved;
+        } else {
+            files.push(ChangedFile { path: name.into(), previous_path: None, resolved, status: "?".into(), adds, dels: adds.map(|_| 0) });
+        }
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(RepositoryChanges { root: root.to_string_lossy().into_owned(), head: scope.head.clone(), scope: scope.label().into(), files })
+}
+
+#[tauri::command(async)]
+pub fn collaboration_changes(db: State<'_, crate::index::AppDb>, session_id: String) -> Result<RepositoryChanges> {
+    let project = {
+        let store = db.0.lock().unwrap();
+        store.get_session(&session_id).map_err(|e| e.to_string())?.ok_or("Session is not indexed yet")?.project_path
+    };
+    let project = PathBuf::from(project).canonicalize().map_err(|e| format!("Project folder: {e}"))?;
+    let root = git(&project, &["rev-parse", "--show-toplevel"]).map_err(|_| "File changes require a Git repository".to_string())?;
+    let root = PathBuf::from(String::from_utf8_lossy(&root).trim().to_string()).canonicalize().map_err(|e| e.to_string())?;
+    repository_changes(&root)
+}
+
 fn capture(root: &Path, destination: Option<&Path>) -> Result<Capture> {
-    let head = String::from_utf8_lossy(&git(root, &["rev-parse", "HEAD"])?).trim().to_string();
-    let status = git(root, &["status", "--porcelain=v1", "-z", "--untracked-files=all"])?;
-    let working = !status.is_empty();
-    let diff = git(root, if working {
-        &["diff", "--no-ext-diff", "--no-textconv", "HEAD", "--", "."]
-    } else {
-        &["show", "--format=", "--no-ext-diff", "--no-textconv", "HEAD", "--", "."]
-    })?;
+    let scope = ChangeScope::read(root)?;
+    let diff = scope.diff(root, &[])?;
+    let ChangeScope { head, status, working } = scope;
     if diff.len() > MAX_DIFF { return Err("This change is too large for one review (256 KB diff limit). Review a smaller change first.".into()); }
     let paths = git(root, &["ls-files", "-z", "--cached", "--others", "--exclude-standard"])?;
     let paths: BTreeSet<Vec<u8>> = paths.split(|b| *b == 0).filter(|p| !p.is_empty()).map(Vec::from).collect();
@@ -228,15 +339,26 @@ fn capture(root: &Path, destination: Option<&Path>) -> Result<Capture> {
 }
 
 #[tauri::command(async)]
-pub fn collaboration_prepare(state: State<'_, Collaboration>, db: State<'_, crate::index::AppDb>, session_id: String, kind: String) -> Result<Record> {
+pub fn collaboration_prepare(app: AppHandle, state: State<'_, Collaboration>, db: State<'_, crate::index::AppDb>, summaries: State<'_, crate::summary::Summaries>, session_id: String, kind: String) -> Result<Record> {
     if !matches!(kind.as_str(), "review" | "handoff") { return Err("Invalid collaboration action".into()); }
-    let (row, chunks, card, agent) = {
+    if kind == "handoff" {
+        crate::summary::refresh_for_handoff(&app, &db, &summaries, &session_id)?;
+    }
+    let (row, title, mut chunks, summary, agent) = {
         let store = db.0.lock().unwrap();
         (store.get_session(&session_id).map_err(|e| e.to_string())?.ok_or("Session is not indexed yet")?,
+         store.display_label(&session_id).map_err(|e| e.to_string())?.unwrap_or_else(|| "Session".into()),
          store.get_chunks(&session_id).map_err(|e| e.to_string())?,
-         store.get_card(&session_id).map_err(|e| e.to_string())?,
+         crate::summary::saved_summary(&store, &session_id)?,
          store.meta_get(&format!("agent:{session_id}")).map_err(|e| e.to_string())?.unwrap_or_else(|| "claude".into()))
     };
+    if agent == "codex" {
+        if let Some(home) = drydock_core::codex::codex_dir() {
+            if let Some(history) = drydock_core::codex_history::read_context(&home, &session_id).map_err(|e| e.to_string())? {
+                chunks = history.messages;
+            }
+        }
+    }
     let project = PathBuf::from(&row.project_path).canonicalize().map_err(|e| format!("Project folder: {e}"))?;
     let root = match git(&project, &["rev-parse", "--show-toplevel"]) {
         Ok(bytes) => PathBuf::from(String::from_utf8_lossy(&bytes).trim().to_string()).canonicalize().map_err(|e| e.to_string())?,
@@ -265,12 +387,13 @@ pub fn collaboration_prepare(state: State<'_, Collaboration>, db: State<'_, crat
     let context = chunks.iter().rev().take(30).rev().map(|c| c.text.as_str()).collect::<Vec<_>>().join("\n");
     let context: String = context.chars().rev().take(24_000).collect::<String>().chars().rev().collect();
     let packet = format!("# Handoff: {}\n\n## Goal and acceptance criteria\n{}\n\n## Source\nAgent: {agent}\nSession: {session_id}\nProject: {}\nGit HEAD: {}\nSnapshot: {}\nScope: {}\n\n## Decisions, progress, failed attempts and unresolved questions\nReview and edit this section before continuing. Conversation excerpts below are reports from the source agent, not independently verified test results.\n\n{}\n\n## Source conversation excerpts\n{context}\n\n## Current code changes\n```diff\n{}\n```\n\n## Next steps\nConfirm the current files still match these changes. Continue toward the goal above, preserve existing work, and verify the result with the appropriate tests.\n",
-        row.title, row.first_prompt.as_deref().unwrap_or("Describe the goal and acceptance criteria here."),
+        title, row.first_prompt.as_deref().unwrap_or("Describe the goal and acceptance criteria here."),
         project.display(), captured.head, captured.id, captured.scope,
-        card.map(|c| format!("Briefing: {}\nTimeline (reported): {}", c.summary, c.timeline)).unwrap_or_default(),
+        summary.map(|s| format!("Saved AI summary (generated at {} ms UTC; may be outdated): {}\n{}", s.generated_at, s.title, s.summary))
+            .unwrap_or_else(|| "Add decisions, progress, failed attempts and unresolved questions here.".into()),
         clipped(&captured.diff, 30_000));
     let record = Record { id, source_session_id: session_id, source_agent: agent, project_path: root.to_string_lossy().into_owned(),
-        working_directory: project.to_string_lossy().into_owned(), title: row.title, created_at: chrono::Utc::now().timestamp_millis(), snapshot_id: captured.id, head: captured.head,
+        working_directory: project.to_string_lossy().into_owned(), title, created_at: chrono::Utc::now().timestamp_millis(), snapshot_id: captured.id, head: captured.head,
         scope: captured.scope, files: captured.files, omitted: captured.omitted, diff: captured.diff,
         packet: limit_packet(&packet), status: "draft".into(), target_agent: None, destination_session_id: None, result: None, error: None, criteria: String::new(), model: String::new() };
     let _lock = state.0.io.lock().unwrap();
@@ -379,7 +502,7 @@ fn decode_claude_result(output: &[u8]) -> Result<ReviewResult> {
     }
 }
 fn reviewer_command(agent: &str, dir: &Path, model: &str) -> Result<Command> {
-    let quote = crate::enricher::sh_single_quote;
+    let quote = crate::cli::sh_single_quote;
     let schema = result_schema().to_string();
     let mut args: Vec<String> = match agent {
         "claude" => vec!["claude", "-p", "--output-format", "json", "--json-schema", &schema,
@@ -530,6 +653,87 @@ mod tests {
         assert_eq!(capture.scope, "Last commit");
         assert!(capture.diff.contains("fn old()"));
         assert!(!capture.files.contains(&"ignored.txt".into()));
+    }
+    #[test]
+    fn briefing_lists_combined_staged_unstaged_and_new_files_like_review() {
+        let dir = repo(); let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("hello.rs"), "fn staged() {}\n").unwrap();
+        git(&root, &["add", "hello.rs"]).unwrap();
+        std::fs::write(root.join("hello.rs"), "fn unstaged() {}\nextra line\n").unwrap();
+        let unusual = "new\tfile\n中文.txt";
+        std::fs::write(root.join(unusual), "new\ntext").unwrap();
+        std::fs::write(root.join(".git/info/exclude"), "ignored.txt\n").unwrap();
+        std::fs::write(root.join("ignored.txt"), "not reviewed").unwrap();
+        let before_index = std::fs::read(root.join(".git/index")).unwrap();
+        let listing = repository_changes(&root).unwrap();
+        assert_eq!(listing.scope, capture(&root, None).unwrap().scope);
+        assert_eq!(listing.scope, "Working changes");
+        assert_eq!(listing.files.len(), 2);
+        let modified = listing.files.iter().find(|f| f.path == "hello.rs").unwrap();
+        assert_eq!((modified.adds, modified.dels), (Some(2), Some(1)));
+        assert_eq!(modified.status, "M");
+        let new = listing.files.iter().find(|f| f.path == unusual).unwrap();
+        assert_eq!(new.status, "?");
+        assert_eq!(new.adds, Some(2));
+        assert!(new.resolved.is_some());
+        assert_eq!(std::fs::read(root.join(".git/index")).unwrap(), before_index);
+        git(&root, &["add", "--", "."]).unwrap();
+        git(&root, &["commit", "-qm", "all changes"]).unwrap();
+        let committed = repository_changes(&root).unwrap();
+        assert_eq!(committed.scope, "Last commit");
+        assert_eq!(committed.scope, capture(&root, None).unwrap().scope);
+        assert_eq!(committed.files.len(), 2);
+        assert_eq!(committed.files.iter().find(|f| f.path == unusual).unwrap().status, "A");
+        assert_eq!(committed.files.iter().find(|f| f.path == unusual).unwrap().adds, Some(2));
+    }
+    #[test]
+    fn briefing_updates_after_delete_commit_and_reports_binary_without_fake_counts() {
+        let dir = repo(); let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("data.bin"), [0, 1, 2]).unwrap();
+        git(&root, &["add", "data.bin"]).unwrap();
+        std::fs::remove_file(root.join("hello.rs")).unwrap();
+        let listing = repository_changes(&root).unwrap();
+        let deleted = listing.files.iter().find(|f| f.path == "hello.rs").unwrap();
+        assert_eq!(deleted.status, "D");
+        assert!(deleted.resolved.is_none());
+        assert_eq!(deleted.dels, Some(1));
+        let binary = listing.files.iter().find(|f| f.path == "data.bin").unwrap();
+        assert_eq!((binary.adds, binary.dels), (None, None));
+        git(&root, &["add", "-u"]).unwrap();
+        git(&root, &["commit", "-qm", "delete and add binary"]).unwrap();
+        let committed = repository_changes(&root).unwrap();
+        assert_eq!(committed.scope, "Last commit");
+        assert_eq!(committed.files.len(), 2);
+        std::fs::write(root.join("unrelated.txt"), "another session's edit").unwrap();
+        let dirty = repository_changes(&root).unwrap();
+        assert_eq!(dirty.scope, "Working changes");
+        assert_eq!(dirty.files.len(), 1);
+        assert_eq!(dirty.files[0].path, "unrelated.txt");
+    }
+    #[test]
+    fn briefing_preserves_renames_and_their_line_counts() {
+        let dir = repo(); let root = dir.path().canonicalize().unwrap();
+        let name = "renamed\t中文\nfile.rs";
+        git(&root, &["mv", "hello.rs", name]).unwrap();
+        let changes = repository_changes(&root).unwrap();
+        assert_eq!(changes.files.len(), 1);
+        let file = &changes.files[0];
+        assert_eq!(file.path, name);
+        assert_eq!(file.previous_path.as_deref(), Some("hello.rs"));
+        assert_eq!(file.status, "R");
+        assert_eq!((file.adds, file.dels), (Some(0), Some(0)));
+    }
+    #[test]
+    fn briefing_deduplicates_a_staged_deletion_recreated_as_untracked() {
+        let dir = repo(); let root = dir.path().canonicalize().unwrap();
+        git(&root, &["rm", "hello.rs"]).unwrap();
+        std::fs::write(root.join("hello.rs"), "replacement\nsecond line\n").unwrap();
+        let changes = repository_changes(&root).unwrap();
+        assert_eq!(changes.files.len(), 1);
+        let file = &changes.files[0];
+        assert_eq!(file.status, "M");
+        assert_eq!((file.adds, file.dels), (Some(2), Some(1)));
+        assert!(file.resolved.is_some());
     }
     #[cfg(unix)]
     #[test]

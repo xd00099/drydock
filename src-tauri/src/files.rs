@@ -459,7 +459,7 @@ pub fn open_path(path: String, reveal: bool, settings: State<'_, crate::settings
     match settings.editor_cmd() {
         Some(cmd) if !cmd.trim().is_empty() => {
             let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-            let line = format!("{cmd} {}", crate::enricher::sh_single_quote(&path));
+            let line = format!("{cmd} {}", crate::cli::sh_single_quote(&path));
             std::process::Command::new(shell)
                 .args(["-l", "-c", &line])
                 .spawn()

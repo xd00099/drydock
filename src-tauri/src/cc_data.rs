@@ -113,6 +113,17 @@ pub fn session_tasks(db: State<'_, AppDb>, session_id: String) -> Result<TasksVi
 
 // ---- Home recaps digest (Drydock's own index) ------------------------------
 
+/// Legacy saved milestones remain readable in the Home history. Drydock no
+/// longer generates these summaries or uses them as a live briefing card.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct TimelineItem {
+    pub text: String,
+    #[serde(default)]
+    pub detail: Vec<String>,
+    #[serde(default)]
+    pub in_progress: bool,
+}
+
 #[derive(serde::Serialize)]
 pub struct RecapEntry {
     pub session_id: String,
@@ -122,7 +133,7 @@ pub struct RecapEntry {
     pub summary: String,
     /// The card's milestones, parsed here so the frontend never re-parses
     /// store-owned JSON; unparseable/absent timelines become [].
-    pub timeline: Vec<crate::enricher::TimelineItem>,
+    pub timeline: Vec<TimelineItem>,
     pub last_message_at: i64,
 }
 

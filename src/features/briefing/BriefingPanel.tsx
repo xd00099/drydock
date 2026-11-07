@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { clampPanelWidth, loadNum, type Artifact, type CardView, type FileTouch, type ReviewPrompt, type ReviewState, type SessionUsage, type TasksView } from '@/lib/types'
+import { clampPanelWidth, loadNum, type Artifact, type ReviewPrompt, type ReviewState, type SessionUsage, type TasksView } from '@/lib/types'
 import ResizeHandle from '@/components/ui/ResizeHandle'
 import { useChord } from '@/lib/keymap'
 import { BriefingTab } from './BriefingTab'
@@ -10,7 +10,7 @@ import { PreviewTab } from './PreviewTab'
 import { IconButton } from '@/components/ui'
 import Icon from '@/components/ui/Icon'
 import css from './Briefing.module.css'
-import CollaborationPanel from '@/features/collaboration/CollaborationPanel'
+import CollaborationPanel, { type CollaborationActions } from '@/features/collaboration/CollaborationPanel'
 import type { HandoffLaunch } from '@/features/collaboration/types'
 import type { ResolvedAgent } from '@/lib/agents'
 
@@ -74,8 +74,6 @@ export default function BriefingPanel({ sourceAgent, agents, onHandoff, onOpenSe
     project: useChord('briefing.tab.project'),
     preview: useChord('briefing.preview'),
   }
-  const [card, setCard] = useState<CardView | null>(null)
-  const [files, setFiles] = useState<FileTouch[]>([])
   const [tasks, setTasks] = useState<TasksView | null>(null)
   const [usage, setUsage] = useState<SessionUsage | null>(null)
   // clamp on load AND on window resize: a width persisted (or auto-widened) on a
@@ -91,16 +89,13 @@ export default function BriefingPanel({ sourceAgent, agents, onHandoff, onOpenSe
   }, [])
 
   const refresh = useCallback(() => {
-    if (!sessionId) { setCard(null); setFiles([]); setTasks(null); setUsage(null); return } // a session-less new tab has no card
-    invoke<CardView | null>('get_card', { sessionId }).then(setCard).catch(console.error)
-    // no transcript file yet (radar stub / expired) → just no files section
-    invoke<FileTouch[]>('session_files', { sessionId }).then(setFiles).catch(() => setFiles([]))
+    if (!sessionId) { setTasks(null); setUsage(null); return }
     // both refresh on the same index-updated tick that moves the transcript
     invoke<TasksView>('session_tasks', { sessionId }).then(setTasks).catch(() => setTasks(null))
     invoke<SessionUsage>('session_usage', { sessionId }).then(setUsage).catch(() => setUsage(null))
   }, [sessionId])
   // `index-updated` fires on a 400ms watcher debounce, so a session that is
-  // actively working ticks it up to ~2.5x/second — and every tick costs four
+  // actively working ticks it up to ~2.5x/second — and every tick costs two
   // commands, two of which read the session's entire transcript off disk. On a
   // long session that file is tens of megabytes, which is enough to saturate a
   // core and thrash the allocator. Two guards:
@@ -160,6 +155,10 @@ export default function BriefingPanel({ sourceAgent, agents, onHandoff, onOpenSe
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [panelJump])
 
+  const briefing = (actions?: CollaborationActions) => <BriefingTab sourceAgent={sourceAgent} sessionId={sessionId} starred={starred} tasks={tasks} usage={usage} label={label} onToggleStar={onToggleStar} onRename={onRename}
+    collaborationActions={actions ? <div className={css.reviewActions}>{actions.review}</div> : undefined}
+    summaryActions={actions ? <>{actions.handoff}{actions.history}</> : undefined} />
+
   // collapsed: a thin rail with an expand button, mirroring the left sidebar
   if (collapsed) {
     return (
@@ -190,7 +189,6 @@ export default function BriefingPanel({ sourceAgent, agents, onHandoff, onOpenSe
 
         {/* Every tab manages its own layout: Preview edge-to-edge, Briefing and
             Project as scrolling-top / pinned-bottom section stacks. */}
-        {sessionId && <CollaborationPanel sessionId={sessionId} sourceAgent={sourceAgent} agents={agents} onHandoff={onHandoff} onOpenSession={onOpenSession} />}
         {tab === 'preview' ? (
           <PreviewTab
             artifacts={artifacts}
@@ -202,7 +200,7 @@ export default function BriefingPanel({ sourceAgent, agents, onHandoff, onOpenSe
             onSend={onReviewSend}
           />
         ) : tab === 'briefing' ? (
-          <BriefingTab sourceAgent={sourceAgent} sessionId={sessionId} card={card} starred={starred} files={files} tasks={tasks} usage={usage} projectPath={projectPath} label={label} onToggleStar={onToggleStar} onRename={onRename} />
+          sessionId ? <CollaborationPanel key={sessionId} sessionId={sessionId} sourceAgent={sourceAgent} agents={agents} onHandoff={onHandoff} onOpenSession={onOpenSession}>{briefing}</CollaborationPanel> : briefing()
         ) : (
           <ProjectTab projectPath={projectPath} />
         )}

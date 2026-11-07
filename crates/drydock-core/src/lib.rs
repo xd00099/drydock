@@ -1,6 +1,7 @@
 pub mod records;
 pub mod parser;
 pub mod codex;
+pub mod codex_history;
 pub mod codex_briefing;
 pub mod transcript;
 pub mod radar;

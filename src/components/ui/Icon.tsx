@@ -9,6 +9,7 @@ const paths = {
   folder: 'M3 7V5a1 1 0 0 1 1-1h5l2 3h9a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7Z',
   arrow: 'M5 12h14m-5-5 5 5-5 5',
   review: 'm9 12 2 2 4-4M5 3h14v18H5z',
+  refresh: 'M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.55-1.55L20 8M4 16l2.35 2.55A7 7 0 0 0 17.9 17',
   settings: 'M4 7h16M4 17h16M8 4v6M16 14v6',
   terminal: 'm5 6 6 6-6 6M13 18h6',
 } as const

@@ -5,11 +5,9 @@
 //! Example for a LiteLLM / Bedrock / custom-endpoint user:
 //! ```json
 //! {
-//!   "card_model": "my-proxy-sonnet",
 //!   "claude_env": { "ANTHROPIC_BASE_URL": "http://localhost:4000" }
 //! }
 //! ```
-//! Set `"card_model": null` to drop the `--model` flag and use the CLI default.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -19,13 +17,8 @@ use std::sync::Mutex;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Model for `claude -p --model <x>` card generation. `None` (JSON null)
-    /// omits the flag entirely; absent key defaults to "sonnet".
-    pub card_model: Option<String>,
-    /// Model for Codex briefing cards; absent uses the Codex CLI default.
-    pub codex_card_model: Option<String>,
     /// Extra environment injected into every claude/shell Drydock spawns —
-    /// terminal tabs AND card generation. The escape hatch for endpoints
+    /// terminal tabs and review jobs. The escape hatch for endpoints
     /// configured only in `.zshrc` (which a non-interactive login shell skips)
     /// or not in the GUI environment at all.
     pub claude_env: BTreeMap<String, String>,
@@ -81,8 +74,6 @@ pub struct CustomAgent {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            card_model: Some("sonnet".to_string()),
-            codex_card_model: None,
             claude_env: BTreeMap::new(),
             artifacts_enabled: true,
             mcp_disabled: Vec::new(),
@@ -198,33 +189,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn absent_file_uses_sonnet_default() {
+    fn absent_file_uses_default_settings() {
         let s = Settings::load(Path::new("/nonexistent-dir-xyz"));
-        assert_eq!(s.card_model.as_deref(), Some("sonnet"));
+        assert_eq!(s.agents_enabled, vec!["claude"]);
         assert!(s.claude_env.is_empty());
     }
 
     #[test]
-    fn explicit_null_disables_model_flag() {
-        let s: Settings = serde_json::from_str(r#"{"card_model": null}"#).unwrap();
-        assert_eq!(s.card_model, None);
+    fn retired_card_settings_survive_without_becoming_active_configuration() {
+        let s: Settings = serde_json::from_str(r#"{"card_model":"old-model","codex_card_model":null}"#).unwrap();
+        assert_eq!(s.extra["card_model"], "old-model");
+        assert_eq!(s.extra["codex_card_model"], serde_json::Value::Null);
+        let saved = serde_json::to_value(&s).unwrap();
+        assert_eq!(saved["card_model"], "old-model");
+        assert!(serde_json::to_value(Settings::default()).unwrap().get("card_model").is_none());
     }
 
     #[test]
-    fn parses_custom_model_and_env() {
+    fn parses_custom_env_with_legacy_settings() {
         let s: Settings = serde_json::from_str(
             r#"{"card_model":"proxy-x","claude_env":{"ANTHROPIC_BASE_URL":"http://localhost:4000"}}"#,
         )
         .unwrap();
-        assert_eq!(s.card_model.as_deref(), Some("proxy-x"));
+        assert_eq!(s.extra["card_model"], "proxy-x");
         assert_eq!(s.env_pairs(), vec![("ANTHROPIC_BASE_URL".to_string(), "http://localhost:4000".to_string())]);
-    }
-
-    #[test]
-    fn absent_card_model_key_still_defaults_to_sonnet() {
-        // only claude_env present → card_model falls back to the struct default
-        let s: Settings = serde_json::from_str(r#"{"claude_env":{}}"#).unwrap();
-        assert_eq!(s.card_model.as_deref(), Some("sonnet"));
     }
 
     #[test]

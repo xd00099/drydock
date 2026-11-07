@@ -49,6 +49,16 @@ afterEach(async () => {
 })
 
 describe('cross-agent review and handoff', () => {
+  it('places handoff under summary and review under files with one shared dialog', async () => {
+    await act(async () => root.render(<CollaborationPanel sessionId="source" sourceAgent="claude" agents={profiles} onHandoff={launch} onOpenSession={openSession}>
+      {({ review, handoff, history }) => <><section aria-label="Summary actions">{handoff}{history}</section><section aria-label="File actions">{review}</section></>}
+    </CollaborationPanel>))
+    expect(host.querySelector('[aria-label="Summary actions"]')!.contains(button('Handoff…'))).toBe(true)
+    expect(host.querySelector('[aria-label="File actions"]')!.contains(button('Review with…'))).toBe(true)
+    await click('Handoff…')
+    expect(host.querySelectorAll('[role="dialog"]')).toHaveLength(1)
+    expect(invoke).toHaveBeenCalledWith('collaboration_prepare', { sessionId: 'source', kind: 'handoff' })
+  })
   it('previews a review and only starts it after explicit submission', async () => {
     await mount(); await click('Review with…')
     expect(invoke).toHaveBeenCalledWith('collaboration_prepare', { sessionId: 'source', kind: 'review' })
@@ -70,6 +80,37 @@ describe('cross-agent review and handoff', () => {
     expect(invoke).toHaveBeenCalledWith('collaboration_handoff', { id: 'a'.repeat(32), agent: 'codex', packet: 'Edited goal and verified tests' })
     expect(launch).toHaveBeenCalledWith({ id: 'a'.repeat(32), agent: 'codex', project_path: '/project/subfolder', prompt: 'Read saved handoff packet' })
     expect(host.querySelector('[role="dialog"]')).toBeNull()
+  })
+
+  it('waits for the handoff summary refresh and prevents duplicate preparations', async () => {
+    let finish!: (record: CollaborationRecord) => void
+    vi.mocked(invoke).mockImplementation((cmd) => cmd === 'collaboration_prepare'
+      ? new Promise((resolve) => { finish = resolve }) as ReturnType<typeof invoke>
+      : Promise.resolve([]) as ReturnType<typeof invoke>)
+    await mount(); await click('Handoff…'); await click('Handoff…')
+    expect(vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === 'collaboration_prepare')).toHaveLength(1)
+    expect(host.querySelector('[role="status"]')!.textContent).toContain('Refreshing the title and summary')
+    expect(host.querySelector('textarea')).toBeNull()
+    expect(launch).not.toHaveBeenCalled()
+    await act(async () => finish(fixture({ title: 'Fresh Handoff Title', packet: 'Freshly generated session summary', scope: 'Handoff context' })))
+    expect(host.textContent).toContain('Fresh Handoff Title')
+    expect(host.querySelector('textarea')!.value).toBe('Freshly generated session summary')
+    expect(launch).not.toHaveBeenCalled()
+  })
+
+  it('retries failed handoff refreshes without offering a stale packet', async () => {
+    vi.mocked(invoke).mockImplementation((cmd) => cmd === 'collaboration_prepare'
+      ? Promise.reject('Could not refresh the summary for handoff: CLI login required')
+      : Promise.resolve([]) as ReturnType<typeof invoke>)
+    await mount(); await click('Handoff…')
+    expect(host.querySelector('[role="alert"]')!.textContent).toContain('CLI login required')
+    expect(host.querySelector('textarea')).toBeNull()
+    expect(button('Open new agent session')).toBeUndefined()
+    vi.mocked(invoke).mockImplementation((cmd) => Promise.resolve(cmd === 'collaboration_prepare'
+      ? fixture({ scope: 'Handoff context', packet: 'Current summary after retry' }) : []) as ReturnType<typeof invoke>)
+    await click('Try again')
+    expect(host.querySelector('textarea')!.value).toBe('Current summary after retry')
+    expect(launch).not.toHaveBeenCalled()
   })
 
   it('keeps failures visible without launching anything', async () => {
